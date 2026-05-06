@@ -3,12 +3,36 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from simple_term_menu import TerminalMenu
-
 from src.common.analysis import Analysis
 from src.common.indexer import Indexer
 from src.common.util import package_data
 from src.common.util.strings import snake_to_title
+
+try:
+    from simple_term_menu import TerminalMenu
+    _HAS_TERM_MENU = True
+except (ImportError, NotImplementedError):
+    TerminalMenu = None
+    _HAS_TERM_MENU = False
+
+
+def _select(options: list[str], title: str) -> int | None:
+    if _HAS_TERM_MENU:
+        menu = TerminalMenu(options, title=title, cycle_cursor=True, clear_screen=False)
+        return menu.show()
+
+    print(title)
+    for i, opt in enumerate(options):
+        print(f"  [{i}] {opt}")
+    while True:
+        raw = input("Enter number (or blank to exit): ").strip()
+        if raw == "":
+            return None
+        if raw.isdigit():
+            idx = int(raw)
+            if 0 <= idx < len(options):
+                return idx
+        print(f"Invalid input. Enter 0-{len(options) - 1} or blank.")
 
 
 def analyze(name: str | None = None):
@@ -59,13 +83,7 @@ def analyze(name: str | None = None):
         options.append(f"{snake_to_title(instance.name)}: {instance.description}")
     options.append("[Exit]")
 
-    menu = TerminalMenu(
-        options,
-        title="Select an analysis to run (use arrow keys):",
-        cycle_cursor=True,
-        clear_screen=False,
-    )
-    choice = menu.show()
+    choice = _select(options, "Select an analysis to run:")
 
     if choice is None or choice == len(options) - 1:
         print("Exiting.")
@@ -107,13 +125,7 @@ def index():
         options.append(f"{snake_to_title(instance.name)}: {instance.description}")
     options.append("[Exit]")
 
-    menu = TerminalMenu(
-        options,
-        title="Select an indexer to run (use arrow keys):",
-        cycle_cursor=True,
-        clear_screen=False,
-    )
-    choice = menu.show()
+    choice = _select(options, "Select an indexer to run:")
 
     if choice is None or choice == len(options) - 1:
         print("Exiting.")
