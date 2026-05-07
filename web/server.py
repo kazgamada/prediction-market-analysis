@@ -26,6 +26,40 @@ from src.trading.data import list_top_markets  # noqa: E402
 OUTPUT_DIR = ROOT / "output"
 ANALYSIS_DIR = ROOT / "src" / "analysis"
 DATA_DIR = ROOT / "data"
+DOWNLOAD_SENTINEL = DATA_DIR / ".download_complete"
+
+
+def _polymarket_ready() -> bool:
+    if not DOWNLOAD_SENTINEL.exists():
+        return False
+    trades = DATA_DIR / "polymarket" / "trades"
+    markets = DATA_DIR / "polymarket" / "markets"
+    return any(trades.glob("*.parquet")) and any(markets.glob("*.parquet"))
+
+
+def _kalshi_ready() -> bool:
+    if not DOWNLOAD_SENTINEL.exists():
+        return False
+    trades = DATA_DIR / "kalshi" / "trades"
+    markets = DATA_DIR / "kalshi" / "markets"
+    return any(trades.glob("*.parquet")) and any(markets.glob("*.parquet"))
+
+
+def _analysis_domain(cls: type) -> str:
+    # e.g. src.analysis.kalshi.ev_yes_vs_no -> "kalshi"
+    parts = cls.__module__.split(".")
+    return parts[2] if len(parts) >= 3 else ""
+
+
+def _analysis_available(cls: type) -> bool:
+    domain = _analysis_domain(cls)
+    if domain == "kalshi":
+        return _kalshi_ready()
+    if domain == "polymarket":
+        return _polymarket_ready()
+    if domain == "comparison":
+        return _kalshi_ready() and _polymarket_ready()
+    return True
 
 app = FastAPI(title="Prediction Market Analysis")
 
@@ -103,6 +137,8 @@ def _run_job(job_id: str, name: str) -> None:
 def list_analyses() -> list[dict]:
     items = []
     for name, cls in ANALYSES.items():
+        if not _analysis_available(cls):
+            continue
         instance = cls()
         items.append(
             {
@@ -119,6 +155,13 @@ def list_analyses() -> list[dict]:
 def run_analysis(name: str) -> dict:
     if name not in ANALYSES:
         raise HTTPException(status_code=404, detail=f"Analysis '{name}' not found")
+    cls = ANALYSES[name]
+    if not _analysis_available(cls):
+        domain = _analysis_domain(cls)
+        raise HTTPException(
+            status_code=503,
+            detail=f"{domain} data not yet available; download still in progress or this dataset is not bundled.",
+        )
     job_id = uuid.uuid4().hex[:12]
     job = Job(id=job_id, analysis_name=name)
     with JOBS_LOCK:
@@ -139,12 +182,10 @@ def get_job(job_id: str) -> dict:
 def list_markets(limit: int = 50, min_trades: int = 1000) -> list[dict]:
     if not DATA_DIR.is_dir():
         raise HTTPException(status_code=404, detail="data/ directory not found; run make setup")
-    trades_dir = DATA_DIR / "polymarket" / "trades"
-    markets_dir = DATA_DIR / "polymarket" / "markets"
-    if not any(trades_dir.glob("*.parquet")) or not any(markets_dir.glob("*.parquet")):
+    if not _polymarket_ready():
         raise HTTPException(
-            status_code=404,
-            detail="Polymarket parquet data not found under data/polymarket/. Run scripts/download.sh or the indexer.",
+            status_code=503,
+            detail="Polymarket data is still downloading or not yet available. Try again in a few minutes.",
         )
     return list_top_markets(DATA_DIR, limit=limit, min_trades=min_trades)
 
