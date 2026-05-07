@@ -20,9 +20,12 @@ sys.path.insert(0, str(ROOT))
 
 from src.common.analysis import Analysis  # noqa: E402
 from src.common.util.strings import snake_to_title  # noqa: E402
+from src.trading.backtest import BacktestParams, run_backtest  # noqa: E402
+from src.trading.data import list_top_markets  # noqa: E402
 
 OUTPUT_DIR = ROOT / "output"
 ANALYSIS_DIR = ROOT / "src" / "analysis"
+DATA_DIR = ROOT / "data"
 
 app = FastAPI(title="Prediction Market Analysis")
 
@@ -129,6 +132,83 @@ def get_job(job_id: str) -> dict:
     job = JOBS.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
+    return asdict(job)
+
+
+@app.get("/api/markets")
+def list_markets(limit: int = 50, min_trades: int = 1000) -> list[dict]:
+    if not DATA_DIR.is_dir():
+        raise HTTPException(status_code=404, detail="data/ directory not found; run make setup")
+    return list_top_markets(DATA_DIR, limit=limit, min_trades=min_trades)
+
+
+@dataclass
+class BacktestJob:
+    id: str
+    status: str = "pending"
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    params: dict = field(default_factory=dict)
+    result: Optional[dict] = None
+    error: Optional[str] = None
+
+
+BACKTEST_JOBS: dict[str, BacktestJob] = {}
+BACKTEST_LOCK = Lock()
+BACKTEST_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+
+
+def _run_backtest_job(job_id: str, params: BacktestParams) -> None:
+    job = BACKTEST_JOBS[job_id]
+    started = datetime.utcnow()
+    with BACKTEST_LOCK:
+        job.status = "running"
+        job.started_at = started.isoformat()
+    try:
+        result = run_backtest(params, data_dir=DATA_DIR)
+        finished = datetime.utcnow()
+        with BACKTEST_LOCK:
+            job.status = "done"
+            job.finished_at = finished.isoformat()
+            job.duration_seconds = (finished - started).total_seconds()
+            job.result = asdict(result)
+    except Exception:
+        finished = datetime.utcnow()
+        with BACKTEST_LOCK:
+            job.status = "error"
+            job.error = traceback.format_exc()
+            job.finished_at = finished.isoformat()
+            job.duration_seconds = (finished - started).total_seconds()
+
+
+@app.post("/api/backtests")
+def start_backtest(payload: dict) -> dict:
+    required = {
+        "condition_id", "token_id", "question",
+        "starting_cash", "buy_below", "sell_above",
+        "max_order_pct", "max_position_pct", "max_daily_loss_pct",
+    }
+    missing = required - payload.keys()
+    if missing:
+        raise HTTPException(status_code=422, detail=f"Missing fields: {sorted(missing)}")
+    try:
+        params = BacktestParams(**payload)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    job_id = uuid.uuid4().hex[:12]
+    job = BacktestJob(id=job_id, params=asdict(params))
+    with BACKTEST_LOCK:
+        BACKTEST_JOBS[job_id] = job
+    BACKTEST_EXECUTOR.submit(_run_backtest_job, job_id, params)
+    return asdict(job)
+
+
+@app.get("/api/backtests/{job_id}")
+def get_backtest(job_id: str) -> dict:
+    job = BACKTEST_JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Backtest job not found")
     return asdict(job)
 
 

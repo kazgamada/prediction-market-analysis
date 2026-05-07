@@ -3,7 +3,7 @@ name = "prediction-market-data"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.12,<3.14"
 dependencies = [
     "brokenaxes>=0.6.2",
     "cryptography>=46.0.3",
@@ -24,6 +24,7 @@ dependencies = [
     "python-dotenv>=1.2.1",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
+    "nautilus_trader[polymarket]>=1.226",
 ]
 
 [dependency-groups]
@@ -37,7 +38,7 @@ pythonpath = ["."]
 markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
 
 [tool.ruff]
-target-version = "py39"
+target-version = "py312"
 line-length = 120
 exclude = [".venv"]
 
