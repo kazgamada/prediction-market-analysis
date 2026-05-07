@@ -139,6 +139,13 @@ def get_job(job_id: str) -> dict:
 def list_markets(limit: int = 50, min_trades: int = 1000) -> list[dict]:
     if not DATA_DIR.is_dir():
         raise HTTPException(status_code=404, detail="data/ directory not found; run make setup")
+    trades_dir = DATA_DIR / "polymarket" / "trades"
+    markets_dir = DATA_DIR / "polymarket" / "markets"
+    if not any(trades_dir.glob("*.parquet")) or not any(markets_dir.glob("*.parquet")):
+        raise HTTPException(
+            status_code=404,
+            detail="Polymarket parquet data not found under data/polymarket/. Run scripts/download.sh or the indexer.",
+        )
     return list_top_markets(DATA_DIR, limit=limit, min_trades=min_trades)
 
 
