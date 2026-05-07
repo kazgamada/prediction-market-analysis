@@ -18,7 +18,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         curl \
         ca-certificates \
-        zstd \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:0.8.17 /uv /usr/local/bin/uv
@@ -31,8 +30,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY main.py ./
 COPY src/ ./src/
 COPY web/ ./web/
-COPY scripts/ ./scripts/
 COPY --from=frontend /build/dist ./web/frontend/dist
 
 EXPOSE 8000
-CMD ["bash", "scripts/start.sh"]
+CMD ["sh", "-c", "uv run --no-sync uvicorn web.server:app --host 0.0.0.0 --port ${PORT:-8000}"]

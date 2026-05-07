@@ -26,23 +26,20 @@ from src.trading.data import list_top_markets  # noqa: E402
 OUTPUT_DIR = ROOT / "output"
 ANALYSIS_DIR = ROOT / "src" / "analysis"
 DATA_DIR = ROOT / "data"
-DOWNLOAD_SENTINEL = DATA_DIR / ".download_complete"
+
+
+def _domain_ready(domain: str) -> bool:
+    trades = DATA_DIR / domain / "trades"
+    markets = DATA_DIR / domain / "markets"
+    return any(trades.glob("*.parquet")) and any(markets.glob("*.parquet"))
 
 
 def _polymarket_ready() -> bool:
-    if not DOWNLOAD_SENTINEL.exists():
-        return False
-    trades = DATA_DIR / "polymarket" / "trades"
-    markets = DATA_DIR / "polymarket" / "markets"
-    return any(trades.glob("*.parquet")) and any(markets.glob("*.parquet"))
+    return _domain_ready("polymarket")
 
 
 def _kalshi_ready() -> bool:
-    if not DOWNLOAD_SENTINEL.exists():
-        return False
-    trades = DATA_DIR / "kalshi" / "trades"
-    markets = DATA_DIR / "kalshi" / "markets"
-    return any(trades.glob("*.parquet")) and any(markets.glob("*.parquet"))
+    return _domain_ready("kalshi")
 
 
 def _analysis_domain(cls: type) -> str:
@@ -184,8 +181,8 @@ def list_markets(limit: int = 50, min_trades: int = 1000) -> list[dict]:
         raise HTTPException(status_code=404, detail="data/ directory not found; run make setup")
     if not _polymarket_ready():
         raise HTTPException(
-            status_code=503,
-            detail="Polymarket data is still downloading or not yet available. Try again in a few minutes.",
+            status_code=404,
+            detail="Polymarket parquet data not found under data/polymarket/. Upload it (e.g. via rsync over Render Shell) before using this endpoint.",
         )
     return list_top_markets(DATA_DIR, limit=limit, min_trades=min_trades)
 
