@@ -35,4 +35,4 @@ COPY scripts/ ./scripts/
 COPY --from=frontend /build/dist ./web/frontend/dist
 
 EXPOSE 8000
-CMD ["sh", "-c", "uv run --no-sync uvicorn web.server:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["bash", "scripts/start.sh"]

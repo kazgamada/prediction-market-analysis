@@ -6,7 +6,6 @@ services:
     plan: starter
     healthCheckPath: /api/analyses
     autoDeploy: true
-    preDeployCommand: bash scripts/download.sh
     disk:
       name: data
       mountPath: /app/data
