@@ -20,7 +20,13 @@ from nautilus_trader.model.objects import Money
 from src.trading.data import load_trade_dicts
 from src.trading.instrument import build_binary_option
 from src.trading.risk import RiskLimits, RiskManager
+from src.trading.strategies.calibration_fade import (
+    CalibrationFadeConfig,
+    CalibrationFadeStrategy,
+)
 from src.trading.strategies.threshold import ThresholdConfig, ThresholdStrategy
+
+SUPPORTED_STRATEGIES = ("threshold", "calibration_fade")
 
 
 @dataclass
@@ -33,12 +39,23 @@ class BacktestParams:
     start: str | None = None
     end: str | None = None
     starting_cash: float = 1000.0
+    strategy: str = "threshold"
     buy_below: float = 0.10
     sell_above: float = 0.50
+    calibration_points: list[list[float]] | None = None
+    min_edge: float = 0.05
     max_order_pct: float = 0.05
     max_position_pct: float = 0.20
     max_daily_loss_pct: float = 0.10
     tick_limit: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.strategy not in SUPPORTED_STRATEGIES:
+            raise ValueError(
+                f"strategy must be one of {SUPPORTED_STRATEGIES}, got {self.strategy!r}"
+            )
+        if self.strategy == "calibration_fade" and not self.calibration_points:
+            raise ValueError("calibration_fade requires calibration_points")
 
 
 @dataclass
@@ -125,14 +142,25 @@ def run_backtest(params: BacktestParams, data_dir: Path | str) -> BacktestResult
         starting_cash=params.starting_cash,
     )
 
-    strategy = ThresholdStrategy(
-        config=ThresholdConfig(
-            instrument_id=instrument.id,
-            buy_below=params.buy_below,
-            sell_above=params.sell_above,
-        ),
-        risk=risk,
-    )
+    if params.strategy == "calibration_fade":
+        points = tuple((float(p[0]), float(p[1])) for p in params.calibration_points or ())
+        strategy = CalibrationFadeStrategy(
+            config=CalibrationFadeConfig(
+                instrument_id=instrument.id,
+                calibration_points=points,
+                min_edge=params.min_edge,
+            ),
+            risk=risk,
+        )
+    else:
+        strategy = ThresholdStrategy(
+            config=ThresholdConfig(
+                instrument_id=instrument.id,
+                buy_below=params.buy_below,
+                sell_above=params.sell_above,
+            ),
+            risk=risk,
+        )
     engine.add_strategy(strategy)
 
     engine.run()

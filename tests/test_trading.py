@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import pytest
 
+from src.trading.backtest import BacktestParams
 from src.trading.instrument import build_binary_option
 from src.trading.risk import RiskLimits, RiskManager
+from src.trading.strategies.calibration_fade import interpolate_actual
 
 
 def test_risk_limits_validates_range():
@@ -46,3 +48,42 @@ def test_build_binary_option_constructs_without_api():
     )
     assert inst.id is not None
     assert "12345" in str(inst.id)
+
+
+def test_interpolate_actual_clamps_endpoints_and_lerps_between():
+    points = ((0.10, 0.05), (0.50, 0.55), (0.90, 0.92))
+    # below first point → first y
+    assert interpolate_actual(0.05, points) == pytest.approx(0.05)
+    # above last point → last y
+    assert interpolate_actual(0.99, points) == pytest.approx(0.92)
+    # exactly on a knot
+    assert interpolate_actual(0.50, points) == pytest.approx(0.55)
+    # midpoint between first and second: (0.05 + 0.55) / 2
+    assert interpolate_actual(0.30, points) == pytest.approx(0.30)
+
+
+def test_interpolate_actual_empty_raises():
+    with pytest.raises(ValueError):
+        interpolate_actual(0.5, ())
+
+
+def test_backtest_params_rejects_unknown_strategy():
+    with pytest.raises(ValueError):
+        BacktestParams(
+            condition_id="c", token_id="t", question="q", strategy="bogus",
+        )
+
+
+def test_backtest_params_calibration_fade_requires_points():
+    with pytest.raises(ValueError):
+        BacktestParams(
+            condition_id="c", token_id="t", question="q",
+            strategy="calibration_fade",
+        )
+    # ok with points
+    params = BacktestParams(
+        condition_id="c", token_id="t", question="q",
+        strategy="calibration_fade",
+        calibration_points=[[0.1, 0.05], [0.9, 0.92]],
+    )
+    assert params.strategy == "calibration_fade"

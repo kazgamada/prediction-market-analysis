@@ -184,11 +184,16 @@ def _run_backtest_job(job_id: str, params: BacktestParams) -> None:
 
 @app.post("/api/backtests")
 def start_backtest(payload: dict) -> dict:
-    required = {
+    base = {
         "condition_id", "token_id", "question",
-        "starting_cash", "buy_below", "sell_above",
+        "starting_cash",
         "max_order_pct", "max_position_pct", "max_daily_loss_pct",
     }
+    strategy = payload.get("strategy", "threshold")
+    if strategy == "calibration_fade":
+        required = base | {"calibration_points", "min_edge"}
+    else:
+        required = base | {"buy_below", "sell_above"}
     missing = required - payload.keys()
     if missing:
         raise HTTPException(status_code=422, detail=f"Missing fields: {sorted(missing)}")
