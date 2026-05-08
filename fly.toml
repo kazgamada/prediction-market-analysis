@@ -8,9 +8,6 @@ primary_region = 'nrt'
 
 [build]
 
-[deploy]
-  release_command = 'alembic upgrade head'
-
 [env]
   PYTHONUNBUFFERED = '1'
   STREAMLIT_BROWSER_GATHER_USAGE_STATS = 'false'
@@ -44,3 +41,8 @@ primary_region = 'nrt'
   size = 'shared-cpu-1x'
   memory = '512mb'
   processes = ['monitor']
+
+# Note: alembic migrations run at machine boot via the [processes] commands
+# (web / monitor / paper / live) so the deploy completes even before Postgres
+# is attached. Once you `fly postgres attach`, the next machine restart picks
+# up DATABASE_URL and the migration runs cleanly.
