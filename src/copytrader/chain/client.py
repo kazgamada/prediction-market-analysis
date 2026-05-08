@@ -14,6 +14,7 @@ from copytrader.chain.contracts import (
     ORDER_FILLED_ABI,
     ORDER_FILLED_TOPIC,
 )
+from copytrader.chain.errors import wrap_rpc_errors
 from copytrader.config import get_settings
 
 
@@ -32,12 +33,15 @@ class PolygonClient:
             for name, addr in EXCHANGES.items()
         }
 
+    @wrap_rpc_errors
     def block_number(self) -> int:
         return self.w3.eth.block_number
 
+    @wrap_rpc_errors
     def block_timestamp(self, block_number: int) -> int:
         return self.w3.eth.get_block(block_number)["timestamp"]
 
+    @wrap_rpc_errors
     def get_order_filled_logs(
         self,
         from_block: int,
