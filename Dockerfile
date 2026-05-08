@@ -20,5 +20,8 @@ COPY alembic ./alembic
 
 RUN pip install --upgrade pip && pip install .
 
-# Default: run the live monitor (read-only). Override with `paper` or `live`.
+EXPOSE 8501
+
+# Default: run the live monitor (read-only). Override via Fly process groups
+# (web/monitor/paper/live in fly.toml) or `docker run ... <cmd>`.
 CMD ["copytrader", "monitor"]

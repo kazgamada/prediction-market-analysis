@@ -15,7 +15,24 @@ services:
       timeout: 5s
       retries: 5
 
-  bot:
+  web:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://copytrader:copytrader@postgres:5432/copytrader
+      STREAMLIT_SERVER_PORT: "8501"
+      STREAMLIT_SERVER_ADDRESS: "0.0.0.0"
+      STREAMLIT_SERVER_HEADLESS: "true"
+      STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+    ports:
+      - "8501:8501"
+    command: >
+      sh -c "alembic upgrade head && streamlit run src/copytrader/web/app.py"
+
+  monitor:
     build: .
     depends_on:
       postgres:

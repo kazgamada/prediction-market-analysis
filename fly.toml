@@ -1,10 +1,12 @@
-# Fly.io app for the live monitor.
-# Deploy:
-#   fly launch --copy-config --no-deploy   # first time
-#   fly postgres create --name copytrader-db
-#   fly postgres attach copytrader-db
-#   fly secrets set POLYGON_RPC_HTTP=... POLYGON_RPC_WS=...
-#   fly deploy
+# Fly.io config for the polymarket-copytrader UI + monitor.
+#
+# Two processes:
+#   web      — Streamlit admin UI on port 8501 (public via http_service)
+#   monitor  — long-running OrderFilled subscriber + signal emitter
+#
+# Add `paper` or `live` processes by uncommenting the corresponding line below
+# and giving them their own [[vm]] block.
+
 app = "polymarket-copytrader"
 primary_region = "nrt"
 
@@ -12,11 +14,45 @@ primary_region = "nrt"
 
 [env]
   PYTHONUNBUFFERED = "1"
+  STREAMLIT_SERVER_PORT = "8501"
+  STREAMLIT_SERVER_ADDRESS = "0.0.0.0"
+  STREAMLIT_SERVER_HEADLESS = "true"
+  STREAMLIT_BROWSER_GATHER_USAGE_STATS = "false"
 
 [processes]
+  web     = "sh -c 'alembic upgrade head && streamlit run src/copytrader/web/app.py'"
   monitor = "sh -c 'alembic upgrade head && copytrader monitor'"
-  # paper   = "sh -c 'alembic upgrade head && copytrader paper --copy-usd 5'"
-  # live    = "sh -c 'alembic upgrade head && copytrader live --copy-usd 5 --i-understand-the-risk'"
+  # paper = "sh -c 'alembic upgrade head && copytrader paper --copy-usd 5'"
+  # live  = "sh -c 'alembic upgrade head && copytrader live --copy-usd 5 --i-understand-the-risk'"
+
+[[services]]
+  processes = ["web"]
+  protocol = "tcp"
+  internal_port = 8501
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+    force_https = true
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 50
+    soft_limit = 25
+
+  [[services.tcp_checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "30s"
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1
+  processes = ["web"]
 
 [[vm]]
   memory = "512mb"
