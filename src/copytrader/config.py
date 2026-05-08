@@ -1,7 +1,26 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _normalize_db_url(url: str) -> str:
+    """Rewrite ``postgres://`` / ``postgresql://`` to ``postgresql+psycopg://``.
+
+    Fly.io's Postgres attach sets DATABASE_URL as ``postgres://...``; SQLAlchemy
+    2.x + psycopg3 require an explicit driver suffix.
+    """
+    if not url:
+        return url
+    if url.startswith("postgresql+psycopg://"):
+        return url
+    if url.startswith("postgresql+"):
+        return url
+    if url.startswith("postgresql://"):
+        return "postgresql+psycopg://" + url[len("postgresql://") :]
+    if url.startswith("postgres://"):
+        return "postgresql+psycopg://" + url[len("postgres://") :]
+    return url
 
 
 class Settings(BaseSettings):
@@ -27,6 +46,11 @@ class Settings(BaseSettings):
     telegram_chat_id: str = Field(default="")
 
     polymarket_start_block: int = Field(default=33605403)
+
+    @field_validator("database_url", mode="after")
+    @classmethod
+    def _normalize(cls, v: str) -> str:
+        return _normalize_db_url(v)
 
 
 @lru_cache
