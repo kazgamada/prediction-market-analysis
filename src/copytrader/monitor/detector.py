@@ -96,8 +96,17 @@ async def emit_signal(trade: DecodedTrade, wallet: str, on_signal: SignalHandler
         await on_signal(sig)
 
 
-async def run(on_signal: SignalHandler | None = None) -> None:
-    """Run the live monitor: subscribe, persist trades, emit signals on matches."""
+async def run(
+    on_signal: SignalHandler | None = None,
+    periodic_tasks: list[tuple[str, float, Callable[[], Awaitable[None]]]] | None = None,
+) -> None:
+    """Run the live monitor: subscribe, persist trades, emit signals on matches.
+
+    `periodic_tasks` is a list of (name, interval_seconds, async_callable) tuples
+    co-scheduled in the same task group; failures don't kill the monitor.
+    """
+    from copytrader.runtime.scheduler import run_every
+
     detector = WatchlistDetector()
 
     async def handle(trade: DecodedTrade) -> None:
@@ -109,3 +118,5 @@ async def run(on_signal: SignalHandler | None = None) -> None:
     async with asyncio.TaskGroup() as tg:
         tg.create_task(detector.refresh_loop())
         tg.create_task(subscribe_logs(handle))
+        for name, interval, fn in periodic_tasks or []:
+            tg.create_task(run_every(name, interval, fn))

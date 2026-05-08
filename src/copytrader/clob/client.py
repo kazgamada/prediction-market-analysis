@@ -166,3 +166,20 @@ class ClobClient:
         except Exception as e:
             log.warning("cancel_all failed: %s", e)
             return False
+
+    def get_order(self, order_id: str) -> dict | None:
+        try:
+            return self._ensure().get_order(order_id)
+        except Exception as e:
+            log.warning("get_order failed id=%s err=%s", order_id, e)
+            return None
+
+    def get_trades(self, order_id: str | None = None) -> list[dict]:
+        try:
+            sdk = self._ensure()
+            if order_id:
+                return list(sdk.get_trades({"id": order_id}) or [])
+            return list(sdk.get_trades() or [])
+        except Exception as e:
+            log.warning("get_trades failed: %s", e)
+            return []

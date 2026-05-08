@@ -29,3 +29,20 @@ ORDER_FILLED_ABI = {
 
 USDC_DECIMALS = 6
 TOKEN_DECIMALS = 6  # CTF outcome tokens use 6 decimals on Polymarket
+
+# Gnosis Conditional Tokens Framework on Polygon (used for outcome ERC-1155 balances)
+CONDITIONAL_TOKENS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+
+CTF_BALANCE_OF_ABI = [
+    {
+        "constant": True,
+        "inputs": [
+            {"name": "account", "type": "address"},
+            {"name": "id", "type": "uint256"},
+        ],
+        "name": "balanceOf",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    }
+]

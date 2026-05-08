@@ -331,7 +331,23 @@ def live(
                 f"@ {order.limit_price} status={order.status} clob={order.clob_order_id}"
             )
 
-    asyncio.run(monitor_run(on_signal=on_signal))
+    # Periodic background tasks: order status poll + on-chain reconcile
+    from decimal import Decimal
+
+    from copytrader.executor.poller import poll_open_orders
+    from copytrader.executor.reconciler import reconcile_live
+
+    async def poll_task():
+        await asyncio.to_thread(poll_open_orders, trader._clob)
+
+    async def reconcile_task():
+        await asyncio.to_thread(reconcile_live, trader.state, Decimal("0.5"), True)
+
+    periodic = [
+        ("poller", 30.0, poll_task),
+        ("reconciler", 300.0, reconcile_task),
+    ]
+    asyncio.run(monitor_run(on_signal=on_signal, periodic_tasks=periodic))
 
 
 # -----------------------------
@@ -396,6 +412,82 @@ def status() -> None:
                     (r.detail or "")[:80],
                 )
             console.print(r_table)
+
+
+@cli.command()
+@click.option("--no-trip", is_flag=True, help="Log mismatches but do not flip the killswitch")
+def reconcile(no_trip: bool) -> None:
+    """One-shot: compare DB live positions vs on-chain CTF balances."""
+    from copytrader.executor.reconciler import reconcile_live
+    from copytrader.risk.limits import RiskState
+
+    state = RiskState()
+    diffs = reconcile_live(state=state, trip_on_mismatch=not no_trip)
+    if not diffs:
+        console.print("[green]all live positions match on-chain")
+        return
+    table = Table(title="Reconcile mismatches")
+    for c in ("token", "expected", "actual", "diff"):
+        table.add_column(c, justify="right")
+    for d in diffs:
+        table.add_row(d.token_id[:14], f"{d.expected}", f"{d.actual}", f"{d.diff}")
+    console.print(table)
+    if state.halted:
+        console.print(f"[red]killswitch tripped: {state.halt_reason}")
+
+
+@cli.command()
+def poll() -> None:
+    """One-shot: refresh status of open live orders from the CLOB."""
+    from copytrader.executor.poller import poll_open_orders
+
+    n = poll_open_orders()
+    console.print(f"[green]polled and updated {n} orders")
+
+
+@cli.command()
+@click.argument("address")
+@click.option("--window", type=int, default=30)
+@click.option("--limit", type=int, default=20)
+def inspect(address: str, window: int, limit: int) -> None:
+    """Inspect a wallet's per-token PnL and recent activity."""
+    from copytrader.analysis.wallets import stats
+
+    rows = stats(address, window_days=window)
+    if not rows:
+        console.print(f"[yellow]no trades for {address} in last {window}d")
+        return
+    table = Table(title=f"{address.lower()} ({window}d)")
+    for c in ("token", "n", "PnL $", "net USDC", "net tokens", "mark", "last"):
+        table.add_column(c, justify="right")
+    total = 0.0
+    for r in rows[:limit]:
+        total += r.pnl_usd
+        last_str = r.last_trade_at.strftime("%m-%d %H:%M") if r.last_trade_at else "-"
+        table.add_row(
+            r.token_id[:14],
+            str(r.n_trades),
+            f"{r.pnl_usd:,.2f}",
+            f"{r.net_usdc:,.2f}",
+            f"{r.net_tokens:,.2f}",
+            f"{r.mark_price:.3f}",
+            last_str,
+        )
+    console.print(table)
+    console.print(f"[bold]total displayed PnL: ${total:,.2f}  (rows: {min(limit, len(rows))}/{len(rows)})")
+
+
+@cli.command()
+def balance() -> None:
+    """Show on-chain USDC and CTF balances for the configured wallet."""
+    from copytrader.clob.client import ClobClient
+
+    client = ClobClient(signed=True)
+    info = client.balance_allowance()
+    if info is None:
+        console.print("[red]could not read balance; check WALLET creds")
+        return
+    console.print(info)
 
 
 def main() -> None:
