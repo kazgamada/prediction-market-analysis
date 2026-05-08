@@ -7,7 +7,7 @@
 # Add `paper` or `live` processes by uncommenting the line below and adding a
 # matching [[vm]] block.
 
-app = "polymarket-copytrader"
+app = "prediction-market-analysis"
 primary_region = "nrt"
 
 [build]

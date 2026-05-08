@@ -21,7 +21,7 @@
 
 set -euo pipefail
 
-APP="${APP:-polymarket-copytrader}"
+APP="${APP:-prediction-market-analysis}"
 REGION="${REGION:-nrt}"
 
 if ! command -v fly >/dev/null 2>&1 && ! command -v flyctl >/dev/null 2>&1; then
