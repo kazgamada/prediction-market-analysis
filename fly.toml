@@ -1,0 +1,28 @@
+# Fly.io app for the live monitor.
+# Deploy:
+#   fly launch --copy-config --no-deploy   # first time
+#   fly postgres create --name copytrader-db
+#   fly postgres attach copytrader-db
+#   fly secrets set POLYGON_RPC_HTTP=... POLYGON_RPC_WS=...
+#   fly deploy
+app = "polymarket-copytrader"
+primary_region = "nrt"
+
+[build]
+
+[env]
+  PYTHONUNBUFFERED = "1"
+
+[processes]
+  monitor = "sh -c 'alembic upgrade head && copytrader monitor'"
+  # paper   = "sh -c 'alembic upgrade head && copytrader paper --copy-usd 5'"
+  # live    = "sh -c 'alembic upgrade head && copytrader live --copy-usd 5 --i-understand-the-risk'"
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
+  processes = ["monitor"]
+
+[deploy]
+  release_command = "alembic upgrade head"
