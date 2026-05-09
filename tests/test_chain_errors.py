@@ -38,3 +38,29 @@ def test_to_rpc_error_passthrough_for_non_http():
     err = to_rpc_error(ValueError("query returned more than 10000 results: too large"))
     # 「too large」検出が iter_logs の自動分割で機能し続けることを保証する。
     assert "too large" in str(err).lower()
+
+
+class _FakeResponse:
+    def __init__(self, status_code: int, payload: dict):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = str(payload)
+
+    def json(self) -> dict:
+        return self._payload
+
+
+def test_to_rpc_error_includes_jsonrpc_body_message():
+    body_msg = "Log response size exceeded. You can make eth_getLogs requests with..."
+    exc = Exception(
+        "400 Client Error: Bad Request for url: "
+        "https://polygon-mainnet.g.alchemy.com/v2/SECRETKEY"
+    )
+    exc.response = _FakeResponse(  # type: ignore[attr-defined]
+        400, {"jsonrpc": "2.0", "id": 1, "error": {"code": -32600, "message": body_msg}}
+    )
+    err = to_rpc_error(exc)
+    s = str(err)
+    assert "SECRETKEY" not in s
+    assert "Log response size exceeded" in s
+    assert "HTTP 400" in s

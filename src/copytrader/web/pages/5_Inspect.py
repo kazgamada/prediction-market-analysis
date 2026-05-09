@@ -8,11 +8,27 @@ import streamlit as st
 from copytrader.analysis.wallets import stats
 
 st.title("Inspect wallet")
+st.caption(
+    "1 つのウォレットを深掘り。トークン別の取引数・PnL・ネット保有量・最新取引時刻を一覧化します。Rank で気になったアドレスをここで確認。"
+)
 
 with st.form("inspect_form"):
-    addr = st.text_input("Wallet address (0x…)")
-    window = st.number_input("Window (days)", value=30, min_value=1, max_value=365)
-    run = st.form_submit_button("Inspect", type="primary")
+    addr = st.text_input(
+        "Wallet address (0x…)",
+        help="調査対象ウォレットのアドレス。0x で始まる 42 文字 hex。",
+    )
+    window = st.number_input(
+        "Window (days)",
+        value=30,
+        min_value=1,
+        max_value=365,
+        help="集計期間 (日数)。例: 30 なら過去 30 日の trade のみで PnL を算出。",
+    )
+    run = st.form_submit_button(
+        "Inspect",
+        type="primary",
+        help="このアドレスのトークン別 PnL を計算・表示します。",
+    )
 
 if run and addr:
     with st.spinner("aggregating…"):

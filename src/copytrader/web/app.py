@@ -53,14 +53,27 @@ def main() -> None:
 
     s = get_settings()
     cols = st.columns(4)
-    cols[0].metric("Polygon HTTP", "set" if s.polygon_rpc_http else "missing")
-    cols[1].metric("Polygon WS", "set" if s.polygon_rpc_ws else "missing")
-    cols[2].metric("CLOB API", "set" if s.polymarket_api_key else "missing")
+    cols[0].metric(
+        "Polygon HTTP",
+        "set" if s.polygon_rpc_http else "missing",
+        help="Polygon の HTTP RPC エンドポイント (POLYGON_RPC_HTTP)。eth_getLogs などのオンチェーン読み取りに使用。",
+    )
+    cols[1].metric(
+        "Polygon WS",
+        "set" if s.polygon_rpc_ws else "missing",
+        help="Polygon の WebSocket RPC (POLYGON_RPC_WS)。ライブモードのリアルタイム購読に使用。",
+    )
+    cols[2].metric(
+        "CLOB API",
+        "set" if s.polymarket_api_key else "missing",
+        help="Polymarket CLOB API キー。ライブ発注に必要。リサーチだけなら未設定でよい。",
+    )
     cols[3].metric(
         "Wallet",
         "EOA"
         if s.wallet_private_key and not s.wallet_proxy_address
         else ("proxy" if s.wallet_proxy_address else "missing"),
+        help="発注ウォレット種別。EOA=直の秘密鍵 / proxy=Safe等のプロキシ。ライブモードで必要。",
     )
 
     st.markdown(

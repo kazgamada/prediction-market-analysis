@@ -47,17 +47,43 @@ def _http_status(exc: BaseException) -> int | None:
     return None
 
 
+def _response_body(exc: BaseException) -> str | None:
+    """`requests.HTTPError` の応答本文を JSON-RPC エラーまで掘って取り出す。"""
+    resp = getattr(exc, "response", None)
+    if resp is None:
+        return None
+    try:
+        data = resp.json()
+    except Exception:
+        text = getattr(resp, "text", None)
+        return text.strip() if isinstance(text, str) and text.strip() else None
+    if isinstance(data, dict):
+        err = data.get("error")
+        if isinstance(err, dict):
+            msg = err.get("message")
+            if isinstance(msg, str) and msg:
+                return msg
+        if isinstance(data.get("message"), str):
+            return data["message"]
+    return str(data)
+
+
 def to_rpc_error(exc: BaseException) -> RpcError:
     raw = redact_rpc_url(str(exc))
+    body = _response_body(exc)
+    body_redacted = redact_rpc_url(body) if body else None
     status = _http_status(exc)
     if status in (400, 401, 403):
         # Alchemy は無効なキーや存在しないアプリに対して 400 を返す。
         # 401/403 は明確な認証エラー。いずれもユーザーが対処可能な情報を出す。
+        detail = body_redacted or raw
         return RpcError(
             f"RPC provider rejected the request (HTTP {status}). "
             "POLYGON_RPC_HTTP の API キー / プラン上限 / アプリ設定を確認してください。"
-            f" 詳細: {raw}"
+            f" 詳細: {detail}"
         )
+    if body_redacted and body_redacted not in raw:
+        return RpcError(f"{raw} | body: {body_redacted}")
     return RpcError(raw)
 
 

@@ -70,8 +70,8 @@ class PolygonClient:
         from_block: int,
         to_block: int,
         exchange: str,
-        chunk_size: int = 1000,
-        max_workers: int = 5,
+        chunk_size: int = 2000,
+        max_workers: int = 10,
     ) -> Generator[tuple[list[dict], int, int], None, None]:
         ranges: list[tuple[int, int]] = []
         cur = from_block

@@ -12,6 +12,10 @@ from copytrader.db import session_scope
 from copytrader.models import Order, Position, RiskEvent, Signal, Trade, Wallet
 
 st.title("Status")
+st.caption(
+    "現在の運用状態スナップショット。インデックス済み trade 数、検出済みシグナル、発注、ウォッチリスト、最新の取り込み時刻、"
+    "オープンポジションと直近のリスクイベントを一覧で確認できます。"
+)
 
 with session_scope() as session:
     n_trades = session.execute(select(func.count()).select_from(Trade)).scalar() or 0
@@ -87,15 +91,39 @@ with session_scope() as session:
     ]
 
 c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Trades indexed", f"{n_trades:,}")
-c2.metric("Signals", f"{n_signals:,}")
-c3.metric("Orders", f"{n_orders:,}")
-c4.metric("Watchlisted", f"{n_watch:,}")
+c1.metric(
+    "Trades indexed",
+    f"{n_trades:,}",
+    help="trades テーブルに保存済みの OrderFilled イベント件数。Backfill / 監視で増加します。",
+)
+c2.metric(
+    "Signals",
+    f"{n_signals:,}",
+    help="ウォッチリスト対象ウォレットの取引から生成された累計シグナル数。",
+)
+c3.metric(
+    "Orders",
+    f"{n_orders:,}",
+    help="ペーパーまたはライブモードでこのアプリが発注した累計注文数。",
+)
+c4.metric(
+    "Watchlisted",
+    f"{n_watch:,}",
+    help="現在ウォッチリスト登録中のウォレット数。Rank / Watchlist ページで増減できます。",
+)
 if last_trade_ts:
     age = datetime.now(timezone.utc) - last_trade_ts
-    c5.metric("Last trade", f"{int(age.total_seconds()//60)}m ago")
+    c5.metric(
+        "Last trade",
+        f"{int(age.total_seconds()//60)}m ago",
+        help="最新の取り込み済み trade の経過時間。古すぎる場合は monitor が止まっている可能性。",
+    )
 else:
-    c5.metric("Last trade", "never")
+    c5.metric(
+        "Last trade",
+        "never",
+        help="まだ trade を 1 件も取り込んでいません。Actions ページで Backfill を実行してください。",
+    )
 
 st.subheader("Open positions")
 st.dataframe(pd.DataFrame(pos_rows) if pos_rows else pd.DataFrame(), use_container_width=True)
@@ -109,5 +137,5 @@ st.dataframe(pd.DataFrame(order_rows) if order_rows else pd.DataFrame(), use_con
 st.subheader("Recent risk events")
 st.dataframe(pd.DataFrame(risk_rows) if risk_rows else pd.DataFrame(), use_container_width=True)
 
-if st.button("Refresh"):
+if st.button("Refresh", help="DB から最新の値を取り直してこのページを再描画します。"):
     st.rerun()
