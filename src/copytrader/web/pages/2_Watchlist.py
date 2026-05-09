@@ -10,7 +10,9 @@ from copytrader.db import session_scope
 from copytrader.models import Wallet
 from copytrader.monitor.watchlist import add as wl_add
 from copytrader.monitor.watchlist import remove as wl_remove
+from copytrader.web.nav import render_sidebar_menu_help
 
+render_sidebar_menu_help()
 st.title("Watchlist")
 st.caption(
     "監視対象ウォレットの管理。ここに追加されたウォレットの取引が monitor によって追跡され、シグナル化されます。"

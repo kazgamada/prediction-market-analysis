@@ -9,7 +9,10 @@ from sqlalchemy import select
 from copytrader.backtest.replay import replay_with_delays
 from copytrader.db import session_scope
 from copytrader.models import Wallet
+from copytrader.web.logs import run_with_live_logs
+from copytrader.web.nav import render_sidebar_menu_help
 
+render_sidebar_menu_help()
 st.title("Replay backtest")
 st.caption(
     "選択したウォレットの過去シグナルを、コピー遅延 (秒) を変えて再現発注し PnL を比較します。"
@@ -86,14 +89,15 @@ if run:
         st.warning("no wallets selected")
         st.stop()
 
-    with st.spinner(f"replaying {len(wallets)} wallets × {len(delays)} delays…"):
-        results = replay_with_delays(
-            wallets,
-            delays,
-            window_days=int(window),
-            copy_size_usd=float(copy_usd),
-            slippage_bps=int(slippage_bps),
-        )
+    results = run_with_live_logs(
+        f"replaying {len(wallets)} wallets × {len(delays)} delays",
+        replay_with_delays,
+        wallets,
+        delays,
+        window_days=int(window),
+        copy_size_usd=float(copy_usd),
+        slippage_bps=int(slippage_bps),
+    )
 
     summary = []
     for d, rows in results.items():

@@ -15,6 +15,7 @@ import os
 import streamlit as st
 
 from copytrader.config import get_settings
+from copytrader.web.nav import render_sidebar_menu_help
 
 st.set_page_config(
     page_title="polymarket-copytrader",
@@ -31,8 +32,12 @@ def _gate() -> bool:
     if st.session_state.get("auth_ok"):
         return True
     with st.sidebar:
-        pw = st.text_input("Password", type="password")
-        if st.button("Enter"):
+        pw = st.text_input(
+            "Password",
+            type="password",
+            help="WEB_PASSWORD で設定した共有シークレット。空欄ならゲートを無効化できます (本番では必須)。",
+        )
+        if st.button("Enter", help="入力したパスワードで認証してこの UI を解錠します。"):
             if pw == expected:
                 st.session_state["auth_ok"] = True
                 st.rerun()
@@ -44,6 +49,7 @@ def _gate() -> bool:
 
 def main() -> None:
     _gate()
+    render_sidebar_menu_help()
 
     st.title(":chart_with_upwards_trend: polymarket-copytrader")
     st.caption(
