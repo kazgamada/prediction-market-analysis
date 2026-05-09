@@ -6,7 +6,10 @@ import pandas as pd
 import streamlit as st
 
 from copytrader.ranking.pnl import persist_ranking, rank_wallets
+from copytrader.web.logs import run_with_live_logs
+from copytrader.web.nav import render_sidebar_menu_help
 
+render_sidebar_menu_help()
 st.title("Rank")
 st.caption(
     "過去の trade からウォレット別の PnL・勝率・スコアを集計し、ランキング化します。Top N を選んで watchlist に自動投入も可能。"
@@ -61,13 +64,14 @@ with st.form("rank_form"):
     )
 
 if run:
-    with st.spinner("aggregating per-wallet PnL…"):
-        stats = rank_wallets(
-            window_days=int(window),
-            min_trades=int(min_trades),
-            min_volume_usd=float(min_volume),
-            limit=int(limit),
-        )
+    stats = run_with_live_logs(
+        "aggregating per-wallet PnL",
+        rank_wallets,
+        window_days=int(window),
+        min_trades=int(min_trades),
+        min_volume_usd=float(min_volume),
+        limit=int(limit),
+    )
     if not stats:
         st.warning("no rows; check that backfill has populated trades")
     else:
@@ -88,7 +92,12 @@ if run:
         st.dataframe(df, use_container_width=True)
 
         if persist:
-            persist_ranking(stats, top_n_watchlist=int(top_n_watch))
+            run_with_live_logs(
+                "persisting wallet ranking to DB",
+                persist_ranking,
+                stats,
+                top_n_watchlist=int(top_n_watch),
+            )
             st.info(
                 f"persisted; top {int(top_n_watch)} marked watchlisted"
                 if top_n_watch

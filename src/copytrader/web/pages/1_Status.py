@@ -10,7 +10,9 @@ from sqlalchemy import func, select
 
 from copytrader.db import session_scope
 from copytrader.models import Order, Position, RiskEvent, Signal, Trade, Wallet
+from copytrader.web.nav import render_sidebar_menu_help
 
+render_sidebar_menu_help()
 st.title("Status")
 st.caption(
     "現在の運用状態スナップショット。インデックス済み trade 数、検出済みシグナル、発注、ウォッチリスト、最新の取り込み時刻、"

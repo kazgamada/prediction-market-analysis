@@ -6,7 +6,10 @@ import pandas as pd
 import streamlit as st
 
 from copytrader.analysis.wallets import stats
+from copytrader.web.logs import run_with_live_logs
+from copytrader.web.nav import render_sidebar_menu_help
 
+render_sidebar_menu_help()
 st.title("Inspect wallet")
 st.caption(
     "1 つのウォレットを深掘り。トークン別の取引数・PnL・ネット保有量・最新取引時刻を一覧化します。Rank で気になったアドレスをここで確認。"
@@ -31,8 +34,12 @@ with st.form("inspect_form"):
     )
 
 if run and addr:
-    with st.spinner("aggregating…"):
-        rows = stats(addr, window_days=int(window))
+    rows = run_with_live_logs(
+        f"aggregating per-token stats for {addr[:10]}…",
+        stats,
+        addr,
+        window_days=int(window),
+    )
     if not rows:
         st.warning("no trades for that wallet in the window")
     else:

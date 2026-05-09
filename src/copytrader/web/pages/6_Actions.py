@@ -5,7 +5,10 @@ from __future__ import annotations
 import streamlit as st
 
 from copytrader.config import get_settings
+from copytrader.web.logs import run_with_live_logs
+from copytrader.web.nav import render_sidebar_menu_help
 
+render_sidebar_menu_help()
 st.title("Actions")
 st.caption("One-shot maintenance operations. Long jobs run in this process; "
            "for production-scale backfills, run the corresponding CLI on a worker.")
@@ -54,20 +57,21 @@ with c1:
     ):
         from copytrader.indexer.backfill import backfill
 
-        with st.spinner("running backfill (this can take hours for full history)…"):
-            try:
-                fb = int(from_block_in) if from_block_in else None
-                tb = int(to_block_in) if to_block_in else None
-                saved = backfill(
-                    from_block=fb,
-                    to_block=tb,
-                    chunk_size=int(chunk_size),
-                    max_workers=int(max_workers),
-                    commit_every=int(commit_every),
-                )
-                st.success(f"saved {saved} new trades")
-            except Exception as e:
-                st.error(str(e))
+        try:
+            fb = int(from_block_in) if from_block_in else None
+            tb = int(to_block_in) if to_block_in else None
+            saved = run_with_live_logs(
+                "backfill (this can take hours for full history)",
+                backfill,
+                from_block=fb,
+                to_block=tb,
+                chunk_size=int(chunk_size),
+                max_workers=int(max_workers),
+                commit_every=int(commit_every),
+            )
+            st.success(f"saved {saved} new trades")
+        except Exception as e:
+            st.error(str(e))
 
 with c2:
     max_pages = st.number_input(
@@ -82,13 +86,16 @@ with c2:
     ):
         from copytrader.markets.gamma import sync_markets
 
-        with st.spinner("fetching market metadata…"):
-            try:
-                mp = int(max_pages) if max_pages > 0 else None
-                saved = sync_markets(max_pages=mp)
-                st.success(f"saved {saved} markets")
-            except Exception as e:
-                st.error(str(e))
+        try:
+            mp = int(max_pages) if max_pages > 0 else None
+            saved = run_with_live_logs(
+                "fetching market metadata from Gamma API",
+                sync_markets,
+                max_pages=mp,
+            )
+            st.success(f"saved {saved} markets")
+        except Exception as e:
+            st.error(str(e))
 
 st.divider()
 
@@ -110,7 +117,12 @@ with c3:
 
         try:
             state = RiskState()
-            diffs = reconcile_live(state=state, trip_on_mismatch=not no_trip)
+            diffs = run_with_live_logs(
+                "reconciling DB positions vs on-chain balances",
+                reconcile_live,
+                state=state,
+                trip_on_mismatch=not no_trip,
+            )
             if not diffs:
                 st.success("all live positions match on-chain")
             else:
@@ -137,7 +149,10 @@ with c4:
         from copytrader.executor.poller import poll_open_orders
 
         try:
-            n = poll_open_orders()
+            n = run_with_live_logs(
+                "polling open orders via CLOB API",
+                poll_open_orders,
+            )
             st.success(f"updated {n} orders")
         except Exception as e:
             st.error(str(e))
