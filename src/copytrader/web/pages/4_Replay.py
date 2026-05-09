@@ -11,6 +11,10 @@ from copytrader.db import session_scope
 from copytrader.models import Wallet
 
 st.title("Replay backtest")
+st.caption(
+    "選択したウォレットの過去シグナルを、コピー遅延 (秒) を変えて再現発注し PnL を比較します。"
+    "実取引せず Phase 0 の検証用。"
+)
 
 with session_scope() as session:
     candidates = (
@@ -31,15 +35,49 @@ score_by = {a: float(s) if s else 0.0 for a, s in candidates}
 
 with st.form("replay_form"):
     c1, c2, c3, c4 = st.columns(4)
-    window = c1.number_input("Window (days)", value=30, min_value=1, max_value=365)
-    delays_raw = c2.text_input("Delays (sec, csv)", value="30,60,120")
-    copy_usd = c3.number_input("Copy size USD", value=50.0, min_value=1.0)
-    slippage_bps = c4.number_input("Slippage bps", value=50, min_value=0, max_value=500)
-    top_n = st.number_input("Top N wallets to replay", value=20, min_value=1, max_value=200)
-    explicit = st.multiselect(
-        "Or pick wallets explicitly (overrides Top N)", options=addr_options, default=[]
+    window = c1.number_input(
+        "Window (days)",
+        value=30,
+        min_value=1,
+        max_value=365,
+        help="再現する過去期間 (日数)。trade テーブルからこの期間のシグナルを抽出します。",
     )
-    run = st.form_submit_button("Run replay", type="primary")
+    delays_raw = c2.text_input(
+        "Delays (sec, csv)",
+        value="30,60,120",
+        help="検出からコピー発注までの遅延候補 (秒)。CSV で複数指定すると並列に比較されます。",
+    )
+    copy_usd = c3.number_input(
+        "Copy size USD",
+        value=50.0,
+        min_value=1.0,
+        help="各シグナルに対するコピー注文サイズ (USD)。固定額でシミュレーションします。",
+    )
+    slippage_bps = c4.number_input(
+        "Slippage bps",
+        value=50,
+        min_value=0,
+        max_value=500,
+        help="想定スリッページ (1bps = 0.01%)。約定価格を保守的に悪化させて評価します。",
+    )
+    top_n = st.number_input(
+        "Top N wallets to replay",
+        value=20,
+        min_value=1,
+        max_value=200,
+        help="スコア上位のウォレットを何件まで再現するか。下のマルチセレクトを使うとこの値は無視されます。",
+    )
+    explicit = st.multiselect(
+        "Or pick wallets explicitly (overrides Top N)",
+        options=addr_options,
+        default=[],
+        help="個別にウォレットを選びたい場合に指定。1つ以上選ぶと Top N より優先されます。",
+    )
+    run = st.form_submit_button(
+        "Run replay",
+        type="primary",
+        help="バックテストを実行。ウォレット数 × 遅延数の組合せで集計します。少し時間がかかります。",
+    )
 
 if run:
     delays = [int(x.strip()) for x in delays_raw.split(",") if x.strip()]

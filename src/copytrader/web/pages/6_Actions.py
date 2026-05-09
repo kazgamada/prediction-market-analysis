@@ -17,10 +17,27 @@ if not s.polygon_rpc_http:
 st.subheader("Indexer")
 c1, c2 = st.columns(2)
 with c1:
-    chunk_size = st.number_input("Chunk size", value=1000, min_value=100, max_value=5000)
-    from_block_in = st.text_input("From block (blank = resume from cursor)", value="")
-    to_block_in = st.text_input("To block (blank = head)", value="")
-    if st.button("Run backfill"):
+    chunk_size = st.number_input(
+        "Chunk size",
+        value=1000,
+        min_value=100,
+        max_value=5000,
+        help="1 回の eth_getLogs で取りに行くブロック数。Alchemy 無料枠は 10 まで、PAYG なら 1000〜2000 推奨。",
+    )
+    from_block_in = st.text_input(
+        "From block (blank = resume from cursor)",
+        value="",
+        help="開始ブロック番号 (10進)。空欄なら ingest_cursors の続きから (なければ初期ブロックから) 再開します。",
+    )
+    to_block_in = st.text_input(
+        "To block (blank = head)",
+        value="",
+        help="終了ブロック番号 (10進)。空欄ならチェーンの最新ヘッドまで取得します。",
+    )
+    if st.button(
+        "Run backfill",
+        help="OrderFilled ログを DB に取り込みます。フル履歴は数時間〜半日。途中で止めても cursor から再開可能。",
+    ):
         from copytrader.indexer.backfill import backfill
 
         with st.spinner("running backfill (this can take hours for full history)…"):
@@ -33,8 +50,16 @@ with c1:
                 st.error(str(e))
 
 with c2:
-    max_pages = st.number_input("Max pages (0 = all)", value=0, min_value=0)
-    if st.button("Sync markets (Gamma API)"):
+    max_pages = st.number_input(
+        "Max pages (0 = all)",
+        value=0,
+        min_value=0,
+        help="Gamma API から取得するページ数の上限。0 で全件。動作確認だけなら 1〜2 で十分。",
+    )
+    if st.button(
+        "Sync markets (Gamma API)",
+        help="Polymarket の市場メタデータ (タイトル、token id 等) を取得し markets テーブルに保存します。",
+    ):
         from copytrader.markets.gamma import sync_markets
 
         with st.spinner("fetching market metadata…"):
@@ -51,8 +76,15 @@ st.subheader("Live mode maintenance")
 st.caption("These require WALLET creds and CLOB API to be set.")
 c3, c4 = st.columns(2)
 with c3:
-    no_trip = st.checkbox("Don't trip killswitch on mismatch", value=False)
-    if st.button("Reconcile on-chain"):
+    no_trip = st.checkbox(
+        "Don't trip killswitch on mismatch",
+        value=False,
+        help="ON にすると、不整合があってもキルスイッチを発動しません。診断用途で使用、本番では通常 OFF。",
+    )
+    if st.button(
+        "Reconcile on-chain",
+        help="DB に記録されたポジションとオンチェーンの実残高を突合し、ズレがあれば一覧表示します。",
+    ):
         from copytrader.executor.reconciler import reconcile_live
         from copytrader.risk.limits import RiskState
 
@@ -78,7 +110,10 @@ with c3:
             st.error(str(e))
 
 with c4:
-    if st.button("Poll open orders"):
+    if st.button(
+        "Poll open orders",
+        help="CLOB API でオープン中の自注文の状態を取得し、約定 / キャンセルを DB に反映します。",
+    ):
         from copytrader.executor.poller import poll_open_orders
 
         try:
