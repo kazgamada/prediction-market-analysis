@@ -19,15 +19,29 @@ c1, c2 = st.columns(2)
 with c1:
     chunk_size = st.number_input(
         "Chunk size",
-        value=1000,
+        value=2000,
         min_value=100,
         max_value=5000,
-        help="1 回の eth_getLogs で取りに行くブロック数。Alchemy 無料枠は 10 まで、PAYG なら 1000〜2000 推奨。",
+        help="1 回の eth_getLogs で取りに行くブロック数。Alchemy 無料枠は 10 まで、PAYG なら 2000 推奨。大きいほど高速だがプラン上限に注意。",
+    )
+    max_workers = st.number_input(
+        "Max workers",
+        value=10,
+        min_value=1,
+        max_value=30,
+        help="同時並列で投げる RPC リクエスト数。多いほど速いがレート制限に当たりやすい。PAYG なら 10〜20 が目安。",
+    )
+    commit_every = st.number_input(
+        "Commit every (chunks)",
+        value=5,
+        min_value=1,
+        max_value=50,
+        help="DB に書き込む単位。N 個のチャンクをまとめて 1 トランザクションで commit。大きいほど DB 負荷が下がる。",
     )
     from_block_in = st.text_input(
         "From block (blank = resume from cursor)",
         value="",
-        help="開始ブロック番号 (10進)。空欄なら ingest_cursors の続きから (なければ初期ブロックから) 再開します。",
+        help="開始ブロック番号 (10進)。空欄なら ingest_cursor の続きから (なければ初期ブロックから) 再開します。",
     )
     to_block_in = st.text_input(
         "To block (blank = head)",
@@ -36,7 +50,7 @@ with c1:
     )
     if st.button(
         "Run backfill",
-        help="OrderFilled ログを DB に取り込みます。フル履歴は数時間〜半日。途中で止めても cursor から再開可能。",
+        help="OrderFilled ログを DB に取り込みます。途中で止めても cursor から再開可能。",
     ):
         from copytrader.indexer.backfill import backfill
 
@@ -44,7 +58,13 @@ with c1:
             try:
                 fb = int(from_block_in) if from_block_in else None
                 tb = int(to_block_in) if to_block_in else None
-                saved = backfill(from_block=fb, to_block=tb, chunk_size=int(chunk_size))
+                saved = backfill(
+                    from_block=fb,
+                    to_block=tb,
+                    chunk_size=int(chunk_size),
+                    max_workers=int(max_workers),
+                    commit_every=int(commit_every),
+                )
                 st.success(f"saved {saved} new trades")
             except Exception as e:
                 st.error(str(e))
