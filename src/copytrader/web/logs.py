@@ -111,7 +111,7 @@ def run_with_live_logs(
             if worker.is_alive():
                 _stream_until_done(
                     label, worker, log_lines, log_lock, started,
-                    result_box, progress_fn,
+                    result_box, progress_fn, persist_key,
                 )
     finally:
         # drainer owns handler detach; do not detach here.
@@ -234,21 +234,31 @@ def _stream_until_done(
     started: float,
     result_box: dict[str, Any],
     progress_fn: ProgressFn | None,
+    persist_key: str | None,
 ) -> None:
     elapsed = time.monotonic() - started
     status = st.status(
         f"{label} — running… {elapsed:0.1f}s", expanded=True, state="running"
     )
     with status:
+        latest_line_box = st.empty()
         progress_box = st.empty() if progress_fn else None
-        placeholder = st.empty()
+        show_full = st.toggle(
+            "全ログを表示",
+            value=False,
+            key=_full_log_toggle_key(persist_key, label),
+            help="ON にすると、これまでの全ログを下に表示します (再訪問してもこのトグル状態は保持されます)。",
+        )
+        full_box = st.empty() if show_full else None
         last_progress_at = 0.0
         last_progress_text: str | None = None
         while worker.is_alive():
             elapsed = time.monotonic() - started
             with log_lock:
                 snapshot = list(log_lines[-_MAX_VISIBLE_LINES:])
-            placeholder.code(_body(snapshot), language="log")
+            _render_latest(latest_line_box, snapshot)
+            if show_full and full_box is not None:
+                full_box.code(_body(snapshot), language="log")
             if progress_box is not None and (elapsed - last_progress_at) >= 2.0:
                 last_progress_at = elapsed
                 try:
@@ -262,13 +272,26 @@ def _stream_until_done(
         elapsed = time.monotonic() - started
         with log_lock:
             snapshot = list(log_lines[-_MAX_VISIBLE_LINES:])
-        placeholder.code(_body(snapshot), language="log")
+        _render_latest(latest_line_box, snapshot)
+        if show_full and full_box is not None:
+            full_box.code(_body(snapshot), language="log")
     final_state = "error" if "error" in result_box else "complete"
     status.update(
         label=f"{label} — done in {elapsed:0.1f}s",
         state=final_state,
         expanded=True,
     )
+
+
+def _full_log_toggle_key(persist_key: str | None, label: str) -> str:
+    return f"_show_full__{persist_key or label}"
+
+
+def _render_latest(box: Any, lines: list[str]) -> None:
+    if not lines:
+        box.markdown("_(ログ出力待機中…)_")
+        return
+    box.code(lines[-1], language="log")
 
 
 def render_live_action(persist_key: str, *, expanded: bool = True) -> bool:
@@ -302,7 +325,19 @@ def render_live_action(persist_key: str, *, expanded: bool = True) -> bool:
             state="running",
         )
         with sb:
-            st.code(log_tail, language="log")
+            tail_lines = (log_tail or "").splitlines()
+            if tail_lines:
+                st.code(tail_lines[-1], language="log")
+            else:
+                st.markdown("_(ログ出力待機中…)_")
+            show_full = st.toggle(
+                "全ログを表示",
+                value=False,
+                key=_full_log_toggle_key(persist_key, label),
+                help="ON にすると、これまでの全ログを下に表示します。",
+            )
+            if show_full:
+                st.code(log_tail or "(empty)", language="log")
         return True
 
     icon = "✅" if rec.get("success") else ("❌" if rec.get("error") else "⚠️")
