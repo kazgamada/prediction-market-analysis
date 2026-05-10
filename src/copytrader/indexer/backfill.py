@@ -86,6 +86,11 @@ def _max_indexed_block(exchange: str) -> int | None:
         ).scalar()
 
 
+# Polygon は約 2 秒/block (1日あたりおよそ 43,200 ブロック)。
+# 30日分 ≈ 1.3M ブロックなので、catchup を直近 N 日分に限定すると現実的な時間で完走できる。
+POLYGON_BLOCKS_PER_DAY = 43_200
+
+
 def backfill(
     from_block: int | None = None,
     to_block: int | None = None,
@@ -93,6 +98,7 @@ def backfill(
     max_workers: int = 10,
     commit_every: int = 5,
     sample_block_ts: bool = True,
+    recent_days: int | None = None,
 ) -> int:
     """Backfill both CTF and NegRisk exchanges over a block range.
 
@@ -102,11 +108,19 @@ def backfill(
 
     `commit_every` 個のチャンクをまとめて DB にコミットするので、
     トランザクション数が 1/N に減り backfill が大幅に速くなる。
+
+    `recent_days` が指定された場合、`from_block` 未指定時の開始ブロックを
+    `max(cursor, head - recent_days * blocks_per_day)` に切り上げる。
+    古い履歴を諦めることで catchup を有限時間で完走できる。`from_block` を
+    明示的に渡せばこの制限は無視されるので、完全履歴も従来通り取り込める。
     """
     settings = get_settings()
     client = PolygonClient()
     head = client.block_number()
     end = to_block if to_block is not None else head
+    recent_floor: int | None = None
+    if from_block is None and recent_days is not None and recent_days > 0:
+        recent_floor = max(0, head - recent_days * POLYGON_BLOCKS_PER_DAY)
 
     log.info(
         "backfill to %s (head=%s) chunk=%s workers=%s commit_every=%s from_block=%s",
@@ -128,6 +142,12 @@ def backfill(
                 exch_start = max(known) + 1
             else:
                 exch_start = settings.polymarket_start_block
+            if recent_floor is not None and exch_start < recent_floor:
+                log.info(
+                    "exchange=%s skipping ancient blocks: %s -> %s (recent_days=%s)",
+                    exchange, exch_start, recent_floor, recent_days,
+                )
+                exch_start = recent_floor
         if exch_start > end:
             log.info("exchange=%s already up-to-date (cursor=%s end=%s)", exchange, exch_start - 1, end)
             continue

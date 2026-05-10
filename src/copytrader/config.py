@@ -47,6 +47,11 @@ class Settings(BaseSettings):
 
     polymarket_start_block: int = Field(default=33605403)
 
+    # auto-catchup backfill のスキップ閾値。head - (この日数 × Polygon の 1日ブロック数)
+    # より古いブロックは monitor の自動 catchup では取り込まずスキップする。
+    # 完全履歴が必要なら Actions ページから明示的に from_block を指定して手動実行する。
+    backfill_recent_days: int = Field(default=60)
+
     @field_validator("database_url", mode="after")
     @classmethod
     def _normalize(cls, v: str) -> str:
