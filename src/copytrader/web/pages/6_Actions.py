@@ -5,11 +5,17 @@ from __future__ import annotations
 import streamlit as st
 
 from copytrader.config import get_settings
-from copytrader.web.logs import run_with_live_logs
+from copytrader.web import state
+from copytrader.web.logs import (
+    render_live_action,
+    render_running_jobs_banner,
+    run_with_live_logs,
+)
 from copytrader.web.nav import render_sidebar_menu_help
 from copytrader.web.progress import backfill_progress_fn
 
 render_sidebar_menu_help()
+_any_running = render_running_jobs_banner()
 st.title("Actions")
 st.caption("One-shot maintenance operations. Long jobs run in this process; "
            "for production-scale backfills, run the corresponding CLI on a worker.")
@@ -18,38 +24,59 @@ s = get_settings()
 if not s.polygon_rpc_http:
     st.error("POLYGON_RPC_HTTP is not set; chain operations will fail.")
 
+# Hydrate persisted form values once per page load.
+state.hydrate("actions.chunk_size", 2000)
+state.hydrate("actions.max_workers", 10)
+state.hydrate("actions.commit_every", 5)
+state.hydrate("actions.from_block", "")
+state.hydrate("actions.to_block", "")
+state.hydrate("actions.max_pages", 0)
+state.hydrate("actions.no_trip", False)
+
 st.subheader("Indexer")
+_any_running |= render_live_action("actions.last_backfill")
+_any_running |= render_live_action("actions.last_sync_markets")
 c1, c2 = st.columns(2)
 with c1:
     chunk_size = st.number_input(
         "Chunk size",
-        value=2000,
         min_value=100,
         max_value=5000,
+        key="actions.chunk_size",
+        on_change=state.remember,
+        args=("actions.chunk_size",),
         help="1 回の eth_getLogs で取りに行くブロック数。Alchemy 無料枠は 10 まで、PAYG なら 2000 推奨。大きいほど高速だがプラン上限に注意。",
     )
     max_workers = st.number_input(
         "Max workers",
-        value=10,
         min_value=1,
         max_value=30,
+        key="actions.max_workers",
+        on_change=state.remember,
+        args=("actions.max_workers",),
         help="同時並列で投げる RPC リクエスト数。多いほど速いがレート制限に当たりやすい。PAYG なら 10〜20 が目安。",
     )
     commit_every = st.number_input(
         "Commit every (chunks)",
-        value=5,
         min_value=1,
         max_value=50,
+        key="actions.commit_every",
+        on_change=state.remember,
+        args=("actions.commit_every",),
         help="DB に書き込む単位。N 個のチャンクをまとめて 1 トランザクションで commit。大きいほど DB 負荷が下がる。",
     )
     from_block_in = st.text_input(
         "From block (blank = resume from cursor)",
-        value="",
+        key="actions.from_block",
+        on_change=state.remember,
+        args=("actions.from_block",),
         help="開始ブロック番号 (10進)。空欄なら ingest_cursor の続きから (なければ初期ブロックから) 再開します。",
     )
     to_block_in = st.text_input(
         "To block (blank = head)",
-        value="",
+        key="actions.to_block",
+        on_change=state.remember,
+        args=("actions.to_block",),
         help="終了ブロック番号 (10進)。空欄ならチェーンの最新ヘッドまで取得します。",
     )
     if st.button(
@@ -70,16 +97,20 @@ with c1:
                 max_workers=int(max_workers),
                 commit_every=int(commit_every),
                 progress_fn=backfill_progress_fn(),
+                persist_key="actions.last_backfill",
             )
             st.success(f"saved {saved} new trades")
+            st.rerun()
         except Exception as e:
             st.error(str(e))
 
 with c2:
     max_pages = st.number_input(
         "Max pages (0 = all)",
-        value=0,
         min_value=0,
+        key="actions.max_pages",
+        on_change=state.remember,
+        args=("actions.max_pages",),
         help="Gamma API から取得するページ数の上限。0 で全件。動作確認だけなら 1〜2 で十分。",
     )
     if st.button(
@@ -94,8 +125,10 @@ with c2:
                 "fetching market metadata from Gamma API",
                 sync_markets,
                 max_pages=mp,
+                persist_key="actions.last_sync_markets",
             )
             st.success(f"saved {saved} markets")
+            st.rerun()
         except Exception as e:
             st.error(str(e))
 
@@ -103,11 +136,15 @@ st.divider()
 
 st.subheader("Live mode maintenance")
 st.caption("These require WALLET creds and CLOB API to be set.")
+_any_running |= render_live_action("actions.last_reconcile")
+_any_running |= render_live_action("actions.last_poll")
 c3, c4 = st.columns(2)
 with c3:
     no_trip = st.checkbox(
         "Don't trip killswitch on mismatch",
-        value=False,
+        key="actions.no_trip",
+        on_change=state.remember,
+        args=("actions.no_trip",),
         help="ON にすると、不整合があってもキルスイッチを発動しません。診断用途で使用、本番では通常 OFF。",
     )
     if st.button(
@@ -118,17 +155,18 @@ with c3:
         from copytrader.risk.limits import RiskState
 
         try:
-            state = RiskState()
+            risk_state = RiskState()
             diffs = run_with_live_logs(
                 "reconciling DB positions vs on-chain balances",
                 reconcile_live,
-                state=state,
+                state=risk_state,
                 trip_on_mismatch=not no_trip,
+                persist_key="actions.last_reconcile",
             )
             if not diffs:
                 st.success("all live positions match on-chain")
             else:
-                st.warning(f"{len(diffs)} mismatches; killswitch={state.halted}")
+                st.warning(f"{len(diffs)} mismatches; killswitch={risk_state.halted}")
                 st.dataframe(
                     [
                         {
@@ -154,7 +192,15 @@ with c4:
             n = run_with_live_logs(
                 "polling open orders via CLOB API",
                 poll_open_orders,
+                persist_key="actions.last_poll",
             )
             st.success(f"updated {n} orders")
+            st.rerun()
         except Exception as e:
             st.error(str(e))
+
+if _any_running:
+    import time as _time
+
+    _time.sleep(3)
+    st.rerun()

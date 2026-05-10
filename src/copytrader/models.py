@@ -13,6 +13,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -166,3 +167,15 @@ class RiskEvent(Base):
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     detail: Mapped[str | None] = mapped_column(Text)
     halted: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class UiState(Base):
+    """UI 状態の永続化 (auto refresh トグル、最後の実行ログ、フォーム値など)。"""
+
+    __tablename__ = "ui_state"
+
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    value: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
