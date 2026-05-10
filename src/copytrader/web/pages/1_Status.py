@@ -6,10 +6,14 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
-from sqlalchemy import func, select
 
-from copytrader.db import session_scope
-from copytrader.models import IngestCursor, Order, Position, RiskEvent, Signal, Trade, Wallet
+from copytrader.web.cache import (
+    chain_head as cached_chain_head,
+)
+from copytrader.web.cache import (
+    force_refresh,
+    status_snapshot,
+)
 from copytrader.web.nav import render_sidebar_menu_help
 
 render_sidebar_menu_help()
@@ -25,91 +29,22 @@ _auto = st.toggle(
     help="ON にすると 5 秒ごとにこのページを再読込し、Backfill 等の進捗をリアルタイムで追えます。",
 )
 
-with session_scope() as session:
-    n_trades = session.execute(select(func.count()).select_from(Trade)).scalar() or 0
-    n_signals = session.execute(select(func.count()).select_from(Signal)).scalar() or 0
-    n_orders = session.execute(select(func.count()).select_from(Order)).scalar() or 0
-    n_watch = session.execute(
-        select(func.count()).select_from(Wallet).where(Wallet.watchlisted.is_(True))
-    ).scalar() or 0
+snap = status_snapshot()
+chain_info = cached_chain_head()
+_chain_head: int | None = chain_info.get("head")
+_chain_err: str | None = chain_info.get("error")
 
-    last_trade_ts = session.execute(select(func.max(Trade.block_timestamp))).scalar()
-    last_trade_block = session.execute(select(func.max(Trade.block_number))).scalar()
-
-    cursors = session.execute(
-        select(IngestCursor).where(IngestCursor.name.like("backfill%"))
-    ).scalars().all()
-    cursor_rows = [
-        {
-            "source": c.name,
-            "block_number": int(c.block_number) if c.block_number else 0,
-            "updated_at": c.updated_at,
-        }
-        for c in cursors
-    ]
-
-    recent_signals = session.execute(
-        select(Signal).order_by(Signal.detected_at.desc()).limit(50)
-    ).scalars().all()
-    sig_rows = [
-        {
-            "when": s.detected_at.strftime("%m-%d %H:%M:%S") if s.detected_at else "",
-            "wallet": s.source_wallet,
-            "side": s.side,
-            "token": s.token_id[:14] + "…",
-            "src_price": float(s.source_price),
-            "src_size": float(s.source_size),
-            "status": s.status,
-            "notes": (s.notes or "")[:60],
-        }
-        for s in recent_signals
-    ]
-
-    open_pos = session.execute(
-        select(Position).where(Position.closed_at.is_(None))
-    ).scalars().all()
-    pos_rows = [
-        {
-            "mode": p.mode,
-            "token": p.token_id[:14] + "…",
-            "size": float(p.size or 0),
-            "avg_entry": float(p.avg_entry_price or 0),
-            "realized_pnl": float(p.realized_pnl or 0),
-            "opened_at": p.opened_at.strftime("%m-%d %H:%M") if p.opened_at else "",
-        }
-        for p in open_pos
-    ]
-
-    recent_orders = session.execute(
-        select(Order).order_by(Order.placed_at.desc()).limit(20)
-    ).scalars().all()
-    order_rows = [
-        {
-            "when": o.placed_at.strftime("%m-%d %H:%M:%S") if o.placed_at else "",
-            "mode": o.mode,
-            "side": o.side,
-            "token": o.token_id[:14] + "…",
-            "size": float(o.size or 0),
-            "limit": float(o.limit_price or 0),
-            "filled": float(o.filled_size or 0),
-            "avg_fill": float(o.avg_fill_price or 0) if o.avg_fill_price else None,
-            "status": o.status,
-        }
-        for o in recent_orders
-    ]
-
-    risk = session.execute(
-        select(RiskEvent).order_by(RiskEvent.occurred_at.desc()).limit(20)
-    ).scalars().all()
-    risk_rows = [
-        {
-            "when": r.occurred_at.strftime("%m-%d %H:%M:%S"),
-            "kind": r.kind,
-            "halted": "Y" if r.halted else "",
-            "detail": (r.detail or "")[:160],
-        }
-        for r in risk
-    ]
+n_trades = snap["n_trades"]
+n_signals = snap["n_signals"]
+n_orders = snap["n_orders"]
+n_watch = snap["n_watch"]
+last_trade_ts = snap["last_trade_ts"]
+last_trade_block = snap["last_trade_block"]
+cursor_rows = snap["cursor_rows"]
+sig_rows = snap["sig_rows"]
+pos_rows = snap["pos_rows"]
+order_rows = snap["order_rows"]
+risk_rows = snap["risk_rows"]
 
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric(
@@ -151,15 +86,6 @@ st.caption(
     "indexer のチェックポイント (`ingest_cursor`) からバックフィルの進捗を表示します。"
     "Streamlit UI / CLI / Fly machine のどこで backfill を走らせていても DB を見るので進捗が分かります。"
 )
-
-_chain_head: int | None = None
-_chain_err: str | None = None
-try:
-    from copytrader.chain.client import PolygonClient
-
-    _chain_head = PolygonClient().block_number()
-except Exception as e:
-    _chain_err = str(e)
 
 if not cursor_rows:
     st.info("backfill 用の cursor がまだありません。Actions ページか CLI で `copytrader backfill` を 1 度走らせてください。")
@@ -208,6 +134,7 @@ st.subheader("Recent risk events")
 st.dataframe(pd.DataFrame(risk_rows) if risk_rows else pd.DataFrame(), use_container_width=True)
 
 if st.button("Refresh", help="DB から最新の値を取り直してこのページを再描画します。"):
+    force_refresh()
     st.rerun()
 
 if _auto:

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import streamlit as st
 
+from copytrader.web.cache import start_background_warmer
+
 _MENU: tuple[tuple[str, str, str], ...] = (
     ("Home", "ホーム",
      "シークレット設定の状態と Phase ガイド。最初に開く画面。"),
@@ -29,6 +31,7 @@ _MENU: tuple[tuple[str, str, str], ...] = (
 
 def render_sidebar_menu_help() -> None:
     """サイドバーにメニュー解説を表示する。各ページから呼び出す。"""
+    start_background_warmer()
     with st.sidebar:
         st.markdown("### メニュー解説")
         for _, label, desc in _MENU:
