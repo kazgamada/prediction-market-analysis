@@ -7,6 +7,7 @@ import streamlit as st
 from copytrader.config import get_settings
 from copytrader.web.logs import run_with_live_logs
 from copytrader.web.nav import render_sidebar_menu_help
+from copytrader.web.progress import backfill_progress_fn
 
 render_sidebar_menu_help()
 st.title("Actions")
@@ -68,6 +69,7 @@ with c1:
                 chunk_size=int(chunk_size),
                 max_workers=int(max_workers),
                 commit_every=int(commit_every),
+                progress_fn=backfill_progress_fn(),
             )
             st.success(f"saved {saved} new trades")
         except Exception as e:

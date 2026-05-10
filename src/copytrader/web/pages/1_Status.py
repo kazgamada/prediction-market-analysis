@@ -9,7 +9,7 @@ import streamlit as st
 from sqlalchemy import func, select
 
 from copytrader.db import session_scope
-from copytrader.models import Order, Position, RiskEvent, Signal, Trade, Wallet
+from copytrader.models import IngestCursor, Order, Position, RiskEvent, Signal, Trade, Wallet
 from copytrader.web.nav import render_sidebar_menu_help
 
 render_sidebar_menu_help()
@@ -17,6 +17,12 @@ st.title("Status")
 st.caption(
     "現在の運用状態スナップショット。インデックス済み trade 数、検出済みシグナル、発注、ウォッチリスト、最新の取り込み時刻、"
     "オープンポジションと直近のリスクイベントを一覧で確認できます。"
+)
+
+_auto = st.toggle(
+    "Auto refresh (5 秒)",
+    value=False,
+    help="ON にすると 5 秒ごとにこのページを再読込し、Backfill 等の進捗をリアルタイムで追えます。",
 )
 
 with session_scope() as session:
@@ -28,6 +34,19 @@ with session_scope() as session:
     ).scalar() or 0
 
     last_trade_ts = session.execute(select(func.max(Trade.block_timestamp))).scalar()
+    last_trade_block = session.execute(select(func.max(Trade.block_number))).scalar()
+
+    cursors = session.execute(
+        select(IngestCursor).where(IngestCursor.name.like("backfill%"))
+    ).scalars().all()
+    cursor_rows = [
+        {
+            "source": c.name,
+            "block_number": int(c.block_number) if c.block_number else 0,
+            "updated_at": c.updated_at,
+        }
+        for c in cursors
+    ]
 
     recent_signals = session.execute(
         select(Signal).order_by(Signal.detected_at.desc()).limit(50)
@@ -127,6 +146,55 @@ else:
         help="まだ trade を 1 件も取り込んでいません。Actions ページで Backfill を実行してください。",
     )
 
+st.subheader("Backfill progress")
+st.caption(
+    "indexer のチェックポイント (`ingest_cursor`) からバックフィルの進捗を表示します。"
+    "Streamlit UI / CLI / Fly machine のどこで backfill を走らせていても DB を見るので進捗が分かります。"
+)
+
+_chain_head: int | None = None
+_chain_err: str | None = None
+try:
+    from copytrader.chain.client import PolygonClient
+
+    _chain_head = PolygonClient().block_number()
+except Exception as e:
+    _chain_err = str(e)
+
+if not cursor_rows:
+    st.info("backfill 用の cursor がまだありません。Actions ページか CLI で `copytrader backfill` を 1 度走らせてください。")
+else:
+    if _chain_head:
+        st.caption(f"chain head: block **{_chain_head:,}**")
+    elif _chain_err:
+        st.caption(f"chain head 取得失敗: `{_chain_err[:140]}` (POLYGON_RPC_HTTP 未設定の可能性)")
+
+    for row in cursor_rows:
+        block = row["block_number"]
+        ts = row["updated_at"]
+        age_str = ""
+        if ts:
+            age_s = (datetime.now(timezone.utc) - ts).total_seconds()
+            age_str = (
+                f" — last update {int(age_s)}s ago"
+                if age_s < 120
+                else f" — last update {int(age_s // 60)}m ago"
+            )
+        col_l, col_r = st.columns([3, 2])
+        if _chain_head and _chain_head > 0:
+            ratio = max(0.0, min(1.0, block / _chain_head))
+            col_l.progress(ratio, text=f"**{row['source']}**: block {block:,} / {_chain_head:,} ({ratio*100:.2f}%)")
+        else:
+            col_l.markdown(f"**{row['source']}**: block {block:,}")
+        remaining = (_chain_head - block) if _chain_head else None
+        col_r.markdown(
+            f"残り blocks: **{remaining:,}**{age_str}" if remaining is not None and remaining >= 0
+            else f"&nbsp;{age_str}"
+        )
+
+if last_trade_block:
+    st.caption(f"latest indexed trade: block **{int(last_trade_block):,}**")
+
 st.subheader("Open positions")
 st.dataframe(pd.DataFrame(pos_rows) if pos_rows else pd.DataFrame(), use_container_width=True)
 
@@ -140,4 +208,10 @@ st.subheader("Recent risk events")
 st.dataframe(pd.DataFrame(risk_rows) if risk_rows else pd.DataFrame(), use_container_width=True)
 
 if st.button("Refresh", help="DB から最新の値を取り直してこのページを再描画します。"):
+    st.rerun()
+
+if _auto:
+    import time as _time
+
+    _time.sleep(5)
     st.rerun()
