@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 
 from copytrader.db import session_scope
 from copytrader.models import IngestCursor, Order, Position, RiskEvent, Signal, Trade, Wallet
+from copytrader.web import state
 from copytrader.web.nav import render_sidebar_menu_help
 
 render_sidebar_menu_help()
@@ -19,10 +20,13 @@ st.caption(
     "オープンポジションと直近のリスクイベントを一覧で確認できます。"
 )
 
+state.hydrate("status.auto_refresh", False)
 _auto = st.toggle(
     "Auto refresh (5 秒)",
-    value=False,
-    help="ON にすると 5 秒ごとにこのページを再読込し、Backfill 等の進捗をリアルタイムで追えます。",
+    key="status.auto_refresh",
+    on_change=state.remember,
+    args=("status.auto_refresh",),
+    help="ON にすると 5 秒ごとにこのページを再読込し、Backfill 等の進捗をリアルタイムで追えます。設定はセッションをまたいで保持されます。",
 )
 
 with session_scope() as session:
