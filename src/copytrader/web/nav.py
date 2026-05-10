@@ -1,42 +1,65 @@
-"""サイドバーに各ページの解説 (メニュー説明) を表示するヘルパー。
+"""サイドバーの自動ナビ (英語メニュー) にホバー説明を付けるヘルパー。
 
-Streamlit の自動ナビゲーションはファイル名から生成されるリンクのみで、
-ホバー解説を持たない。代替として、サイドバー直下に各ページの 1 行解説を
-出して "メニューにホバーで解説" の代わりとする。
+Streamlit が `app.py` と `pages/*.py` のファイル名から自動生成する
+サイドバーリンク (Status / Watchlist / ...) に、ホバー時の小窓 tooltip
+を JS 注入で追加する。`<a>` の `title` 属性なのでマウスを外せば消える。
+
+合わせて、各ページから到達するこの関数で `start_background_warmer()` を
+呼び出し、ページ表示用キャッシュを温める daemon thread を起動する。
 """
 
 from __future__ import annotations
 
-import streamlit as st
+import json
+
+import streamlit.components.v1 as components
 
 from copytrader.web.cache import start_background_warmer
 
-_MENU: tuple[tuple[str, str, str], ...] = (
-    ("Home", "ホーム",
-     "シークレット設定の状態と Phase ガイド。最初に開く画面。"),
-    ("Status", "ステータス",
-     "現在の取り込み件数・シグナル・発注・オープンポジション・直近のリスクイベント一覧。"),
-    ("Watchlist", "ウォッチリスト",
-     "監視対象ウォレットの追加・削除。ここに入ったウォレットの取引が monitor で追跡される。"),
-    ("Rank", "ランキング",
-     "過去 trade からウォレット別 PnL/勝率を集計し上位を抽出。Top N を watchlist に自動投入できる。"),
-    ("Replay", "リプレイ検証",
-     "選択ウォレットの過去シグナルを遅延別に再現発注し PnL を比較。Phase 0 の edge 検証用。"),
-    ("Inspect", "ウォレット詳細",
-     "1 ウォレットを深掘り。トークン別の取引数・PnL・ネット保有量・最終取引時刻。"),
-    ("Actions", "アクション",
-     "Backfill / Markets sync / Reconcile / Poll など、ワンショットの保守運用ジョブ。"),
-)
+_TIPS: dict[str, str] = {
+    "app": "ホーム — シークレット設定の状態と Phase ガイド。最初に開く画面。",
+    "Status": "現在の取り込み件数・シグナル・発注・オープンポジション・直近のリスクイベント一覧。Backfill 進捗もここで見える。",
+    "Watchlist": "監視対象ウォレットの追加・削除。ここに入ったウォレットの取引が monitor で追跡される。",
+    "Rank": "過去 trade からウォレット別 PnL / 勝率を集計し上位を抽出。Top N を watchlist に自動投入できる。",
+    "Replay": "選択ウォレットの過去シグナルを遅延別に再現発注し PnL を比較。Phase 0 の edge 検証用。",
+    "Inspect": "1 ウォレットを深掘り。トークン別の取引数・PnL・ネット保有量・最終取引時刻。",
+    "Actions": "Backfill / Markets sync / Reconcile / Poll など、ワンショットの保守運用ジョブ。",
+}
 
 
 def render_sidebar_menu_help() -> None:
-    """サイドバーにメニュー解説を表示する。各ページから呼び出す。"""
+    """サイドバー自動ナビの各リンクにホバー説明を注入する。各ページから呼ぶ。
+
+    副作用としてページキャッシュ warmer を 1 度だけ起動する。
+    """
     start_background_warmer()
-    with st.sidebar:
-        st.markdown("### メニュー解説")
-        for _, label, desc in _MENU:
-            st.markdown(f"**{label}** — {desc}")
-        st.caption(
-            "各ページ内のフォーム項目・ボタンにマウスを合わせると、"
-            "個別のヘルプ (?) が表示されます。"
-        )
+    payload = json.dumps(_TIPS, ensure_ascii=False)
+    components.html(
+        f"""
+<script>
+(function() {{
+  const tips = {payload};
+  function apply() {{
+    try {{
+      const doc = window.parent.document;
+      const links = doc.querySelectorAll('[data-testid="stSidebarNav"] a, [data-testid="stSidebarNavItems"] a');
+      links.forEach(function(a) {{
+        const txt = (a.textContent || '').trim();
+        const tip = tips[txt] || tips[txt.toLowerCase()];
+        if (tip) {{
+          a.setAttribute('title', tip);
+          a.style.cursor = 'help';
+        }}
+      }});
+    }} catch (e) {{ /* cross-frame access guarded */ }}
+  }}
+  apply();
+  try {{
+    const obs = new MutationObserver(apply);
+    obs.observe(window.parent.document.body, {{ childList: true, subtree: true }});
+  }} catch (e) {{}}
+}})();
+</script>
+""",
+        height=0,
+    )

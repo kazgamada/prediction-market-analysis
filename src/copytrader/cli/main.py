@@ -214,8 +214,23 @@ def watch_list() -> None:
 
 
 @cli.command()
-def monitor() -> None:
-    """Subscribe to OrderFilled WS, persist trades, emit signals (read-only)."""
+@click.option(
+    "--catchup-interval",
+    type=int,
+    default=300,
+    help="Periodic backfill catchup interval (seconds). 0 to disable.",
+)
+@click.option("--catchup-chunk-size", type=int, default=1000)
+@click.option("--catchup-workers", type=int, default=5)
+def monitor(catchup_interval: int, catchup_chunk_size: int, catchup_workers: int) -> None:
+    """Subscribe to OrderFilled WS, persist trades, emit signals (read-only).
+
+    `catchup-interval` 秒ごとにバックグラウンドで `backfill()` を呼び、
+    cursor が現在のチェーンヘッドに追いつくまで自動的に取り込みを進める。
+    backfill は冪等 (ON CONFLICT DO NOTHING + 単調増加 cursor) なので、
+    live 取り込みと同時に走っても安全。
+    """
+    from copytrader.indexer.backfill import backfill as do_backfill
     from copytrader.monitor.detector import run as monitor_run
     from copytrader.notifier.telegram import TelegramNotifier
 
@@ -227,7 +242,21 @@ def monitor() -> None:
             f"`{sig.token_id[:10]}…` size={sig.source_size} @ {sig.source_price}"
         )
 
-    asyncio.run(monitor_run(on_signal=on_signal))
+    async def catchup_backfill() -> None:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: do_backfill(
+                chunk_size=catchup_chunk_size, max_workers=catchup_workers
+            ),
+        )
+
+    periodic = (
+        [("backfill_catchup", float(catchup_interval), catchup_backfill)]
+        if catchup_interval > 0
+        else []
+    )
+    asyncio.run(monitor_run(on_signal=on_signal, periodic_tasks=periodic))
 
 
 @cli.command()

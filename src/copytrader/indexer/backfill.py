@@ -45,6 +45,9 @@ def _flush(rows: list[dict], cursor_name: str, block_number: int) -> int:
     まとめてコミットするので、interrupted した場合は cursor が指す位置までは
     確実に永続化されている。それより先のチャンクは ON CONFLICT DO NOTHING で
     再実行時に冪等。
+
+    cursor は **単調増加のみ** にする。古い from_block で再実行された場合や
+    並列実行で順序が前後した場合でも、進捗を後退させない。
     """
     with session_scope() as session:
         if rows:
@@ -57,7 +60,8 @@ def _flush(rows: list[dict], cursor_name: str, block_number: int) -> int:
         if cur is None:
             session.add(IngestCursor(name=cursor_name, block_number=block_number, updated_at=now))
         else:
-            cur.block_number = block_number
+            if block_number > (cur.block_number or 0):
+                cur.block_number = block_number
             cur.updated_at = now
     return len(rows)
 
@@ -66,6 +70,20 @@ def _read_cursor(name: str) -> int | None:
     with session_scope() as session:
         cur = session.get(IngestCursor, name)
         return cur.block_number if cur else None
+
+
+def _max_indexed_block(exchange: str) -> int | None:
+    """この exchange で実際に DB に取り込み済みの最大 block。
+
+    cursor が古い値で残っていても、trade テーブルから「ここまで処理済み」を
+    再構成できるので、無駄な再取得を避けられる。
+    """
+    from sqlalchemy import func, select
+
+    with session_scope() as session:
+        return session.execute(
+            select(func.max(Trade.block_number)).where(Trade.exchange == exchange)
+        ).scalar()
 
 
 def backfill(
@@ -88,25 +106,39 @@ def backfill(
     settings = get_settings()
     client = PolygonClient()
     head = client.block_number()
-    start = from_block if from_block is not None else (
-        _read_cursor("backfill") or settings.polymarket_start_block
-    )
     end = to_block if to_block is not None else head
 
     log.info(
-        "backfill from %s to %s (head=%s) chunk=%s workers=%s commit_every=%s",
-        start, end, head, chunk_size, max_workers, commit_every,
+        "backfill to %s (head=%s) chunk=%s workers=%s commit_every=%s from_block=%s",
+        end, head, chunk_size, max_workers, commit_every, from_block,
     )
     total = 0
 
     for exchange in ("ctf", "negrisk"):
+        cursor_name = f"backfill_{exchange}"
+        if from_block is not None:
+            exch_start = from_block
+        else:
+            cursor_block = _read_cursor(cursor_name)
+            max_trade_block = _max_indexed_block(exchange)
+            known = [b for b in (cursor_block, max_trade_block) if b is not None]
+            if known:
+                # cursor or 取り込み済みの最大 block の **大きい方** + 1 から再開。
+                # これで cursor が誤って巻き戻されていても進捗は失われない。
+                exch_start = max(known) + 1
+            else:
+                exch_start = settings.polymarket_start_block
+        if exch_start > end:
+            log.info("exchange=%s already up-to-date (cursor=%s end=%s)", exchange, exch_start - 1, end)
+            continue
+        log.info("exchange=%s resume from block %s -> %s", exchange, exch_start, end)
+
         buffer_rows: list[dict] = []
         buffer_chunks = 0
-        last_chunk_end = start - 1
-        cursor_name = f"backfill_{exchange}"
+        last_chunk_end = exch_start - 1
 
         for logs, chunk_start, chunk_end in client.iter_logs(
-            start, end, exchange=exchange,
+            exch_start, end, exchange=exchange,
             chunk_size=chunk_size, max_workers=max_workers,
         ):
             decoded = []
