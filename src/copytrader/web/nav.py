@@ -1,52 +1,57 @@
-"""サイドバーに各ページのメニュー一覧を表示するヘルパー。
+"""サイドバーの自動ナビ (英語メニュー) にホバー説明を付けるヘルパー。
 
-メニュー名のみを縦に並べ、ホバー時に説明をネイティブブラウザの
-ツールチップ (`<span title="…">`) で表示する。マウスを外すと消える。
+Streamlit が `app.py` と `pages/*.py` のファイル名から自動生成する
+サイドバーリンク (Status / Watchlist / ...) に、ホバー時の小窓 tooltip
+を JS 注入で追加する。`<a>` の `title` 属性なのでマウスを外せば消える。
 """
 
 from __future__ import annotations
 
-from html import escape
+import json
 
 import streamlit as st
+import streamlit.components.v1 as components
 
-_MENU: tuple[tuple[str, str, str], ...] = (
-    ("Home", "ホーム",
-     "シークレット設定の状態と Phase ガイド。最初に開く画面。"),
-    ("Status", "ステータス",
-     "現在の取り込み件数・シグナル・発注・オープンポジション・直近のリスクイベント一覧。"),
-    ("Watchlist", "ウォッチリスト",
-     "監視対象ウォレットの追加・削除。ここに入ったウォレットの取引が monitor で追跡される。"),
-    ("Rank", "ランキング",
-     "過去 trade からウォレット別 PnL/勝率を集計し上位を抽出。Top N を watchlist に自動投入できる。"),
-    ("Replay", "リプレイ検証",
-     "選択ウォレットの過去シグナルを遅延別に再現発注し PnL を比較。Phase 0 の edge 検証用。"),
-    ("Inspect", "ウォレット詳細",
-     "1 ウォレットを深掘り。トークン別の取引数・PnL・ネット保有量・最終取引時刻。"),
-    ("Actions", "アクション",
-     "Backfill / Markets sync / Reconcile / Poll など、ワンショットの保守運用ジョブ。"),
-)
+_TIPS: dict[str, str] = {
+    "app": "ホーム — シークレット設定の状態と Phase ガイド。最初に開く画面。",
+    "Status": "現在の取り込み件数・シグナル・発注・オープンポジション・直近のリスクイベント一覧。Backfill 進捗もここで見える。",
+    "Watchlist": "監視対象ウォレットの追加・削除。ここに入ったウォレットの取引が monitor で追跡される。",
+    "Rank": "過去 trade からウォレット別 PnL / 勝率を集計し上位を抽出。Top N を watchlist に自動投入できる。",
+    "Replay": "選択ウォレットの過去シグナルを遅延別に再現発注し PnL を比較。Phase 0 の edge 検証用。",
+    "Inspect": "1 ウォレットを深掘り。トークン別の取引数・PnL・ネット保有量・最終取引時刻。",
+    "Actions": "Backfill / Markets sync / Reconcile / Poll など、ワンショットの保守運用ジョブ。",
+}
 
 
 def render_sidebar_menu_help() -> None:
-    """サイドバーにメニュー一覧 (ホバーで説明表示) を出す。各ページから呼ぶ。"""
-    items = "".join(
-        '<li style="margin: 2px 0;">'
-        f'<span title="{escape(desc, quote=True)}" '
-        'style="border-bottom: 1px dotted #888; cursor: help;">'
-        f'{escape(label)}'
-        '</span>'
-        '</li>'
-        for _, label, desc in _MENU
+    """サイドバー自動ナビの各リンクにホバー説明を注入する。各ページから呼ぶ。"""
+    payload = json.dumps(_TIPS, ensure_ascii=False)
+    components.html(
+        f"""
+<script>
+(function() {{
+  const tips = {payload};
+  function apply() {{
+    try {{
+      const doc = window.parent.document;
+      const links = doc.querySelectorAll('[data-testid="stSidebarNav"] a, [data-testid="stSidebarNavItems"] a');
+      links.forEach(function(a) {{
+        const txt = (a.textContent || '').trim();
+        const tip = tips[txt] || tips[txt.toLowerCase()];
+        if (tip) {{
+          a.setAttribute('title', tip);
+          a.style.cursor = 'help';
+        }}
+      }});
+    }} catch (e) {{ /* cross-frame access guarded */ }}
+  }}
+  apply();
+  try {{
+    const obs = new MutationObserver(apply);
+    obs.observe(window.parent.document.body, {{ childList: true, subtree: true }});
+  }} catch (e) {{}}
+}})();
+</script>
+""",
+        height=0,
     )
-    html = (
-        '<div style="font-size: 0.9rem;">'
-        '<div style="font-weight: 600; margin-bottom: 4px;">メニュー</div>'
-        f'<ul style="padding-left: 1.1em; margin: 0;">{items}</ul>'
-        '<div style="color: #888; font-size: 0.8rem; margin-top: 6px;">'
-        '名前にカーソルを当てると説明が表示されます'
-        '</div>'
-        '</div>'
-    )
-    with st.sidebar:
-        st.markdown(html, unsafe_allow_html=True)
