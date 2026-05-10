@@ -1,11 +1,12 @@
-"""サイドバーに各ページの解説 (メニュー説明) を表示するヘルパー。
+"""サイドバーに各ページのメニュー一覧を表示するヘルパー。
 
-Streamlit の自動ナビゲーションはファイル名から生成されるリンクのみで、
-ホバー解説を持たない。代替として、サイドバー直下に各ページの 1 行解説を
-出して "メニューにホバーで解説" の代わりとする。
+メニュー名のみを縦に並べ、ホバー時に説明をネイティブブラウザの
+ツールチップ (`<span title="…">`) で表示する。マウスを外すと消える。
 """
 
 from __future__ import annotations
+
+from html import escape
 
 import streamlit as st
 
@@ -28,12 +29,24 @@ _MENU: tuple[tuple[str, str, str], ...] = (
 
 
 def render_sidebar_menu_help() -> None:
-    """サイドバーにメニュー解説を表示する。各ページから呼び出す。"""
+    """サイドバーにメニュー一覧 (ホバーで説明表示) を出す。各ページから呼ぶ。"""
+    items = "".join(
+        '<li style="margin: 2px 0;">'
+        f'<span title="{escape(desc, quote=True)}" '
+        'style="border-bottom: 1px dotted #888; cursor: help;">'
+        f'{escape(label)}'
+        '</span>'
+        '</li>'
+        for _, label, desc in _MENU
+    )
+    html = (
+        '<div style="font-size: 0.9rem;">'
+        '<div style="font-weight: 600; margin-bottom: 4px;">メニュー</div>'
+        f'<ul style="padding-left: 1.1em; margin: 0;">{items}</ul>'
+        '<div style="color: #888; font-size: 0.8rem; margin-top: 6px;">'
+        '名前にカーソルを当てると説明が表示されます'
+        '</div>'
+        '</div>'
+    )
     with st.sidebar:
-        st.markdown("### メニュー解説")
-        for _, label, desc in _MENU:
-            st.markdown(f"**{label}** — {desc}")
-        st.caption(
-            "各ページ内のフォーム項目・ボタンにマウスを合わせると、"
-            "個別のヘルプ (?) が表示されます。"
-        )
+        st.markdown(html, unsafe_allow_html=True)
