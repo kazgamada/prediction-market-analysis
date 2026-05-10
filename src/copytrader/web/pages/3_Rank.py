@@ -9,10 +9,15 @@ import streamlit as st
 
 from copytrader.ranking.pnl import persist_ranking, rank_wallets
 from copytrader.web import state
-from copytrader.web.logs import render_last_action, run_with_live_logs
+from copytrader.web.logs import (
+    render_live_action,
+    render_running_jobs_banner,
+    run_with_live_logs,
+)
 from copytrader.web.nav import render_sidebar_menu_help
 
 render_sidebar_menu_help()
+_any_running = render_running_jobs_banner()
 st.title("Rank")
 st.caption(
     "過去の trade からウォレット別の PnL・勝率・スコアを集計し、ランキング化します。Top N を選んで watchlist に自動投入も可能。"
@@ -25,7 +30,7 @@ state.hydrate("rank.limit", 50)
 state.hydrate("rank.persist", True)
 state.hydrate("rank.top_n_watch", 0)
 
-render_last_action("rank.last_run")
+_any_running |= render_live_action("rank.last_run")
 
 with st.form("rank_form"):
     c1, c2, c3, c4 = st.columns(4)
@@ -117,3 +122,9 @@ if isinstance(saved, dict) and saved.get("rows"):
     df = pd.DataFrame(saved["rows"])
     st.success(f"{len(df)} wallets — last run @ {saved.get('ran_at', '?')}")
     st.dataframe(df, use_container_width=True)
+
+if _any_running:
+    import time as _time
+
+    _time.sleep(3)
+    st.rerun()

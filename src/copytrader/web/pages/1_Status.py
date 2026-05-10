@@ -11,9 +11,11 @@ from sqlalchemy import func, select
 from copytrader.db import session_scope
 from copytrader.models import IngestCursor, Order, Position, RiskEvent, Signal, Trade, Wallet
 from copytrader.web import state
+from copytrader.web.logs import render_running_jobs_banner
 from copytrader.web.nav import render_sidebar_menu_help
 
 render_sidebar_menu_help()
+_any_running = render_running_jobs_banner()
 st.title("Status")
 st.caption(
     "現在の運用状態スナップショット。インデックス済み trade 数、検出済みシグナル、発注、ウォッチリスト、最新の取り込み時刻、"
@@ -214,8 +216,8 @@ st.dataframe(pd.DataFrame(risk_rows) if risk_rows else pd.DataFrame(), use_conta
 if st.button("Refresh", help="DB から最新の値を取り直してこのページを再描画します。"):
     st.rerun()
 
-if _auto:
+if _auto or _any_running:
     import time as _time
 
-    _time.sleep(5)
+    _time.sleep(3 if _any_running else 5)
     st.rerun()

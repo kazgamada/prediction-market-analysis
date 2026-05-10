@@ -6,11 +6,16 @@ import streamlit as st
 
 from copytrader.config import get_settings
 from copytrader.web import state
-from copytrader.web.logs import render_last_action, run_with_live_logs
+from copytrader.web.logs import (
+    render_live_action,
+    render_running_jobs_banner,
+    run_with_live_logs,
+)
 from copytrader.web.nav import render_sidebar_menu_help
 from copytrader.web.progress import backfill_progress_fn
 
 render_sidebar_menu_help()
+_any_running = render_running_jobs_banner()
 st.title("Actions")
 st.caption("One-shot maintenance operations. Long jobs run in this process; "
            "for production-scale backfills, run the corresponding CLI on a worker.")
@@ -29,8 +34,8 @@ state.hydrate("actions.max_pages", 0)
 state.hydrate("actions.no_trip", False)
 
 st.subheader("Indexer")
-render_last_action("actions.last_backfill")
-render_last_action("actions.last_sync_markets")
+_any_running |= render_live_action("actions.last_backfill")
+_any_running |= render_live_action("actions.last_sync_markets")
 c1, c2 = st.columns(2)
 with c1:
     chunk_size = st.number_input(
@@ -131,8 +136,8 @@ st.divider()
 
 st.subheader("Live mode maintenance")
 st.caption("These require WALLET creds and CLOB API to be set.")
-render_last_action("actions.last_reconcile")
-render_last_action("actions.last_poll")
+_any_running |= render_live_action("actions.last_reconcile")
+_any_running |= render_live_action("actions.last_poll")
 c3, c4 = st.columns(2)
 with c3:
     no_trip = st.checkbox(
@@ -193,3 +198,9 @@ with c4:
             st.rerun()
         except Exception as e:
             st.error(str(e))
+
+if _any_running:
+    import time as _time
+
+    _time.sleep(3)
+    st.rerun()

@@ -9,10 +9,15 @@ import streamlit as st
 
 from copytrader.analysis.wallets import stats
 from copytrader.web import state
-from copytrader.web.logs import render_last_action, run_with_live_logs
+from copytrader.web.logs import (
+    render_live_action,
+    render_running_jobs_banner,
+    run_with_live_logs,
+)
 from copytrader.web.nav import render_sidebar_menu_help
 
 render_sidebar_menu_help()
+_any_running = render_running_jobs_banner()
 st.title("Inspect wallet")
 st.caption(
     "1 つのウォレットを深掘り。トークン別の取引数・PnL・ネット保有量・最新取引時刻を一覧化します。Rank で気になったアドレスをここで確認。"
@@ -21,7 +26,7 @@ st.caption(
 state.hydrate("inspect.addr", "")
 state.hydrate("inspect.window", 30)
 
-render_last_action("inspect.last_run")
+_any_running |= render_live_action("inspect.last_run")
 
 with st.form("inspect_form"):
     addr = st.text_input(
@@ -83,3 +88,9 @@ if isinstance(saved, dict) and saved.get("rows"):
         help=f"Σ per-token — last run @ {saved.get('ran_at', '?')}",
     )
     st.dataframe(df, use_container_width=True)
+
+if _any_running:
+    import time as _time
+
+    _time.sleep(3)
+    st.rerun()

@@ -12,10 +12,15 @@ from copytrader.backtest.replay import replay_with_delays
 from copytrader.db import session_scope
 from copytrader.models import Wallet
 from copytrader.web import state
-from copytrader.web.logs import render_last_action, run_with_live_logs
+from copytrader.web.logs import (
+    render_live_action,
+    render_running_jobs_banner,
+    run_with_live_logs,
+)
 from copytrader.web.nav import render_sidebar_menu_help
 
 render_sidebar_menu_help()
+_any_running = render_running_jobs_banner()
 st.title("Replay backtest")
 st.caption(
     "選択したウォレットの過去シグナルを、コピー遅延 (秒) を変えて再現発注し PnL を比較します。"
@@ -45,7 +50,7 @@ state.hydrate("replay.slippage_bps", 50)
 state.hydrate("replay.top_n", 20)
 state.hydrate("replay.explicit", [])
 
-render_last_action("replay.last_run")
+_any_running |= render_live_action("replay.last_run")
 
 with st.form("replay_form"):
     c1, c2, c3, c4 = st.columns(4)
@@ -143,3 +148,9 @@ if isinstance(saved, dict) and saved.get("summary"):
     for d_str, rows in (saved.get("detail") or {}).items():
         with st.expander(f"Delay {d_str}s — per wallet detail"):
             st.dataframe(pd.DataFrame(rows), use_container_width=True)
+
+if _any_running:
+    import time as _time
+
+    _time.sleep(3)
+    st.rerun()

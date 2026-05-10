@@ -10,9 +10,11 @@ from copytrader.db import session_scope
 from copytrader.models import Wallet
 from copytrader.monitor.watchlist import add as wl_add
 from copytrader.monitor.watchlist import remove as wl_remove
+from copytrader.web.logs import render_running_jobs_banner
 from copytrader.web.nav import render_sidebar_menu_help
 
 render_sidebar_menu_help()
+_any_running = render_running_jobs_banner()
 st.title("Watchlist")
 st.caption(
     "監視対象ウォレットの管理。ここに追加されたウォレットの取引が monitor によって追跡され、シグナル化されます。"
@@ -79,3 +81,9 @@ if not table.empty:
         wl_remove(target)
         st.success(f"removed {target}")
         st.rerun()
+
+if _any_running:
+    import time as _time
+
+    _time.sleep(3)
+    st.rerun()

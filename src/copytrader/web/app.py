@@ -15,6 +15,7 @@ import os
 import streamlit as st
 
 from copytrader.config import get_settings
+from copytrader.web.logs import render_running_jobs_banner
 from copytrader.web.nav import render_sidebar_menu_help
 
 st.set_page_config(
@@ -50,6 +51,7 @@ def _gate() -> bool:
 def main() -> None:
     _gate()
     render_sidebar_menu_help()
+    any_running = render_running_jobs_banner()
 
     st.title(":chart_with_upwards_trend: polymarket-copytrader")
     st.caption(
@@ -94,6 +96,12 @@ def main() -> None:
           to verify before trusting fills.
         """
     )
+
+    if any_running:
+        import time as _time
+
+        _time.sleep(3)
+        st.rerun()
 
 
 if __name__ == "__main__":
