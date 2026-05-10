@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
-from sqlalchemy import select
 
 from copytrader.backtest.replay import replay_with_delays
-from copytrader.db import session_scope
-from copytrader.models import Wallet
+from copytrader.web.cache import replay_candidates
 from copytrader.web.logs import run_with_live_logs
 from copytrader.web.nav import render_sidebar_menu_help
 
@@ -19,15 +17,7 @@ st.caption(
     "実取引せず Phase 0 の検証用。"
 )
 
-with session_scope() as session:
-    candidates = (
-        session.execute(
-            select(Wallet.address, Wallet.score)
-            .order_by(Wallet.score.desc().nullslast())
-            .limit(200)
-        )
-        .all()
-    )
+candidates = replay_candidates()
 
 if not candidates:
     st.warning("no wallets in DB; run Rank first")
