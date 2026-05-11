@@ -48,13 +48,22 @@ def _flush(rows: list[dict], cursor_name: str, block_number: int) -> int:
 
     cursor は **単調増加のみ** にする。古い from_block で再実行された場合や
     並列実行で順序が前後した場合でも、進捗を後退させない。
+
+    INSERT は **PostgreSQL の 65535 パラメータ制限** を考慮して、
+    1 statement あたり高々 PG_MAX_PARAMS_PER_STMT パラメータに分割する。
+    transaction は 1 つに保つので atomicity は維持される。
     """
+    PG_MAX_PARAMS_PER_STMT = 60_000
     with session_scope() as session:
         if rows:
-            stmt = insert(Trade).values(rows).on_conflict_do_nothing(
-                index_elements=["tx_hash", "log_index"]
-            )
-            session.execute(stmt)
+            cols = len(rows[0])
+            batch_size = max(1, PG_MAX_PARAMS_PER_STMT // cols)
+            for i in range(0, len(rows), batch_size):
+                chunk = rows[i : i + batch_size]
+                stmt = insert(Trade).values(chunk).on_conflict_do_nothing(
+                    index_elements=["tx_hash", "log_index"]
+                )
+                session.execute(stmt)
         cur = session.get(IngestCursor, cursor_name)
         now = datetime.now(timezone.utc)
         if cur is None:
