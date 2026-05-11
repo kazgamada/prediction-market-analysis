@@ -6,6 +6,7 @@ description: >-
 category: api-router
 sourceSkillIds:
   - ecef156f
+  - '82388022'
   - ecabd2b9
   - a0402a83
   - 9821a84e
@@ -13,148 +14,120 @@ sourceSkillIds:
   - 9b7f45d1
   - f01a2f3a
   - 7e61dd01
+  - c1b9870d
   - 3805819e
   - eac9a44c
+  - e6023b03
   - '33105718'
   - dd713770
   - a8f1324b
   - 8d57af27
+  - cb10e747
   - b7d584f7
   - 9efafb63
   - 8457e2a3
+  - 0d8af390
   - e82475fd
   - 99caa9f1
+  - 4dcb8f4d
   - 83bf7503
   - 65e9a904
   - fcebede9
   - 2c7ceffc
+  - 8ac9867b
   - bdda532f
   - b7298831
   - a2cfa62a
   - be507bc2
   - 3ae522f8
   - 6438920a
+  - a7f1915d
   - 8b4c241d
+  - 8482a06c
   - d38769fd
+  - ee1049cf
+  - 1c3776b3
   - bac81196
+  - c26125e4
   - 0ec93b1e
   - 16f7bcc7
   - 4688b569
   - 5f56b6f6
+  - cb839737
   - d80d20fa
   - 5a5aa68d
   - c4cff93f
+  - '26415849'
   - cfef4151
   - b2119b1e
   - b821f3f2
   - 6712b59d
+  - 892c69f5
   - ba4a2881
+  - 5f204565
   - '49243085'
   - 454fb33a
   - a5314778
   - 30f43ecb
-generatedAt: '2026-05-08'
+  - 9e97cfa6
+generatedAt: '2026-05-11'
 ---
 
 # Next.js App Router — APIルート実装パターン集
 
-新規APIルートを追加・変更するときは、このSkillを最初に参照する。
-認証ガード・バリデーション・エラーハンドリング・レスポンス型の**4軸**を必ず揃えること。
+## 概要
+
+新規APIルートを追加・修正するときは、このSkillを参照し以下の原則に従うこと。
+
+| 関心事 | 対応パターン |
+|---|---|
+| 認証・認可 | ルート分類フローチャート → ガード関数 |
+| 入力検証 | Zodスキーマ → `safeParse` |
+| エラー応答 | `apiError` ヘルパー → 統一JSONフォーマット |
+| 成功応答 | `apiSuccess` ヘルパー → 統一JSONフォーマット |
+| ルート構成 | HTTPメソッドごとに名前付きexport |
 
 ---
 
-## 1. 保護レベルの分類フローチャート
+## 1. ルート分類フローチャート
+
+新しいAPIルートを追加するとき、**必ず**以下の6分類に割り振ってから実装する。
 
 ```
 新しい API ルート
    │
-   ├─ Webhook（Stripe・LINE など外部サービスから）?
-   │     → [A] 署名検証ガード
+   ├─ Webhook（Stripe・LINE など外部プロバイダから）?
+   │     → プロバイダ署名検証（§2-A）
    │
-   ├─ Vercel Cron / 内部スケジューラから呼ばれる?
-   │     → [B] Cronシークレットガード
+   ├─ Cron / スケジューラから呼ばれる?
+   │     → Cron シークレット検証（§2-B）
    │
-   ├─ サインイン不要の公開エンドポイント?
-   │     → [C] 公開（レート制限のみ推奨）
+   ├─ サービス間内部通信?
+   │     → 内部シークレット検証（§2-C）
    │
-   ├─ サインイン必須（一般ユーザー）?
-   │     → [D] セッション認証ガード
+   ├─ 認証済みユーザー専用?
+   │     → セッション検証 → userId 取得（§2-D）
    │
-   ├─ 管理者・特権ロール必須?
-   │     → [E] ロールガード（D の上位）
+   ├─ 認証済み管理者専用?
+   │     → セッション検証 → role === "admin" 確認（§2-E）
    │
-   └─ サービス間 API（M2M）?
-         → [F] APIキー / JWT Bearer ガード
-```
-
-ルートを実装する前に必ずこのフローで分類し、**対応するガードパターンを冒頭に配置**する。
-
----
-
-## 2. 標準レスポンス型
-
-すべてのAPIルートは以下の型に準拠したレスポンスを返す。
-
-```typescript
-// types/api.ts
-export type ApiSuccess<T> = {
-  success: true;
-  data: T;
-};
-
-export type ApiError = {
-  success: false;
-  error: {
-    code: string;      // 機械可読コード（例: "VALIDATION_ERROR"）
-    message: string;   // 人間向けメッセージ
-    details?: unknown; // Zodエラーなど追加情報（開発時のみ）
-  };
-};
-
-export type ApiResponse<T> = ApiSuccess<T> | ApiError;
-```
-
-```typescript
-// lib/api-response.ts
-import { NextResponse } from "next/server";
-import type { ApiResponse } from "@/types/api";
-
-export function ok<T>(data: T, status = 200) {
-  return NextResponse.json<ApiResponse<T>>(
-    { success: true, data },
-    { status }
-  );
-}
-
-export function err(
-  code: string,
-  message: string,
-  status: number,
-  details?: unknown
-) {
-  return NextResponse.json<ApiResponse<never>>(
-    { success: false, error: { code, message, details } },
-    { status }
-  );
-}
+   └─ パブリック（認証不要）?
+         → ガードなし。レート制限を検討（§2-F）
 ```
 
 ---
 
-## 3. ガードパターン実装例
+## 2. 認証ガードパターン
 
-### [A] Webhook署名検証ガード（例: Stripe）
+### 2-A. Webhook署名検証（例: Stripe）
 
 ```typescript
 // app/api/webhooks/stripe/route.ts
 import { headers } from "next/headers";
 import Stripe from "stripe";
-import { err, ok } from "@/lib/api-response";
-
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
 export async function POST(req: Request) {
-  const body = await req.text();
+  const body = await req.text(); // rawボディが必要
   const sig = headers().get("stripe-signature") ?? "";
 
   let event: Stripe.Event;
@@ -164,115 +137,146 @@ export async function POST(req: Request) {
       sig,
       process.env.STRIPE_WEBHOOK_SECRET!
     );
-  } catch {
-    return err("INVALID_SIGNATURE", "Webhook signature verification failed", 400);
+  } catch (err) {
+    return apiError("Invalid webhook signature", 400);
   }
 
-  // イベントハンドリング
-  switch (event.type) {
-    case "checkout.session.completed":
-      // ...
-      break;
-  }
-
-  return ok({ received: true });
+  // イベント処理...
+  return apiSuccess({ received: true });
 }
 ```
 
-### [B] Cron シークレットガード
+### 2-B. Cron シークレット検証
 
 ```typescript
-// app/api/cron/daily-report/route.ts
-import { err, ok } from "@/lib/api-response";
-
+// app/api/cron/daily-batch/route.ts
 export async function GET(req: Request) {
   const authHeader = req.headers.get("authorization");
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return err("UNAUTHORIZED", "Invalid cron secret", 401);
+    return apiError("Unauthorized", 401);
   }
-
-  // バッチ処理
-  return ok({ processed: true });
+  // バッチ処理...
 }
 ```
 
-### [C] 公開エンドポイント（バリデーション + レート制限推奨）
+### 2-C. 内部サービス間通信
 
 ```typescript
-// app/api/public/search/route.ts
-import { z } from "zod";
-import { err, ok } from "@/lib/api-response";
+// app/api/internal/sync/route.ts
+export async function POST(req: Request) {
+  const secret = req.headers.get("x-internal-secret");
+  if (secret !== process.env.INTERNAL_API_SECRET) {
+    return apiError("Forbidden", 403);
+  }
+  // 処理...
+}
+```
 
-const QuerySchema = z.object({
-  q: z.string().min(1).max(100),
-  limit: z.coerce.number().int().min(1).max(50).default(20),
-});
+### 2-D. 認証済みユーザー（セッション検証）
+
+```typescript
+// app/api/posts/route.ts
+import { auth } from "@/lib/auth"; // NextAuth / Clerk / その他
 
 export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const parsed = QuerySchema.safeParse(Object.fromEntries(searchParams));
-
-  if (!parsed.success) {
-    return err("VALIDATION_ERROR", "Invalid query parameters", 400, parsed.error.flatten());
+  const session = await auth();
+  if (!session?.user?.id) {
+    return apiError("Unauthorized", 401);
   }
-
-  const { q, limit } = parsed.data;
-  // 検索処理
-  return ok({ results: [], query: q, limit });
+  const userId = session.user.id;
+  // userId を用いたデータ取得...
 }
 ```
 
-### [D] セッション認証ガード
+### 2-E. 管理者専用
 
 ```typescript
-// app/api/user/profile/route.ts
-import { auth } from "@/lib/auth"; // NextAuth / Clerk / 独自実装を抽象化
-import { z } from "zod";
-import { err, ok } from "@/lib/api-response";
+// app/api/admin/users/route.ts
+export async function GET(req: Request) {
+  const session = await auth();
+  if (!session?.user) return apiError("Unauthorized", 401);
+  if (session.user.role !== "admin") return apiError("Forbidden", 403);
+  // 管理者処理...
+}
+```
 
-const UpdateProfileSchema = z.object({
-  displayName: z.string().min(1).max(50),
-  bio: z.string().max(200).optional(),
+### 2-F. パブリックルート
+
+ガード不要。ただし乱用防止のため **レート制限**（upstash/ratelimit 等）の導入を検討する。
+
+---
+
+## 3. Zodバリデーションパターン
+
+### リクエストボディの検証
+
+```typescript
+import { z } from "zod";
+
+const CreatePostSchema = z.object({
+  title: z.string().min(1).max(200),
+  content: z.string().min(1),
+  published: z.boolean().default(false),
 });
 
-export async function PATCH(req: Request) {
-  // 認証チェック
+export async function POST(req: Request) {
   const session = await auth();
-  if (!session?.user) {
-    return err("UNAUTHORIZED", "Authentication required", 401);
-  }
+  if (!session?.user?.id) return apiError("Unauthorized", 401);
 
-  // ボディバリデーション
+  // ─── ① パース ───────────────────────────────────────
   let body: unknown;
   try {
     body = await req.json();
   } catch {
-    return err("INVALID_JSON", "Request body must be valid JSON", 400);
+    return apiError("Invalid JSON", 400);
   }
 
-  const parsed = UpdateProfileSchema.safeParse(body);
+  // ─── ② バリデーション ──────────────────────────────
+  const parsed = CreatePostSchema.safeParse(body);
   if (!parsed.success) {
-    return err("VALIDATION_ERROR", "Invalid request body", 400, parsed.error.flatten());
+    return apiError("Validation failed", 422, parsed.error.flatten());
   }
 
-  // ビジネスロジック
-  const updated = await updateUserProfile(session.user.id, parsed.data);
-  return ok(updated);
+  const { title, content, published } = parsed.data;
+  // DB操作...
 }
 ```
 
-### [E] ロールガード（管理者専用）
+### クエリパラメータの検証
 
 ```typescript
-// app/api/admin/users/route.ts
-import { auth } from "@/lib/auth";
-import { err, ok } from "@/lib/api-response";
+const ListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  q: z.string().optional(),
+});
 
-export async function GET() {
-  const session = await auth();
-
-  if (!session?.user) {
-    return err("UNAUTHORIZED", "Authentication required", 401);
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const parsed = ListQuerySchema.safeParse(
+    Object.fromEntries(searchParams)
+  );
+  if (!parsed.success) {
+    return apiError("Invalid query parameters", 400, parsed.error.flatten());
   }
-  if (session.user.role !== "admin") {
-    
+  const { page, limit, q } = parsed.data;
+  // ...
+}
+```
+
+### 動的ルートパラメータの検証
+
+```typescript
+// app/api/posts/[id]/route.ts
+const ParamsSchema = z.object({
+  id: z.string().cuid(), // または z.string().uuid()
+});
+
+export async function GET(
+  req: Request,
+  { params }: { params: { id: string } }
+) {
+  const parsed = ParamsSchema.safeParse(params);
+  if (!parsed.success) return apiError("Invalid ID", 400);
+
+  const post = await db.post.findUnique({ where: { id: parsed.data.id } });

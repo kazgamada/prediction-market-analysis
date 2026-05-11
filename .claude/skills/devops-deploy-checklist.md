@@ -2,7 +2,7 @@
 name: devops-deploy-checklist
 description: >-
   Vercel/GitHub Actions/Next.jsプロジェクトのデプロイ前チェックリストと運用パターン。
-  コード品質・セキュリティ・環境変数・Cron保護・ブランチ戦略・CI/CDパイプラインを網羅した汎用ガイド。
+  コード品質・セキュリティ・環境変数・Cron保護・ブランチ戦略・デモモード対応を網羅した汎用ガイド。
 category: devops
 sourceSkillIds:
   - 820cc3f2
@@ -26,6 +26,7 @@ sourceSkillIds:
   - 57966bf7
   - 5d66c491
   - c481b53b
+  - d4aa5f9c
   - 94a98cd9
   - 17c743b2
   - bc464b65
@@ -43,193 +44,222 @@ sourceSkillIds:
   - 6e71714f
   - e25c6a79
   - 9d0b29ca
-generatedAt: '2026-05-08'
+generatedAt: '2026-05-11'
 ---
 
 # DevOps デプロイチェックリスト
 
-Vercel + GitHub Actions + Next.js スタックにおける**デプロイ前の必須確認事項**と**運用パターン**をまとめたガイド。
-本番リリース前に必ずこのチェックリストを通過させること。
+Vercel + GitHub Actions + Next.js スタックでの本番デプロイ前に確認すべき項目と、
+再利用可能な実装パターンをまとめたガイド。
 
 ---
 
 ## 1. コード品質チェック
 
-### 1-1. ローカルビルド確認
+デプロイ前に必ずローカルで以下を通過させる。
 
 ```bash
-# TypeScript型チェック
+# TypeScript 型チェック
 npx tsc --noEmit
 
-# ESLint
+# Lint
 npx eslint . --ext .ts,.tsx --max-warnings 0
 
-# ビルド成功確認
+# ビルド確認（最重要: Vercel と同じ出力を確認）
 npm run build
 ```
 
-**判定基準**: エラー0件、警告0件でビルドが通ること。
+### CI（GitHub Actions）での自動チェック
 
-### 1-2. 依存関係の健全性
+```yaml
+# .github/workflows/ci.yml
+name: CI
 
-```bash
-# 脆弱性スキャン
-npm audit --audit-level=high
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
 
-# 未使用依存の確認（任意）
-npx depcheck
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx eslint . --ext .ts,.tsx --max-warnings 0
+      - run: npm run build
 ```
 
-> ⚠️ `high` 以上の脆弱性がある場合はデプロイをブロックする。
+**チェックリスト**
+- [ ] `tsc --noEmit` がエラーゼロ
+- [ ] ESLint が warning ゼロ（`--max-warnings 0`）
+- [ ] `npm run build` がローカルで成功
+- [ ] CI が green
 
 ---
 
-## 2. 環境変数チェック
+## 2. 環境変数管理
 
-### 2-1. 必須変数の存在確認
+### 必須ファイル構成
 
-`lib/env.ts` などに環境変数バリデーションを集約する：
+```
+.env.local          # ローカル開発用（git ignore 済み）
+.env.example        # 必要な変数一覧（git 管理・値は空）
+```
+
+### `.env.example` テンプレート
+
+```bash
+# === アプリケーション ===
+NEXT_PUBLIC_APP_URL=
+
+# === 認証 ===
+NEXTAUTH_URL=
+NEXTAUTH_SECRET=
+
+# === データベース ===
+DATABASE_URL=
+
+# === 外部サービス ===
+OPENAI_API_KEY=
+STRIPE_SECRET_KEY=
+NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=
+
+# === Cron 保護 ===
+CRON_SECRET=
+
+# === デモモード（任意） ===
+NEXT_PUBLIC_DEMO_MODE=
+```
+
+### 起動時の環境変数バリデーション
 
 ```typescript
 // lib/env.ts
-import { z } from "zod";
+const requiredEnvVars = [
+  'NEXTAUTH_SECRET',
+  'DATABASE_URL',
+  'OPENAI_API_KEY',
+] as const;
 
-const envSchema = z.object({
-  // DB
-  DATABASE_URL: z.string().url(),
-  // Auth
-  NEXTAUTH_SECRET: z.string().min(32),
-  NEXTAUTH_URL: z.string().url(),
-  // 外部サービス（例）
-  OPENAI_API_KEY: z.string().startsWith("sk-"),
-  // Cron保護
-  CRON_SECRET: z.string().min(32),
-});
+export function validateEnv() {
+  const missing = requiredEnvVars.filter((key) => !process.env[key]);
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing required environment variables:\n${missing.map((k) => `  - ${k}`).join('\n')}`
+    );
+  }
+}
 
-export const env = envSchema.parse(process.env);
+// app/layout.tsx（サーバーコンポーネント）
+import { validateEnv } from '@/lib/env';
+validateEnv(); // 起動時に即検出
 ```
 
-### 2-2. Vercel 環境変数チェックリスト
+### Vercel での設定
 
-| 変数名 | Production | Preview | Development | 備考 |
-|--------|:---:|:---:|:---:|------|
-| `DATABASE_URL` | ✅ | ✅ | ✅ | 本番/ステージングで別DB |
-| `NEXTAUTH_SECRET` | ✅ | ✅ | ✅ | 環境ごとに異なる値 |
-| `NEXTAUTH_URL` | ✅ | ✅ | ✅ | 各環境のURL |
-| `CRON_SECRET` | ✅ | — | — | Production のみ必須 |
-| `NEXT_PUBLIC_*` | ✅ | ✅ | ✅ | クライアント公開変数 |
-
-> ⚠️ `NEXT_PUBLIC_` プレフィックスの変数はクライアントバンドルに含まれる。**シークレット値を絶対に設定しない**。
-
-### 2-3. `.env.example` の同期確認
-
-```bash
-# .env.example に全キーが記載されているか確認
-diff <(grep -E '^[A-Z]' .env.local | cut -d= -f1 | sort) \
-     <(grep -E '^[A-Z]' .env.example | cut -d= -f1 | sort)
 ```
+Vercel Dashboard
+  → Settings → Environment Variables
+  → Production / Preview / Development で分けて設定
+```
+
+**チェックリスト**
+- [ ] `.env.example` が最新（新規変数を追加したら必ず更新）
+- [ ] `.env.local` が `.gitignore` に含まれている
+- [ ] Vercel の Production 環境変数がすべて設定済み
+- [ ] `NEXTAUTH_SECRET` は `openssl rand -base64 32` で生成した強いランダム値
+- [ ] `CRON_SECRET` が設定済み（Cron を使う場合）
 
 ---
 
-## 3. セキュリティチェック
+## 3. Cron ジョブのセキュリティ保護
 
-### 3-1. API Route の認証ガード
+### `requireCron` ガード（必須）
 
-すべての保護が必要なエンドポイントに認証チェックを実装する：
+**⚠️ このガードなしでデプロイすると、誰でも Cron エンドポイントを叩ける。**
 
 ```typescript
 // lib/api-guard.ts
-import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { NextRequest, NextResponse } from 'next/server';
 
-/** 通常APIの認証ガード */
-export async function requireAuth() {
-  const session = await getServerSession(authOptions);
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+/** Cron エンドポイント保護。CRON_SECRET が一致しない場合は 401 を返す */
+export function requireCron(req: NextRequest): NextResponse | null {
+  const authHeader = req.headers.get('authorization');
+  const expectedToken = process.env.CRON_SECRET;
+
+  if (!expectedToken) {
+    console.error('CRON_SECRET is not set');
+    return NextResponse.json({ error: 'Server misconfiguration' }, { status: 500 });
   }
-  return null; // OK
+
+  if (authHeader !== `Bearer ${expectedToken}`) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  return null; // 認証成功
 }
 
-/** Cron専用ガード */
-export function requireCron(req: NextRequest) {
-  const authHeader = req.headers.get("authorization");
-  const expected = `Bearer ${process.env.CRON_SECRET}`;
-  if (authHeader !== expected) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
-  return null; // OK
-}
-
-/** エラーを安全にシリアライズ（スタックトレース漏洩防止） */
-export function safeError(error: unknown, context?: string) {
-  const message = error instanceof Error ? error.message : "Unknown error";
-  console.error(`[${context ?? "API"}]`, error);
-  return NextResponse.json(
-    { error: process.env.NODE_ENV === "production" ? "Internal Server Error" : message },
-    { status: 500 }
-  );
+/** エラーオブジェクトを安全にシリアライズ */
+export function safeError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
 }
 ```
 
-### 3-2. Cron エンドポイントの実装パターン
+### Cron ルートの実装パターン
 
 ```typescript
-// app/api/cron/[name]/route.ts
-import { NextRequest, NextResponse } from "next/server";
-import { requireCron, safeError } from "@/lib/api-guard";
+// app/api/cron/daily-summary/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { requireCron, safeError } from '@/lib/api-guard';
 
 /**
- * GET /api/cron/[name]
- * Vercel Cron から呼び出される。CRON_SECRET による認証必須。
+ * GET /api/cron/daily-summary
+ * Vercel Cron から毎日 09:00 JST に呼ばれる
  */
 export async function GET(req: NextRequest) {
-  const guard = requireCron(req);
-  if (guard) return guard; // 401/403 を返す
+  // 1. 認証チェック（必ず最初に）
+  const authError = requireCron(req);
+  if (authError) return authError;
 
   try {
-    // バッチ処理の実装
-    await runBatchJob();
-    return NextResponse.json({ ok: true, timestamp: new Date().toISOString() });
-  } catch (error) {
-    return safeError(error, "cron/[name]");
+    // 2. バッチ処理本体
+    const result = await runDailySummary();
+    return NextResponse.json({ ok: true, processed: result.count });
+  } catch (err) {
+    console.error('[cron/daily-summary]', err);
+    return NextResponse.json({ error: safeError(err) }, { status: 500 });
   }
 }
 ```
 
+### `vercel.json` でのスケジュール設定
+
 ```json
-// vercel.json
 {
   "crons": [
     {
       "path": "/api/cron/daily-summary",
-      "schedule": "0 9 * * *"
+      "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/cron/weekly-report",
+      "schedule": "0 0 * * 0"
     }
   ]
 }
 ```
 
-### 3-3. セキュリティヘッダーの設定
+> **JST 変換**: Vercel Cron は UTC。JST 09:00 → UTC `0 0 * * *`
 
-```typescript
-// next.config.ts
-const securityHeaders = [
-  { key: "X-DNS-Prefetch-Control", value: "on" },
-  { key: "X-Frame-Options", value: "SAMEORIGIN" },
-  { key: "X-Content-Type-Options", value: "nosniff" },
-  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-  {
-    key: "Permissions-Policy",
-    value: "camera=(), microphone=(), geolocation=()",
-  },
-  {
-    key: "Content-Security-Policy",
-    value: [
-      "default-src 'self'",
-      "script-src 'self' 'unsafe-eval' 'unsafe-inline'", // Next.js要件
-      "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data: https:",
-      "font-src 'self'",
-      "connect-src 'self' https:",
-    ].join
+**チェックリスト**
+- [ ] すべての `/api/cron/*` に `requireCron()` が付いている
+- [ ] `CRON_SECRET` が Vercel 環境変数に設定済み
+- [ ] `vercel.json` の cron
