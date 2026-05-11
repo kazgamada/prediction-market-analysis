@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import pandas as pd
 import streamlit as st
 
+from copytrader.config import get_settings
 from copytrader.web import state
 from copytrader.web.cache import (
     chain_head as cached_chain_head,
@@ -92,6 +93,14 @@ st.caption(
     "indexer のチェックポイント (`ingest_cursor`) からバックフィルの進捗を表示します。"
     "Streamlit UI / CLI / Fly machine のどこで backfill を走らせていても DB を見るので進捗が分かります。"
 )
+_recent_days = get_settings().backfill_recent_days
+if _recent_days and _recent_days > 0 and _chain_head:
+    _floor = max(0, _chain_head - _recent_days * 43_200)
+    st.caption(
+        f"自動 catchup は直近 **{_recent_days} 日** のみを対象にしています "
+        f"(block ≥ {_floor:,})。古い履歴を取り込みたい場合は Actions ページから "
+        f"`From block` を明示して backfill を実行してください。"
+    )
 
 if not cursor_rows:
     st.info("backfill 用の cursor がまだありません。Actions ページか CLI で `copytrader backfill` を 1 度走らせてください。")

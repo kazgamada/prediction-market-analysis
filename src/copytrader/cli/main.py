@@ -220,20 +220,41 @@ def watch_list() -> None:
     default=300,
     help="Periodic backfill catchup interval (seconds). 0 to disable.",
 )
-@click.option("--catchup-chunk-size", type=int, default=1000)
-@click.option("--catchup-workers", type=int, default=5)
-def monitor(catchup_interval: int, catchup_chunk_size: int, catchup_workers: int) -> None:
+@click.option("--catchup-chunk-size", type=int, default=2000)
+@click.option("--catchup-workers", type=int, default=10)
+@click.option(
+    "--catchup-recent-days",
+    type=int,
+    default=None,
+    help="Limit auto-catchup to the last N days (defaults to settings.backfill_recent_days). "
+         "古い履歴を毎回取りに行くと永久に終わらないので、catchup は直近 N 日に絞る。",
+)
+def monitor(
+    catchup_interval: int,
+    catchup_chunk_size: int,
+    catchup_workers: int,
+    catchup_recent_days: int | None,
+) -> None:
     """Subscribe to OrderFilled WS, persist trades, emit signals (read-only).
 
     `catchup-interval` 秒ごとにバックグラウンドで `backfill()` を呼び、
     cursor が現在のチェーンヘッドに追いつくまで自動的に取り込みを進める。
     backfill は冪等 (ON CONFLICT DO NOTHING + 単調増加 cursor) なので、
     live 取り込みと同時に走っても安全。
+
+    catchup は **直近 N 日のみ** を対象にする (default は env の
+    BACKFILL_RECENT_DAYS、未設定なら 60 日)。完全履歴が必要なときは UI の
+    Actions ページから from_block を明示して手動 backfill を打つ。
     """
+    from copytrader.config import get_settings
     from copytrader.indexer.backfill import backfill as do_backfill
     from copytrader.monitor.detector import run as monitor_run
     from copytrader.notifier.telegram import TelegramNotifier
 
+    settings = get_settings()
+    recent_days = (
+        catchup_recent_days if catchup_recent_days is not None else settings.backfill_recent_days
+    )
     notifier = TelegramNotifier()
 
     async def on_signal(sig):
@@ -247,7 +268,9 @@ def monitor(catchup_interval: int, catchup_chunk_size: int, catchup_workers: int
         await loop.run_in_executor(
             None,
             lambda: do_backfill(
-                chunk_size=catchup_chunk_size, max_workers=catchup_workers
+                chunk_size=catchup_chunk_size,
+                max_workers=catchup_workers,
+                recent_days=recent_days,
             ),
         )
 
