@@ -279,6 +279,50 @@ _catchup_start_lock = threading.Lock()
 _CATCHUP_INTERVAL_SEC = 300.0
 
 
+def _bump_cursors_to_recent_floor() -> None:
+    """cursor が `head - backfill_recent_days * 43200` より古い場合、
+    その値まで前進させて古い履歴をスキップする。
+
+    catchup ループが動かなくても、Streamlit が起動した瞬間に cursor が
+    直近 N 日相当の位置に書き換わるので、UI 上の進捗もすぐ更新される。
+    trade テーブルへの insert は別途 catchup / WS で進めるので、cursor の
+    先行は無害 (idempotent insert + max-cursor 保護)。
+    """
+    from datetime import datetime, timezone
+
+    from copytrader.chain.client import PolygonClient
+    from copytrader.config import get_settings
+    from copytrader.db import session_scope
+    from copytrader.models import IngestCursor
+
+    recent_days = get_settings().backfill_recent_days
+    if not recent_days or recent_days <= 0:
+        return
+
+    try:
+        head = PolygonClient().block_number()
+    except Exception:
+        log.exception("bump_cursors: chain head fetch failed")
+        return
+
+    POLYGON_BLOCKS_PER_DAY = 43_200
+    recent_floor = max(0, head - recent_days * POLYGON_BLOCKS_PER_DAY)
+
+    now = datetime.now(timezone.utc)
+    with session_scope() as session:
+        for exchange in ("ctf", "negrisk"):
+            name = f"backfill_{exchange}"
+            cur = session.get(IngestCursor, name)
+            if cur is None:
+                session.add(IngestCursor(name=name, block_number=recent_floor, updated_at=now))
+                log.info("bump_cursors: created %s at recent_floor=%s", name, recent_floor)
+            elif (cur.block_number or 0) < recent_floor:
+                old = cur.block_number
+                cur.block_number = recent_floor
+                cur.updated_at = now
+                log.info("bump_cursors: %s %s -> %s (recent_floor)", name, old, recent_floor)
+
+
 def _catchup_loop() -> None:
     """web プロセス内で動く保険的 catchup loop。
 
@@ -291,6 +335,7 @@ def _catchup_loop() -> None:
     from copytrader.config import get_settings
     from copytrader.indexer.backfill import backfill as do_backfill
 
+    log.info("web-catchup: thread started")
     backoff = 1.0
     while True:
         try:
@@ -306,12 +351,22 @@ def _catchup_loop() -> None:
 
 
 def start_background_catchup() -> None:
-    """プロセス内に 1 つだけ daemon catchup スレッドを起動する。"""
+    """プロセス内に 1 つだけ daemon catchup スレッドを起動する。
+
+    起動直後に同期で `_bump_cursors_to_recent_floor()` を呼ぶ。これで
+    Streamlit が最初にロードされた瞬間に cursor が直近 60 日相当に
+    ジャンプし、UI 上の進捗もすぐ反映される。
+    """
     global _catchup_started
     with _catchup_start_lock:
         if _catchup_started:
             return
+        try:
+            _bump_cursors_to_recent_floor()
+        except Exception:
+            log.exception("start_background_catchup: bump failed")
         threading.Thread(
             target=_catchup_loop, name="web-catchup", daemon=True
         ).start()
         _catchup_started = True
+        log.info("start_background_catchup: launched daemon thread")
