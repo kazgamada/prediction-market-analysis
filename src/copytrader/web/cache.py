@@ -272,3 +272,46 @@ def start_background_warmer() -> None:
             target=_warm_loop, name="page-cache-warmer", daemon=True
         ).start()
         _warmer_started = True
+
+
+_catchup_started = False
+_catchup_start_lock = threading.Lock()
+_CATCHUP_INTERVAL_SEC = 300.0
+
+
+def _catchup_loop() -> None:
+    """web プロセス内で動く保険的 catchup loop。
+
+    monitor プロセスが死んでいても backfill が止まらないよう、
+    web (Streamlit) プロセスでも同じ catchup を回す。
+    settings.backfill_recent_days の窓だけを対象にする。
+    backfill 自体が冪等 (ON CONFLICT DO NOTHING + 単調増加 cursor) なので
+    monitor と並走しても安全。
+    """
+    from copytrader.config import get_settings
+    from copytrader.indexer.backfill import backfill as do_backfill
+
+    backoff = 1.0
+    while True:
+        try:
+            recent_days = get_settings().backfill_recent_days
+            do_backfill(chunk_size=1000, max_workers=5, recent_days=recent_days)
+            backoff = 1.0
+        except Exception:
+            log.exception("web-catchup: backfill failed; retrying in %.1fs", backoff)
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 60.0)
+            continue
+        time.sleep(_CATCHUP_INTERVAL_SEC)
+
+
+def start_background_catchup() -> None:
+    """プロセス内に 1 つだけ daemon catchup スレッドを起動する。"""
+    global _catchup_started
+    with _catchup_start_lock:
+        if _catchup_started:
+            return
+        threading.Thread(
+            target=_catchup_loop, name="web-catchup", daemon=True
+        ).start()
+        _catchup_started = True
