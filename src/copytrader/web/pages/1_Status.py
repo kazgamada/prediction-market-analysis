@@ -14,6 +14,7 @@ from copytrader.web.cache import (
 )
 from copytrader.web.cache import (
     force_refresh,
+    rpc_selftest_result,
     status_snapshot,
 )
 from copytrader.web.logs import render_running_jobs_banner
@@ -146,6 +147,12 @@ if _hb:
     )
 else:
     st.caption("🔴 **web catchup heartbeat**: まだ動いていない (Streamlit を 1 度開くと起動)")
+
+_rpc = rpc_selftest_result()
+if _rpc:
+    st.caption(
+        f"🔧 **RPC self-test** (head ± 500 blocks): {_rpc}"
+    )
 
 st.subheader("Open positions")
 st.dataframe(pd.DataFrame(pos_rows) if pos_rows else pd.DataFrame(), use_container_width=True)
