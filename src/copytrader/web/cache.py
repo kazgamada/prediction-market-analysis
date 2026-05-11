@@ -361,9 +361,23 @@ def _run_rpc_self_test() -> dict[str, Any]:
 
 
 _RPC_SELFTEST_RESULT: dict[str, Any] = {}
+_RPC_SELFTEST_TS: float = 0.0
+_RPC_SELFTEST_TTL_SEC = 30.0
 
 
 def rpc_selftest_result() -> dict[str, Any]:
+    """30 秒キャッシュ付きで RPC self-test を即時実行。
+    呼ばれるたびにキャッシュが切れていれば再評価。
+    """
+    global _RPC_SELFTEST_RESULT, _RPC_SELFTEST_TS
+    now = time.time()
+    if not _RPC_SELFTEST_RESULT or (now - _RPC_SELFTEST_TS) > _RPC_SELFTEST_TTL_SEC:
+        try:
+            _RPC_SELFTEST_RESULT = _run_rpc_self_test()
+        except Exception as e:
+            _RPC_SELFTEST_RESULT = {"error": f"selftest fn raised: {type(e).__name__}: {str(e)[:300]}"}
+        _RPC_SELFTEST_TS = now
+        log.info("rpc-selftest (on-demand): %s", _RPC_SELFTEST_RESULT)
     return dict(_RPC_SELFTEST_RESULT)
 
 
