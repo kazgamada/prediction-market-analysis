@@ -193,6 +193,17 @@ fix(api): handle empty webhook payload from Make.com
 
 「既存 Skill が無いから新規実装」と早合点せず、`archive/` を必ず一通り見てから判断すること。
 
+### 7.2 ツール側で Skill を進化させるときのルール
+
+`.claude/skills/<slug>.md`（フラット形式）または `.claude/skills/<slug>/SKILL.md`（ディレクトリ形式）をツール側で改良した場合は、以下を **必ず** 守る。`kaz-claude-config` の collect ワークフローが日付ベースで「マスターより新しい改良」として検出し、Builder の Ideal 統合で漏れなく取り込めるようになる。
+
+1. **frontmatter の `version` を +1** する（例: `version: 2` → `version: 3`）
+2. **`changedAt`** を ISO 8601（例: `'2026-05-11T07:00:00.000Z'`）で更新
+3. 必要に応じて `changeType: fix | derive` と `changeReason: "<1行で意図>"` を付与
+4. コミットメッセージは `fix(skill: <slug>): <reason>` 形式
+
+これらを忘れても `git log` の commit time から救済されるが、frontmatter を正しく更新するのが第一原則。マスター（`skills/<slug>/SKILL.md`）を直接編集してはならない（マスター更新は kaz-claude-config 側で行う）。
+
 ---
 
 ## 8. 作業フロー
