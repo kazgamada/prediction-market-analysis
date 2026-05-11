@@ -1,7 +1,4 @@
 ---
-name: security-best-practices
-description: >-
-  Next.js/Supabase/TypeScriptプロジェクトにおける包括的なセキュリティガイド。認証・認可、レート制限、CSRF保護、暗号化、監査ログ、インシデント対応、シークレット管理を網羅し、コードパターンと原則のバランスを取った実装指針を提供する。
 category: security
 sourceSkillIds:
   - d4182b48
@@ -30,17 +27,45 @@ sourceSkillIds:
   - 46c447b2
   - 58257c07
 generatedAt: '2026-05-11'
+integrationStrategy: latest-first
+latestSourceTimestamp: '2026-05-10T19:11:30+00:00'
+adoptedFromArchive:
+  - archive/prediction-market-analysis/.claude/skills/security-best-practices.md
+  - archive/aegis-market-os/.claude/skills/security-rate-limit.md
+  - archive/AISaaS/.claude/skills/add-audit-log.md
+  - archive/AISaaS/.claude/skills/add-encrypted-field.md
+  - archive/AISaaS/.claude/skills/add-rate-limit.md
+  - archive/AISaaS/.claude/skills/incident-response.md
+  - archive/AISaaS/.claude/skills/rotate-secret.md
+  - archive/task-matrix/.claude/skills/security-review.md
 ---
+```yaml
+---
+name: security-best-practices
+description: >-
+  Next.js/Supabase/TypeScriptプロジェクトにおけるセキュリティのベストプラクティス。
+  認証・認可、レート制限、AES-256-GCM暗号化、監査ログ、インシデント対応、シークレット管理、
+  セキュリティレビューチェックリストを網羅した包括的なセキュリティガイド。
+category: security
+---
+```
 
 # Security Best Practices
 
-Next.js / Supabase / TypeScript プロジェクト向けセキュリティ実装ガイド。
+Next.js / Supabase / TypeScript プロジェクト向けの包括的セキュリティガイド。
+
+> **このSkillの使い方**
+> - 新機能実装時 → 各セクションのチェックリストを確認
+> - インシデント発生時 → §6「インシデント対応」を開いて上から実行
+> - コードレビュー時 → §7「セキュリティレビューチェックリスト」を活用
+> - PII追加時 → §3「暗号化」を参照
+> - シークレット変更時 → §5「シークレット管理」を必ず確認
 
 ---
 
-## 1. 認証・認可
+## §1 認証・認可
 
-### 1-1. Supabase Auth の基本設定
+### 1.1 Supabase Auth の基本設定
 
 ```typescript
 // lib/supabase/server.ts
@@ -54,11 +79,12 @@ export function createClient() {
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        getAll: () => cookieStore.getAll(),
-        setAll: (cookiesToSet) => {
-          cookiesToSet.forEach(({ name, value, options }) =>
-            cookieStore.set(name, value, options)
-          )
+        get(name: string) { return cookieStore.get(name)?.value },
+        set(name: string, value: string, options: CookieOptions) {
+          cookieStore.set({ name, value, ...options })
+        },
+        remove(name: string, options: CookieOptions) {
+          cookieStore.set({ name, value: '', ...options })
         },
       },
     }
@@ -66,193 +92,149 @@ export function createClient() {
 }
 ```
 
-### 1-2. ミドルウェアによるセッション保護
+### 1.2 Cookie セキュリティ設定
+
+```typescript
+// Cookie は常に以下の設定を使うこと
+const SECURE_COOKIE_OPTIONS = {
+  httpOnly: true,          // XSS からの保護
+  sameSite: 'lax' as const, // CSRF 保護（OAuth を壊さない）
+  secure: process.env.NODE_ENV === 'production', // 本番は HTTPS のみ
+  path: '/',
+  maxAge: 60 * 60 * 24 * 30, // 30日（要件に応じて調整）
+}
+```
+
+### 1.3 tRPC / API ルートでの認可パターン
+
+```typescript
+// server/trpc/middleware.ts
+
+/** 認証済みユーザー必須 */
+export const protectedProcedure = t.procedure.use(async ({ ctx, next }) => {
+  if (!ctx.user) throw new TRPCError({ code: 'UNAUTHORIZED' })
+  return next({ ctx: { ...ctx, user: ctx.user } })
+})
+
+/** 管理者専用 */
+export const adminProcedure = protectedProcedure.use(async ({ ctx, next }) => {
+  if (ctx.user.role !== 'admin') throw new TRPCError({ code: 'FORBIDDEN' })
+  return next()
+})
+
+// ✅ 正しい例: ctx.user.id でスコープを絞る
+export const getUserPosts = protectedProcedure
+  .query(async ({ ctx }) => {
+    return db.posts.findMany({
+      where: { userId: ctx.user.id }, // 自分のデータのみ
+    })
+  })
+
+// ❌ 誤った例: 全ユーザーのデータを返す
+export const getAllPosts = protectedProcedure
+  .query(async () => {
+    return db.posts.findMany() // IDOR 脆弱性
+  })
+```
+
+### 1.4 Next.js Middleware での認証ガード
 
 ```typescript
 // middleware.ts
-import { createServerClient } from '@supabase/ssr'
-import { NextResponse, type NextRequest } from 'next/server'
+import { createMiddlewareClient } from '@supabase/auth-helpers-nextjs'
+import { NextResponse } from 'next/server'
+import type { NextRequest } from 'next/server'
 
-const PUBLIC_PATHS = ['/', '/auth/login', '/auth/signup', '/api/webhooks']
+export async function middleware(req: NextRequest) {
+  const res = NextResponse.next()
+  const supabase = createMiddlewareClient({ req, res })
+  const { data: { session } } = await supabase.auth.getSession()
 
-export async function middleware(request: NextRequest) {
-  let response = NextResponse.next({ request })
-
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll: () => request.cookies.getAll(),
-        setAll: (cookiesToSet) => {
-          cookiesToSet.forEach(({ name, value, options }) => {
-            request.cookies.set(name, value)
-            response.cookies.set(name, value, options)
-          })
-        },
-      },
-    }
-  )
-
-  const { data: { user } } = await supabase.auth.getUser()
-  const isPublic = PUBLIC_PATHS.some(p => request.nextUrl.pathname.startsWith(p))
-
-  if (!user && !isPublic) {
-    return NextResponse.redirect(new URL('/auth/login', request.url))
+  const isProtectedRoute = req.nextUrl.pathname.startsWith('/dashboard')
+  if (isProtectedRoute && !session) {
+    const redirectUrl = new URL('/login', req.url)
+    redirectUrl.searchParams.set('redirectTo', req.nextUrl.pathname)
+    return NextResponse.redirect(redirectUrl)
   }
-
-  return response
+  return res
 }
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+  matcher: ['/dashboard/:path*', '/api/protected/:path*'],
 }
-```
-
-### 1-3. ロールベースアクセス制御（RBAC）
-
-```typescript
-// lib/auth/rbac.ts
-type Role = 'admin' | 'member' | 'viewer'
-
-const ROLE_HIERARCHY: Record<Role, number> = {
-  admin: 3,
-  member: 2,
-  viewer: 1,
-}
-
-export function hasRole(userRole: Role, requiredRole: Role): boolean {
-  return ROLE_HIERARCHY[userRole] >= ROLE_HIERARCHY[requiredRole]
-}
-
-// Server Action / API Route での使用例
-export async function requireRole(requiredRole: Role) {
-  const supabase = createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) throw new Error('UNAUTHORIZED')
-
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('role')
-    .eq('id', user.id)
-    .single()
-
-  if (!profile || !hasRole(profile.role as Role, requiredRole)) {
-    throw new Error('FORBIDDEN')
-  }
-
-  return user
-}
-```
-
-### 1-4. Supabase RLS ポリシー
-
-```sql
--- 自分のデータのみ読み取り可能
-create policy "Users can read own data"
-  on profiles for select
-  using (auth.uid() = user_id);
-
--- 管理者のみ全件読み取り可能
-create policy "Admins can read all"
-  on profiles for select
-  using (
-    exists (
-      select 1 from profiles
-      where id = auth.uid() and role = 'admin'
-    )
-  );
-
--- サービスロールはRLSをバイパス（サーバーサイドのみで使用）
--- SUPABASE_SERVICE_ROLE_KEY は絶対にクライアントに渡さない
 ```
 
 ---
 
-## 2. API セキュリティ
+## §2 レート制限
 
-### 2-1. レート制限
+### 2.1 汎用 rateLimit ユーティリティ
 
 ```typescript
 // lib/rate-limit.ts
-import { Redis } from '@upstash/redis'
-import { Ratelimit } from '@upstash/ratelimit'
+import { LRUCache } from 'lru-cache'
+import type { NextRequest } from 'next/server'
 
-const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_URL!,
-  token: process.env.UPSTASH_REDIS_TOKEN!,
-})
-
-// 用途別にリミッターを分ける
-export const rateLimiters = {
-  api: new Ratelimit({
-    redis,
-    limiter: Ratelimit.slidingWindow(60, '1 m'),   // 60req/min
-    prefix: 'rl:api',
-  }),
-  auth: new Ratelimit({
-    redis,
-    limiter: Ratelimit.slidingWindow(5, '15 m'),   // 5req/15min（ログイン試行）
-    prefix: 'rl:auth',
-  }),
-  expensive: new Ratelimit({
-    redis,
-    limiter: Ratelimit.slidingWindow(10, '1 h'),   // 10req/hour（AI生成など）
-    prefix: 'rl:expensive',
-  }),
+interface RateLimitOptions {
+  /** 時間窓（ミリ秒）*/
+  windowMs: number
+  /** 上限リクエスト数 */
+  max: number
+  /** キーの生成関数（デフォルト: IP アドレス）*/
+  keyGenerator?: (req: NextRequest) => string
 }
 
-// API Route / Server Action での使用
-export async function checkRateLimit(
-  limiter: keyof typeof rateLimiters,
-  identifier: string // user ID or IP
-) {
-  const { success, remaining, reset } = await rateLimiters[limiter].limit(identifier)
+const caches = new Map<string, LRUCache<string, number[]>>()
 
-  if (!success) {
-    throw Object.assign(new Error('RATE_LIMIT_EXCEEDED'), {
-      remaining,
-      resetAt: new Date(reset),
-    })
+export function rateLimit(options: RateLimitOptions) {
+  const { windowMs, max, keyGenerator } = options
+  const cacheKey = `${windowMs}:${max}`
+
+  if (!caches.has(cacheKey)) {
+    caches.set(cacheKey, new LRUCache<string, number[]>({
+      max: 10_000,
+      ttl: windowMs,
+    }))
   }
+  const cache = caches.get(cacheKey)!
 
-  return { remaining }
+  return {
+    check(req: NextRequest): { success: boolean; remaining: number; reset: number } {
+      const key = keyGenerator?.(req) ??
+        req.headers.get('x-forwarded-for')?.split(',')[0].trim() ??
+        req.headers.get('x-real-ip') ??
+        'unknown'
+
+      const now = Date.now()
+      const timestamps = (cache.get(key) ?? []).filter(t => now - t < windowMs)
+      const success = timestamps.length < max
+
+      if (success) {
+        timestamps.push(now)
+        cache.set(key, timestamps)
+      }
+
+      return {
+        success,
+        remaining: Math.max(0, max - timestamps.length),
+        reset: Math.ceil((timestamps[0] ?? now) + windowMs),
+      }
+    },
+  }
+}
+
+// レート制限違反レスポンス生成
+export function rateLimitResponse(reset: number) {
+  return new Response('Too Many Requests', {
+    status: 429,
+    headers: {
+      'Retry-After': String(Math.ceil((reset - Date.now()) / 1000)),
+      'X-RateLimit-Reset': String(reset),
+    },
+  })
 }
 ```
 
-### 2-2. 入力バリデーション（Zod）
+### 2.2 用途別推奨設定
 
-```typescript
-// lib/validation/schemas.ts
-import { z } from 'zod'
-
-// 共通ルール
-const safeString = z.string().trim().max(1000)
-const safeText = z.string().trim().max(10000)
-const safeId = z.string().uuid()
-
-// エンティティごとのスキーマ定義例
-export const CreatePostSchema = z.object({
-  title: safeString.min(1).max(200),
-  content: safeText,
-  tags: z.array(safeString).max(10).optional(),
-})
-
-// API Route でのバリデーション
-export async function POST(request: Request) {
-  const body = await request.json()
-  const result = CreatePostSchema.safeParse(body)
-
-  if (!result.success) {
-    return Response.json(
-      { error: 'VALIDATION_ERROR', issues: result.error.issues },
-      { status: 400 }
-    )
-  }
-
-  // result.data は型安全かつサニタイズ済み
-}
-```
-
-### 
+| エンドポイント | 推奨制限 | 理由

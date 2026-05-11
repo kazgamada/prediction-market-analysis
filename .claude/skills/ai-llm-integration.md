@@ -1,8 +1,9 @@
 ---
 name: ai-llm-integration
 description: >-
-  Claude API / Anthropic SDK をNext.js・サーバーアクション・Route Handlerで統合するためのパターン集。
-  クライアント初期化・ストリーミング・バックグラウンド生成・マルチプロバイダー対応・プロンプト設計・エラーハンドリングを網羅する。
+  Claude API / Anthropic SDK をNext.js・Server Actions・Route Handlersで統合するための
+  汎用パターン集。セットアップ・ストリーミング・バックグラウンド生成・マルチプロバイダー対応・
+  プロンプト設計・エラーハンドリング・コンテンツ生成パイプラインを網羅する。
 category: ai-llm
 sourceSkillIds:
   - 497034fa
@@ -48,220 +49,260 @@ sourceSkillIds:
   - 6aba5abb
   - 8c7a657e
 generatedAt: '2026-05-11'
+integrationStrategy: latest-first
+latestSourceTimestamp: '2026-05-10T19:11:30+00:00'
+adoptedFromArchive:
+  - archive/prediction-market-analysis/.claude/skills/ai-llm-integration.md
+  - archive/aegis-market-os/.claude/skills/coding-conventions.md
+  - archive/AISaaS/.claude/skills/add-email-template.md
+  - archive/AISaaS/.claude/skills/content-generation-pipeline.md
+  - archive/aegis-market-os/.claude/skills/ai-llm-integration-derived.md
+  - archive/ai-agent-hub/.claude/skills/ai-llm-integration-derived.md
+  - archive/ai-company/.claude/skills/ai-llm-integration-derived.md
+  - archive/AISaaS/.claude/skills/ai-llm-integration-derived.md
+  - archive/KOKOKARA/.claude/skills/ai-llm-integration-derived.md
+  - archive/LINE-AI/.claude/skills/ai-llm-integration-derived.md
 ---
 
 # AI / LLM Integration — Claude API & Anthropic SDK
 
-## 1. セットアップ・クライアント初期化
+## 1. セットアップ
 
-### 推奨ディレクトリ構成
+### 依存関係
 
-```
-lib/
-  ai/
-    client.ts          # Anthropicクライアントのシングルトン
-    providers.ts       # マルチプロバイダー抽象化
-    prompts/           # プロンプトテンプレート
-      system.ts
-      user.ts
-    utils.ts           # ストリーム変換・トークン計算など
-app/
-  api/
-    ai/
-      chat/route.ts    # ストリーミングRoute Handler
-      generate/route.ts
+```bash
+npm install @anthropic-ai/sdk
+# ストリーミング用（Next.js App Router）
+npm install ai
+# 環境変数
+# ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-### クライアントシングルトン（`lib/ai/client.ts`）
+### クライアント初期化
 
 ```typescript
+// lib/anthropic.ts
 import Anthropic from "@anthropic-ai/sdk";
 
-// サーバーサイド専用 — クライアントコンポーネントからimportしない
-if (typeof window !== "undefined") {
-  throw new Error("lib/ai/client.ts はサーバーサイドのみで使用してください");
-}
-
 export const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY!,
-  // タイムアウト・リトライを明示設定
-  timeout: 60_000,
-  maxRetries: 2,
+  apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-/** 利用するモデルを一元管理 */
-export const AI_MODELS = {
-  /** 高精度・複雑なタスク向け */
-  opus: "claude-opus-4-5",
-  /** バランス型（推奨デフォルト） */
-  sonnet: "claude-sonnet-4-5",
-  /** 高速・低コスト */
-  haiku: "claude-haiku-3-5",
+// モデル定数（プロジェクト横断で統一）
+export const CLAUDE_MODELS = {
+  OPUS: "claude-opus-4-5",
+  SONNET: "claude-sonnet-4-5",
+  HAIKU: "claude-haiku-4-5",
 } as const;
-
-export type AIModel = keyof typeof AI_MODELS;
+export type ClaudeModel = (typeof CLAUDE_MODELS)[keyof typeof CLAUDE_MODELS];
 ```
 
 ---
 
-## 2. ストリーミング実装
+## 2. 基本的なメッセージ生成
 
-### Route Handler — SSE ストリーミング（`app/api/ai/chat/route.ts`）
+### シンプルなテキスト生成
 
 ```typescript
-import { NextRequest } from "next/server";
-import Anthropic from "@anthropic-ai/sdk";
-import { anthropic, AI_MODELS } from "@/lib/ai/client";
-import { z } from "zod";
+// lib/ai/generate.ts
+import { anthropic, CLAUDE_MODELS } from "@/lib/anthropic";
 
-const RequestSchema = z.object({
-  messages: z.array(
-    z.object({
-      role: z.enum(["user", "assistant"]),
-      content: z.string().min(1).max(100_000),
-    })
-  ),
-  model: z.enum(["opus", "sonnet", "haiku"]).default("sonnet"),
-  systemPrompt: z.string().optional(),
-});
-
-export async function POST(req: NextRequest) {
-  // 1. バリデーション
-  const body = await req.json().catch(() => null);
-  const parsed = RequestSchema.safeParse(body);
-  if (!parsed.success) {
-    return Response.json(
-      { error: "Invalid request", details: parsed.error.flatten() },
-      { status: 400 }
-    );
+export async function generateText(
+  prompt: string,
+  options?: {
+    model?: ClaudeModel;
+    maxTokens?: number;
+    systemPrompt?: string;
   }
+): Promise<string> {
+  const response = await anthropic.messages.create({
+    model: options?.model ?? CLAUDE_MODELS.SONNET,
+    max_tokens: options?.maxTokens ?? 1024,
+    system: options?.systemPrompt,
+    messages: [{ role: "user", content: prompt }],
+  });
 
-  const { messages, model, systemPrompt } = parsed.data;
+  const block = response.content[0];
+  if (block.type !== "text") throw new Error("Unexpected response type");
+  return block.text;
+}
+```
 
-  // 2. ストリームを作成してReadableStreamに変換
+### 構造化JSON出力
+
+```typescript
+export async function generateStructuredData<T>(
+  prompt: string,
+  schema: string, // JSON Schema の説明
+  systemPrompt?: string
+): Promise<T> {
+  const text = await generateText(
+    `${prompt}\n\nRespond with valid JSON only. Schema: ${schema}`,
+    {
+      systemPrompt:
+        systemPrompt ??
+        "You are a helpful assistant. Always respond with valid JSON.",
+    }
+  );
+
+  // JSON ブロックを抽出
+  const jsonMatch = text.match(/```json\n?([\s\S]*?)\n?```/) ?? [null, text];
+  return JSON.parse(jsonMatch[1].trim()) as T;
+}
+```
+
+---
+
+## 3. ストリーミング
+
+### Route Handler（App Router）
+
+```typescript
+// app/api/ai/stream/route.ts
+import { anthropic, CLAUDE_MODELS } from "@/lib/anthropic";
+import { StreamingTextResponse, AnthropicStream } from "ai"; // Vercel AI SDK
+
+export async function POST(req: Request) {
+  const { messages, systemPrompt } = await req.json();
+
+  const response = await anthropic.messages.create({
+    model: CLAUDE_MODELS.SONNET,
+    max_tokens: 2048,
+    system: systemPrompt,
+    messages,
+    stream: true,
+  });
+
+  const stream = AnthropicStream(response);
+  return new StreamingTextResponse(stream);
+}
+```
+
+### Vercel AI SDK を使わない手動ストリーミング
+
+```typescript
+// app/api/ai/stream-manual/route.ts
+export async function POST(req: Request) {
+  const { prompt } = await req.json();
+
   const encoder = new TextEncoder();
-
-  const stream = new ReadableStream({
+  const readable = new ReadableStream({
     async start(controller) {
-      try {
-        const anthropicStream = anthropic.messages.stream({
-          model: AI_MODELS[model],
-          max_tokens: 4096,
-          system: systemPrompt,
-          messages,
-        });
+      const stream = anthropic.messages.stream({
+        model: CLAUDE_MODELS.SONNET,
+        max_tokens: 1024,
+        messages: [{ role: "user", content: prompt }],
+      });
 
-        for await (const event of anthropicStream) {
-          // text_delta イベントのみ送信
-          if (
-            event.type === "content_block_delta" &&
-            event.delta.type === "text_delta"
-          ) {
-            const chunk = `data: ${JSON.stringify({ text: event.delta.text })}\n\n`;
-            controller.enqueue(encoder.encode(chunk));
-          }
-
-          // 完了イベント
-          if (event.type === "message_stop") {
-            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-          }
+      for await (const event of stream) {
+        if (
+          event.type === "content_block_delta" &&
+          event.delta.type === "text_delta"
+        ) {
+          controller.enqueue(encoder.encode(event.delta.text));
         }
-      } catch (error) {
-        const message =
-          error instanceof Anthropic.APIError
-            ? `APIError: ${error.status} ${error.message}`
-            : "Unexpected error";
-        controller.enqueue(
-          encoder.encode(`data: ${JSON.stringify({ error: message })}\n\n`)
-        );
-      } finally {
-        controller.close();
       }
+      controller.close();
     },
   });
 
-  return new Response(stream, {
+  return new Response(readable, {
     headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
+      "Content-Type": "text/plain; charset=utf-8",
+      "Transfer-Encoding": "chunked",
     },
   });
 }
 ```
 
-### クライアントサイド — SSE 受信フック（`hooks/use-chat-stream.ts`）
+### クライアント側でストリームを読む
 
 ```typescript
-"use client";
+// hooks/useAIStream.ts
+import { useState, useCallback } from "react";
 
-import { useState, useCallback, useRef } from "react";
+export function useAIStream(endpoint: string) {
+  const [text, setText] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
 
-interface Message {
-  role: "user" | "assistant";
-  content: string;
-}
-
-export function useChatStream() {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-
-  const sendMessage = useCallback(
-    async (userInput: string, systemPrompt?: string) => {
+  const generate = useCallback(
+    async (payload: unknown) => {
+      setIsLoading(true);
+      setText("");
       setError(null);
-      abortRef.current = new AbortController();
-
-      const newMessages: Message[] = [
-        ...messages,
-        { role: "user", content: userInput },
-      ];
-      setMessages(newMessages);
-      setIsStreaming(true);
-
-      // アシスタントのプレースホルダーを追加
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: "" },
-      ]);
 
       try {
-        const res = await fetch("/api/ai/chat", {
+        const res = await fetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ messages: newMessages, systemPrompt }),
-          signal: abortRef.current.signal,
+          body: JSON.stringify(payload),
         });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-        if (!res.ok || !res.body) throw new Error("Stream initiation failed");
-
-        const reader = res.body.getReader();
+        const reader = res.body!.getReader();
         const decoder = new TextDecoder();
-
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-
-          const lines = decoder.decode(value).split("\n");
-          for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            const data = line.slice(6);
-            if (data === "[DONE]") break;
-
-            const parsed = JSON.parse(data);
-            if (parsed.error) throw new Error(parsed.error);
-            if (parsed.text) {
-              setMessages((prev) => {
-                const updated = [...prev];
-                updated[updated.length - 1] = {
-                  role: "assistant",
-                  content: updated[updated.length - 1].content + parsed.text,
-                };
-                return updated;
-              });
-            }
-          }
+          setText((prev) => prev + decoder.decode(value));
         }
-      } catch (err) {
-        if ((err as Error).name !== "AbortError") {
+      } catch (e) {
+        setError(e instanceof Error ? e : new Error(String(e)));
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [endpoint]
+  );
+
+  return { text, isLoading, error, generate };
+}
+```
+
+---
+
+## 4. Server Actions での利用
+
+```typescript
+// app/actions/ai.ts
+"use server";
+
+import { anthropic, CLAUDE_MODELS } from "@/lib/anthropic";
+import { createStreamableValue } from "ai/rsc"; // Vercel AI SDK RSC
+
+// ストリームを Server Action から返す
+export async function generateWithStream(prompt: string) {
+  const stream = createStreamableValue("");
+
+  (async () => {
+    const aiStream = anthropic.messages.stream({
+      model: CLAUDE_MODELS.SONNET,
+      max_tokens: 1024,
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    for await (const event of aiStream) {
+      if (
+        event.type === "content_block_delta" &&
+        event.delta.type === "text_delta"
+      ) {
+        stream.update(event.delta.text);
+      }
+    }
+    stream.done();
+  })();
+
+  return { output: stream.value };
+}
+
+// クライアント側
+// const { output } = await generateWithStream(prompt);
+// for await (const delta of readStreamableValue(output)) { ... }
+```
+
+---
+
+## 5. バックグラウンド生成パイプライン
+
+コンテンツ生成を非同期で行い、DB にステータスを記録するパターン（AISaaS / content-generation-pipeline より）。

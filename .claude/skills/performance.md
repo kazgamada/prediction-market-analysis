@@ -1,10 +1,11 @@
 ---
 name: performance
 description: >-
-  React Query + localStorage を用いた Stale-While-Revalidate
-  パターンで「ページを開いた瞬間(≤0.1秒)に前回データを描画→裏で最新化」を実現するスキル。データ取得が遅い・キャッシュを保持したい・再ログイン後も即時表示したい・「読み込み中...」を見せたくないときに使う。tRPC
-  v11 / TanStack Query v5 / Vercel Serverless / Postgres pooler で検証済み。Next.js /
-  TypeScript プロジェクトで汎用的に適用可能。
+  React Query + localStorage による Stale-While-Revalidate パターンで「ページを開いた瞬間（≤
+  0.1秒）に前回データを描画 →
+  裏で最新化」を実現するスキル。データ取得が遅い・キャッシュを保持したい・再ログイン後も即時表示したい・「読み込み中...」を見せたくないときに使う。tRPC
+  v11 / TanStack Query v5 / Next.js App Router / Vercel Serverless
+  で検証済み。あらゆるNext.js/TypeScriptプロジェクトに適用可能。
 category: performance
 sourceSkillIds:
   - 7d2fa9fe
@@ -19,13 +20,13 @@ adoptedFromArchive:
 
 ## いつ使うか
 
-| 症状 | 適用判断 |
-|------|----------|
-| ページ遷移のたびに「読み込み中...」が出る | ✅ 使う |
-| API レスポンスが 500ms 以上かかる | ✅ 使う |
-| ログアウト→再ログイン後も即時表示したい | ✅ 使う |
-| データが秒単位で変わりリアルタイム性必須 | ⚠️ 鮮度要件を要確認 |
-| 認証情報・個人情報をキャッシュする | ❌ localStorage は使わない |
+| 症状 | このスキルで解決 |
+|------|----------------|
+| ページ遷移のたびに「読み込み中...」が出る | ✅ |
+| 再ログイン後もデータが消えてしまう | ✅ |
+| APIレスポンスが500ms以上かかる | ✅ |
+| ユーザーが同じデータを繰り返し見る | ✅ |
+| ネットワーク不安定環境でも即表示したい | ✅ |
 
 ---
 
@@ -33,158 +34,171 @@ adoptedFromArchive:
 
 ```
 ページ表示
-  └─ 1. localStorage から前回データを即時描画 (≤ 0.1 秒)
-  └─ 2. バックグラウンドで API フェッチ
-  └─ 3. 新データ取得後に画面を差し替え + localStorage 更新
+    │
+    ├─① localStorage から前回データを即時描画 (≤ 0.1秒)
+    │
+    └─② バックグラウンドでAPIフェッチ
+            │
+            └─③ 新データが来たら静かに差し替え
 ```
 
-これは HTTP の `stale-while-revalidate` ディレクティブをクライアントサイドで再実装したもの。
+これが **Stale-While-Revalidate (SWR)** パターン。  
+「古くてもまず見せる → 裏で更新」の優先順位がUXの核心。
 
 ---
 
-## 実装パターン
+## 実装
 
-### 1. localStorage ベースの Persister を作る
-
-```typescript
-// lib/cache/localStoragePersister.ts
-import { createSyncStoragePersister } from "@tanstack/query-sync-storage-persister";
-import { compress, decompress } from "lz-string"; // 大きいデータは圧縮
-
-/**
- * localStoragePersister
- * - serialize/deserialize で LZ 圧縮を適用（任意）
- * - throttleTime: 1000ms で書き込み頻度を制限
- */
-export const localStoragePersister = createSyncStoragePersister({
-  storage: typeof window !== "undefined" ? window.localStorage : undefined,
-  key: "APP_QUERY_CACHE", // プロジェクトごとに変更
-  throttleTime: 1000,
-  serialize: (data) => compress(JSON.stringify(data)),
-  deserialize: (data) => JSON.parse(decompress(data)),
-});
-```
-
-> **注意**: `typeof window !== "undefined"` は SSR 対応に必須。  
-> `lz-string` はオプション。データが小さければ省略可。
-
----
-
-### 2. QueryClient に永続化を設定する
+### 1. localStorage キャッシュユーティリティ
 
 ```typescript
-// lib/cache/queryClient.ts
-import { QueryClient } from "@tanstack/react-query";
+// lib/cache/localStorageCache.ts
 
-export const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      // キャッシュは 24 時間有効（staleTime と gcTime を同期させると混乱しにくい）
-      staleTime: 1000 * 60 * 5,        // 5 分: この間は再フェッチしない
-      gcTime: 1000 * 60 * 60 * 24,     // 24 時間: localStorage と合わせる
-      retry: 2,
-      refetchOnWindowFocus: true,       // タブ復帰時に最新化
-    },
-  },
-});
-```
+const CACHE_VERSION = 'v1'; // スキーマ変更時にインクリメント
 
-```typescript
-// app/providers.tsx  (Next.js App Router の場合)
-"use client";
-
-import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
-import { queryClient } from "@/lib/cache/queryClient";
-import { localStoragePersister } from "@/lib/cache/localStoragePersister";
-
-export function Providers({ children }: { children: React.ReactNode }) {
-  return (
-    <PersistQueryClientProvider
-      client={queryClient}
-      persistOptions={{
-        persister: localStoragePersister,
-        maxAge: 1000 * 60 * 60 * 24, // 24 時間
-        buster: process.env.NEXT_PUBLIC_CACHE_BUSTER ?? "", // デプロイ時に古いキャッシュを破棄
-      }}
-    >
-      {children}
-    </PersistQueryClientProvider>
-  );
+interface CacheEntry<T> {
+  data: T;
+  cachedAt: number;  // Unix timestamp (ms)
+  version: string;
 }
-```
 
----
-
-### 3. tRPC との組み合わせ（v11 対応）
-
-```typescript
-// server/api/routers/example.ts
-import { z } from "zod";
-import { createTRPCRouter, protectedProcedure } from "@/server/api/trpc";
-
-export const exampleRouter = createTRPCRouter({
-  getList: protectedProcedure
-    .input(z.object({ page: z.number().default(1) }))
-    .query(async ({ ctx, input }) => {
-      // Postgres pooler 使用時は接続を使い回す
-      const items = await ctx.db.item.findMany({
-        take: 20,
-        skip: (input.page - 1) * 20,
-        orderBy: { createdAt: "desc" },
-      });
-      return { items, page: input.page };
-    }),
-});
-```
-
-```typescript
-// components/ItemList.tsx
-"use client";
-
-import { api } from "@/lib/trpc/client";
-
-export function ItemList() {
-  const { data, isFetching, isLoading } = api.example.getList.useQuery(
-    { page: 1 },
-    {
-      // Persister が有効なら isLoading=false で即 data が返る
-      staleTime: 1000 * 60 * 5,
+export const localStorageCache = {
+  /**
+   * データを保存。TTLを超えたエントリは get() 時に破棄される。
+   */
+  set<T>(key: string, data: T): void {
+    if (typeof window === 'undefined') return; // SSR ガード
+    try {
+      const entry: CacheEntry<T> = {
+        data,
+        cachedAt: Date.now(),
+        version: CACHE_VERSION,
+      };
+      localStorage.setItem(`cache:${key}`, JSON.stringify(entry));
+    } catch (e) {
+      // localStorage が満杯の場合は無視（機能は継続）
+      console.warn('[cache] set failed:', e);
     }
-  );
+  },
 
-  // isLoading: キャッシュも含めてデータが1件もない場合のみ true
-  // isFetching: バックグラウンド更新中は true
-  if (isLoading) return <Skeleton />;
+  /**
+   * キャッシュを取得。TTL超過・バージョン不一致は null を返す。
+   * @param ttlMs ミリ秒。デフォルト 5分。
+   */
+  get<T>(key: string, ttlMs = 5 * 60 * 1000): T | null {
+    if (typeof window === 'undefined') return null;
+    try {
+      const raw = localStorage.getItem(`cache:${key}`);
+      if (!raw) return null;
 
-  return (
-    <div>
-      {/* 背景更新中のインジケーター（任意） */}
-      {isFetching && <RefreshIndicator />}
-      {data?.items.map((item) => <ItemCard key={item.id} item={item} />)}
-    </div>
-  );
+      const entry: CacheEntry<T> = JSON.parse(raw);
+
+      // バージョン不一致は破棄
+      if (entry.version !== CACHE_VERSION) {
+        localStorage.removeItem(`cache:${key}`);
+        return null;
+      }
+
+      // TTL チェック
+      if (Date.now() - entry.cachedAt > ttlMs) {
+        localStorage.removeItem(`cache:${key}`);
+        return null;
+      }
+
+      return entry.data;
+    } catch {
+      return null;
+    }
+  },
+
+  remove(key: string): void {
+    if (typeof window === 'undefined') return;
+    localStorage.removeItem(`cache:${key}`);
+  },
+
+  /** プレフィックスが一致するキャッシュを一括削除（ログアウト時など） */
+  clearByPrefix(prefix: string): void {
+    if (typeof window === 'undefined') return;
+    Object.keys(localStorage)
+      .filter(k => k.startsWith(`cache:${prefix}`))
+      .forEach(k => localStorage.removeItem(k));
+  },
+};
+```
+
+---
+
+### 2. 汎用 SWR フック
+
+```typescript
+// hooks/useInstantCache.ts
+import { useEffect, useRef } from 'react';
+import { useQuery, useQueryClient, QueryKey } from '@tanstack/react-query';
+import { localStorageCache } from '@/lib/cache/localStorageCache';
+
+interface UseInstantCacheOptions<T> {
+  queryKey: QueryKey;
+  /** キャッシュストレージのキー（文字列で一意にする） */
+  cacheKey: string;
+  fetchFn: () => Promise<T>;
+  /** localStorage TTL（ms）。デフォルト 5分 */
+  cacheTtlMs?: number;
+  /** React Query の staleTime（ms）。デフォルト 0（常にバックグラウンド再検証） */
+  staleTimeMs?: number;
+  /** キャッシュ無効化（ログアウト後など false にするとキャッシュを使わない） */
+  enabled?: boolean;
+}
+
+export function useInstantCache<T>({
+  queryKey,
+  cacheKey,
+  fetchFn,
+  cacheTtlMs = 5 * 60 * 1000,
+  staleTimeMs = 0,
+  enabled = true,
+}: UseInstantCacheOptions<T>) {
+  const queryClient = useQueryClient();
+  const initializedRef = useRef(false);
+
+  // ① マウント時に localStorage → QueryClient へ即時注入
+  useEffect(() => {
+    if (!enabled || initializedRef.current) return;
+    initializedRef.current = true;
+
+    const cached = localStorageCache.get<T>(cacheKey, cacheTtlMs);
+    if (cached !== null) {
+      queryClient.setQueryData(queryKey, cached);
+    }
+  }, [enabled]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ② React Query が バックグラウンドでフェッチ → 成功時に localStorage 更新
+  const query = useQuery({
+    queryKey,
+    queryFn: async () => {
+      const fresh = await fetchFn();
+      localStorageCache.set(cacheKey, fresh); // キャッシュ更新
+      return fresh;
+    },
+    staleTime: staleTimeMs,
+    enabled,
+    // キャッシュ済みデータがあれば placeholderData として使う（ローディング状態を出さない）
+    placeholderData: (prev) => prev,
+  });
+
+  return query;
 }
 ```
 
-> **ポイント**: `isLoading` と `isFetching` を使い分けることで  
-> 「初回は何も出ない」と「裏で更新中」を別々に表現できる。
-
 ---
 
-### 4. キャッシュ無効化（ユーザーアクション後）
+### 3. 使用例 — ダッシュボードページ
 
 ```typescript
-// ミューテーション後に関連クエリを再フェッチ
-const utils = api.useUtils();
+// app/dashboard/page.tsx  (Next.js App Router)
+'use client';
 
-const createItem = api.example.create.useMutation({
-  onSuccess: async () => {
-    // 楽観的更新 → 確定後に最新化
-    await utils.example.getList.invalidate();
-  },
-});
-```
+import { useInstantCache } from '@/hooks/useInstantCache';
 
----
-
-### 5. ログアウト
+interface DashboardData {
+  projects: { id: string; name: string; updatedAt: string }[];
+  stats: { total: number; active: number };

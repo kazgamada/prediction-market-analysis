@@ -2,7 +2,7 @@
 name: api-route-patterns
 description: >-
   Next.js App Router
-  APIルートの実装パターン集。認証ガード・Zodバリデーション・エラーハンドリング・レスポンス型の標準化を一括で提供する。新規APIルート作成・既存ルートのリファクタ・保護レベルの設定変更時に参照する。
+  APIルートの実装パターン集。認証ガード・Zodバリデーション・エラーハンドリング・レスポンス型の標準化を一括で提供する。新規APIルート作成・既存ルートのリファクタ・保護レベルの設定変更時に参照する。Webhook署名検証・プランリミット強制・バックグラウンドジョブとの連携パターンも含む。
 category: api-router
 sourceSkillIds:
   - ecef156f
@@ -71,212 +71,209 @@ sourceSkillIds:
   - 30f43ecb
   - 9e97cfa6
 generatedAt: '2026-05-11'
+integrationStrategy: latest-first
+latestSourceTimestamp: '2026-05-10T19:11:30+00:00'
+adoptedFromArchive:
+  - archive/prediction-market-analysis/.claude/skills/api-route-patterns.md
+  - archive/aegis-market-os/.claude/skills/ai-integration.md
+  - archive/aegis-market-os/.claude/skills/api-bundle-rebuild.md
+  - archive/aegis-market-os/.claude/skills/billing-stripe.md
+  - archive/aegis-market-os/.claude/skills/discovery-github-content.md
+  - archive/aegis-market-os/.claude/skills/discovery-pipeline.md
+  - archive/aegis-market-os/.claude/skills/discovery-x-rapidapi.md
+  - archive/ai-company/.claude/skills/inngest-scheduled-function/SKILL.md
+  - archive/ai-company/.claude/skills/plan-limits-enforcement/SKILL.md
+  - archive/AISaaS/.claude/skills/add-protected-api.md
 ---
 
-# Next.js App Router — APIルート実装パターン集
+# API ルート実装パターン集（Next.js App Router）
 
-## 概要
-
-新規APIルートを追加・修正するときは、このSkillを参照し以下の原則に従うこと。
-
-| 関心事 | 対応パターン |
-|---|---|
-| 認証・認可 | ルート分類フローチャート → ガード関数 |
-| 入力検証 | Zodスキーマ → `safeParse` |
-| エラー応答 | `apiError` ヘルパー → 統一JSONフォーマット |
-| 成功応答 | `apiSuccess` ヘルパー → 統一JSONフォーマット |
-| ルート構成 | HTTPメソッドごとに名前付きexport |
+新規 API ルートを追加・リファクタするときは、まずこの Skill を参照して実装パターンを選択してください。
 
 ---
 
-## 1. ルート分類フローチャート
-
-新しいAPIルートを追加するとき、**必ず**以下の6分類に割り振ってから実装する。
+## 0. ルート分類フローチャート
 
 ```
 新しい API ルート
    │
-   ├─ Webhook（Stripe・LINE など外部プロバイダから）?
-   │     → プロバイダ署名検証（§2-A）
+   ├─ Webhook（Stripe・外部サービスなど）?
+   │     → §1: Webhook ルート（署名検証）
    │
-   ├─ Cron / スケジューラから呼ばれる?
-   │     → Cron シークレット検証（§2-B）
+   ├─ Vercel Cron / 内部スケジューラから呼ばれる?
+   │     → §2: Cron ルート（CRON_SECRET 検証）
    │
-   ├─ サービス間内部通信?
-   │     → 内部シークレット検証（§2-C）
+   ├─ 認証不要な公開エンドポイント?
+   │     → §3: パブリックルート（Zod バリデーションのみ）
    │
-   ├─ 認証済みユーザー専用?
-   │     → セッション検証 → userId 取得（§2-D）
+   ├─ 認証済みユーザーのみ?
+   │     → §4: 認証必須ルート（セッション検証）
    │
-   ├─ 認証済み管理者専用?
-   │     → セッション検証 → role === "admin" 確認（§2-E）
+   ├─ リソース作成・消費を伴う?
+   │     → §5: プランリミット強制を追加
    │
-   └─ パブリック（認証不要）?
-         → ガードなし。レート制限を検討（§2-F）
+   └─ 管理者のみ?
+         → §6: 管理者専用ルート（role チェック）
 ```
 
 ---
 
-## 2. 認証ガードパターン
+## 1. 共通基盤
 
-### 2-A. Webhook署名検証（例: Stripe）
+### 1-1. 標準レスポンス型
 
-```typescript
-// app/api/webhooks/stripe/route.ts
-import { headers } from "next/headers";
-import Stripe from "stripe";
+```ts
+// lib/api-response.ts
+import { NextResponse } from "next/server";
 
-export async function POST(req: Request) {
-  const body = await req.text(); // rawボディが必要
-  const sig = headers().get("stripe-signature") ?? "";
+export type ApiSuccess<T> = { success: true; data: T };
+export type ApiError   = { success: false; error: string; code?: string };
+export type ApiResponse<T> = ApiSuccess<T> | ApiError;
 
-  let event: Stripe.Event;
-  try {
-    event = stripe.webhooks.constructEvent(
-      body,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET!
-    );
-  } catch (err) {
-    return apiError("Invalid webhook signature", 400);
-  }
+export const ok = <T>(data: T, status = 200) =>
+  NextResponse.json<ApiSuccess<T>>({ success: true, data }, { status });
 
-  // イベント処理...
-  return apiSuccess({ received: true });
+export const err = (error: string, status = 400, code?: string) =>
+  NextResponse.json<ApiError>({ success: false, error, code }, { status });
+```
+
+### 1-2. 認証ガード基盤（`lib/api-guard.ts`）
+
+```ts
+// lib/api-guard.ts
+import { auth } from "@/lib/auth";            // 例: NextAuth / Lucia など
+import { err } from "@/lib/api-response";
+import type { NextRequest } from "next/server";
+
+export type GuardedSession = {
+  userId: string;
+  orgId:  string;
+  role:   "admin" | "member" | "viewer";
+};
+
+/** 認証必須ガード。失敗時は 401/403 を返し、成功時は session を返す */
+export async function requireAuth(
+  req: NextRequest,
+): Promise<{ session: GuardedSession } | NextResponse> {
+  const session = await auth(req);
+  if (!session) return err("Unauthorized", 401, "UNAUTHORIZED");
+  return { session };
+}
+
+/** 管理者専用ガード */
+export async function requireAdmin(
+  req: NextRequest,
+): Promise<{ session: GuardedSession } | NextResponse> {
+  const result = await requireAuth(req);
+  if (result instanceof NextResponse) return result;
+  if (result.session.role !== "admin")
+    return err("Forbidden", 403, "FORBIDDEN");
+  return result;
 }
 ```
 
-### 2-B. Cron シークレット検証
+### 1-3. Zod バリデーションヘルパー
 
-```typescript
-// app/api/cron/daily-batch/route.ts
-export async function GET(req: Request) {
-  const authHeader = req.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return apiError("Unauthorized", 401);
-  }
-  // バッチ処理...
-}
-```
+```ts
+// lib/validate.ts
+import { z, ZodSchema } from "zod";
+import { err } from "@/lib/api-response";
 
-### 2-C. 内部サービス間通信
-
-```typescript
-// app/api/internal/sync/route.ts
-export async function POST(req: Request) {
-  const secret = req.headers.get("x-internal-secret");
-  if (secret !== process.env.INTERNAL_API_SECRET) {
-    return apiError("Forbidden", 403);
-  }
-  // 処理...
-}
-```
-
-### 2-D. 認証済みユーザー（セッション検証）
-
-```typescript
-// app/api/posts/route.ts
-import { auth } from "@/lib/auth"; // NextAuth / Clerk / その他
-
-export async function GET(req: Request) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return apiError("Unauthorized", 401);
-  }
-  const userId = session.user.id;
-  // userId を用いたデータ取得...
-}
-```
-
-### 2-E. 管理者専用
-
-```typescript
-// app/api/admin/users/route.ts
-export async function GET(req: Request) {
-  const session = await auth();
-  if (!session?.user) return apiError("Unauthorized", 401);
-  if (session.user.role !== "admin") return apiError("Forbidden", 403);
-  // 管理者処理...
-}
-```
-
-### 2-F. パブリックルート
-
-ガード不要。ただし乱用防止のため **レート制限**（upstash/ratelimit 等）の導入を検討する。
-
----
-
-## 3. Zodバリデーションパターン
-
-### リクエストボディの検証
-
-```typescript
-import { z } from "zod";
-
-const CreatePostSchema = z.object({
-  title: z.string().min(1).max(200),
-  content: z.string().min(1),
-  published: z.boolean().default(false),
-});
-
-export async function POST(req: Request) {
-  const session = await auth();
-  if (!session?.user?.id) return apiError("Unauthorized", 401);
-
-  // ─── ① パース ───────────────────────────────────────
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return apiError("Invalid JSON", 400);
-  }
-
-  // ─── ② バリデーション ──────────────────────────────
-  const parsed = CreatePostSchema.safeParse(body);
-  if (!parsed.success) {
-    return apiError("Validation failed", 422, parsed.error.flatten());
-  }
-
-  const { title, content, published } = parsed.data;
-  // DB操作...
-}
-```
-
-### クエリパラメータの検証
-
-```typescript
-const ListQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(20),
-  q: z.string().optional(),
-});
-
-export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const parsed = ListQuerySchema.safeParse(
-    Object.fromEntries(searchParams)
-  );
-  if (!parsed.success) {
-    return apiError("Invalid query parameters", 400, parsed.error.flatten());
-  }
-  const { page, limit, q } = parsed.data;
-  // ...
-}
-```
-
-### 動的ルートパラメータの検証
-
-```typescript
-// app/api/posts/[id]/route.ts
-const ParamsSchema = z.object({
-  id: z.string().cuid(), // または z.string().uuid()
-});
-
-export async function GET(
+export async function validateBody<T>(
   req: Request,
-  { params }: { params: { id: string } }
-) {
-  const parsed = ParamsSchema.safeParse(params);
-  if (!parsed.success) return apiError("Invalid ID", 400);
+  schema: ZodSchema<T>,
+): Promise<{ data: T } | NextResponse> {
+  try {
+    const json = await req.json();
+    const result = schema.safeParse(json);
+    if (!result.success)
+      return err(result.error.issues.map((i) => i.message).join(", "), 422, "VALIDATION_ERROR");
+    return { data: result.data };
+  } catch {
+    return err("Invalid JSON", 400, "BAD_REQUEST");
+  }
+}
 
-  const post = await db.post.findUnique({ where: { id: parsed.data.id } });
+export function validateQuery<T>(
+  searchParams: URLSearchParams,
+  schema: ZodSchema<T>,
+): { data: T } | NextResponse {
+  const raw = Object.fromEntries(searchParams.entries());
+  const result = schema.safeParse(raw);
+  if (!result.success)
+    return err(result.error.issues.map((i) => i.message).join(", "), 422, "VALIDATION_ERROR");
+  return { data: result.data };
+}
+```
+
+### 1-4. 共通エラーハンドラ
+
+```ts
+// lib/api-error-handler.ts
+import { err } from "@/lib/api-response";
+
+export function handleApiError(e: unknown) {
+  console.error("[API Error]", e);
+  if (e instanceof Error) return err(e.message, 500, "INTERNAL_ERROR");
+  return err("Internal Server Error", 500, "INTERNAL_ERROR");
+}
+```
+
+---
+
+## 2. §1: Webhook ルート（Stripe など）
+
+> **重要**: `express.raw()` 相当の生バイト処理が必要。`NextRequest.text()` を使う。
+
+```ts
+// app/api/webhooks/stripe/route.ts
+import { NextRequest } from "next/server";
+import Stripe from "stripe";
+import { err, ok } from "@/lib/api-response";
+import { handleApiError } from "@/lib/api-error-handler";
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.text();                         // ← raw body 必須
+    const sig  = req.headers.get("stripe-signature") ?? "";
+
+    let event: Stripe.Event;
+    try {
+      event = stripe.webhooks.constructEvent(
+        body, sig, process.env.STRIPE_WEBHOOK_SECRET!,
+      );
+    } catch {
+      return err("Invalid signature", 400, "WEBHOOK_SIGNATURE_ERROR");
+    }
+
+    switch (event.type) {
+      case "checkout.session.completed":
+        await handleCheckoutCompleted(event.data.object);
+        break;
+      case "customer.subscription.deleted":
+        await handleSubscriptionDeleted(event.data.object);
+        break;
+      // 他のイベント...
+    }
+
+    return ok({ received: true });
+  } catch (e) {
+    return handleApiError(e);
+  }
+}
+```
+
+---
+
+## 3. §2: Cron ルート（Vercel Cron / 内部スケジューラ）
+
+```ts
+// app/api/cron/daily-report/route.ts
+import { NextRequest } from "next/server";
+import { err, ok } from "@/lib/api-response";
+import { handleApiError } from "@/lib/api-error-handler";
+
+export async function GET(req: NextRequest) {
+  // Vercel Cron は Authorization ヘ

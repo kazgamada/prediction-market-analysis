@@ -1,8 +1,9 @@
 ---
 name: database-migration-pattern
 description: >-
-  Supabase/PostgreSQL/TypeScriptプロジェクトにおけるDBスキーマ設計・マイグレーション・RLS・ロール管理・型安全クエリパターンの包括的ガイド。テーブル設計の原則からRLSポリシーの実装、Drizzle/Supabase
-  Clientによる型安全なクエリ、ロール階層管理まで、一貫した実装パターンを提供する。
+  Supabase/PostgreSQL/TypeScriptプロジェクトにおけるDBスキーマ設計・マイグレーション・RLS・ロール管理・型安全クエリパターンの包括的ガイド。
+  Supabase生SQLマイグレーション、Drizzle ORM、冪等ALTER TABLE、シードデータ、月次セキュリティレビュー、
+  完全CRUDスキャフォールドまで、あらゆる規模のSaaSアプリケーションで再利用可能な一貫した実装パターンを提供する。
 category: database
 sourceSkillIds:
   - 9d448d77
@@ -105,39 +106,57 @@ sourceSkillIds:
   - 55a4242e
   - 82b8cdd0
 generatedAt: '2026-05-11'
+integrationStrategy: latest-first
+latestSourceTimestamp: '2026-05-10T19:11:30+00:00'
+adoptedFromArchive:
+  - >-
+    archive/prediction-market-analysis/.claude/skills/database-migration-pattern.md
+  - archive/aegis-market-os/.claude/skills/auth-role-demo-mode.md
+  - archive/aegis-market-os/.claude/skills/drizzle-pg-patterns.md
+  - archive/ai-company/.claude/skills/ai-employee-runner/SKILL.md
+  - archive/ai-company/.claude/skills/schema-migration-idempotent/SKILL.md
+  - archive/ai-company/.claude/skills/seed-demo-data/SKILL.md
+  - archive/ai-company/.claude/skills/stripe-plan-setup/SKILL.md
+  - archive/AISaaS/.claude/skills/drizzle-query-patterns.md
+  - archive/AISaaS/.claude/skills/monthly-security-review.md
+  - archive/AISaaS/.claude/skills/new-crud.md
 ---
 
-# Database Migration Pattern — Supabase / PostgreSQL / TypeScript
+# Database Migration Pattern
 
-## 概要
+## 📋 目次
 
-このSkillは以下の領域を統合的にカバーします：
-
-1. **スキーマ設計** — テーブル設計の原則・命名規則・共通カラム
-2. **マイグレーション管理** — Supabase CLI / Drizzle によるバージョン管理
-3. **RLS（Row Level Security）** — ポリシー設計パターンと検証手順
-4. **ロール階層** — Supabase における認証ロールの管理
-5. **型安全クエリ** — TypeScriptと統合したクエリパターン
-6. **パフォーマンス** — インデックス設計・クエリ最適化
+1. [テーブル設計の原則](#1-テーブル設計の原則)
+2. [マイグレーション戦略](#2-マイグレーション戦略)
+   - 2a. Supabase 生 SQL マイグレーション
+   - 2b. Drizzle ORM スキーマ定義
+   - 2c. 冪等 ALTER TABLE（ランタイムマイグレーション）
+3. [RLS ポリシー実装](#3-rls-ポリシー実装)
+4. [ロール階層管理](#4-ロール階層管理)
+5. [型安全クエリパターン（Drizzle ORM）](#5-型安全クエリパターンdrizzle-orm)
+6. [シードデータ管理](#6-シードデータ管理)
+7. [完全 CRUD スキャフォールド](#7-完全-crud-スキャフォールド)
+8. [月次セキュリティレビュー](#8-月次セキュリティレビュー)
+9. [チェックリスト](#9-チェックリスト)
 
 ---
 
-## 1. スキーマ設計の原則
+## 1. テーブル設計の原則
 
-### 1.1 共通カラム（すべてのテーブルに含める）
+### 必須カラム（全テーブル共通）
 
 ```sql
--- すべてのテーブルに以下を付与する
-id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-created_at  timestamptz NOT NULL    DEFAULT now(),
-updated_at  timestamptz NOT NULL    DEFAULT now()
+-- すべてのテーブルに含めるべき標準カラム
+id          uuid        PRIMARY KEY DEFAULT gen_random_uuid()
+created_at  timestamptz NOT NULL DEFAULT now()
+updated_at  timestamptz NOT NULL DEFAULT now()
 ```
 
-`updated_at` は自動更新トリガーで管理する：
+### updated_at 自動更新トリガー
 
 ```sql
--- 共通トリガー関数（マイグレーション初期に1回定義）
-CREATE OR REPLACE FUNCTION public.set_updated_at()
+-- 共通トリガー関数（一度だけ定義）
+CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
 BEGIN
   NEW.updated_at = now();
@@ -145,145 +164,125 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- 各テーブルへ適用
+-- 各テーブルにアタッチ
 CREATE TRIGGER set_updated_at
-  BEFORE UPDATE ON public.your_table
-  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+  BEFORE UPDATE ON your_table
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 ```
 
-### 1.2 命名規則
+### 命名規則
 
 | 対象 | 規則 | 例 |
 |------|------|-----|
-| テーブル | `snake_case` 複数形 | `user_profiles`, `lesson_sessions` |
-| カラム | `snake_case` | `first_name`, `created_at` |
-| 外部キー | `{参照テーブル単数形}_id` | `user_id`, `organization_id` |
-| インデックス | `idx_{table}_{column(s)}` | `idx_profiles_user_id` |
-| RLSポリシー | `{action}_{対象}_{条件}` | `select_own_records`, `insert_org_member` |
+| テーブル名 | snake_case・複数形 | `user_profiles`, `org_members` |
+| カラム名 | snake_case | `created_at`, `is_active` |
+| 外部キー | `{参照テーブル単数形}_id` | `user_id`, `org_id` |
+| インデックス | `idx_{テーブル}_{カラム}` | `idx_posts_user_id` |
+| RLS ポリシー | `{操作}_{テーブル}_{主体}` | `select_posts_owner` |
 
-### 1.3 典型的なマルチテナント構成
+### スキーマ設計パターン
 
 ```sql
--- 組織テーブル（マルチテナントの起点）
-CREATE TABLE public.organizations (
+-- マルチテナント SaaS の典型構造
+CREATE TABLE organizations (
   id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
   name        text        NOT NULL,
-  slug        text        UNIQUE NOT NULL,
+  slug        text        NOT NULL UNIQUE,
   plan        text        NOT NULL DEFAULT 'free',
   created_at  timestamptz NOT NULL DEFAULT now(),
   updated_at  timestamptz NOT NULL DEFAULT now()
 );
 
--- ユーザープロフィール（auth.usersと1:1）
-CREATE TABLE public.profiles (
-  id          uuid        PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-  org_id      uuid        REFERENCES public.organizations(id) ON DELETE SET NULL,
-  role        text        NOT NULL DEFAULT 'member' CHECK (role IN ('owner','admin','member')),
-  display_name text,
-  avatar_url  text,
+CREATE TABLE org_members (
+  id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id      uuid        NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  user_id     uuid        NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  role        text        NOT NULL DEFAULT 'member', -- 'owner' | 'admin' | 'member' | 'viewer'
   created_at  timestamptz NOT NULL DEFAULT now(),
-  updated_at  timestamptz NOT NULL DEFAULT now()
+  UNIQUE(org_id, user_id)
 );
+
+CREATE INDEX idx_org_members_org_id  ON org_members(org_id);
+CREATE INDEX idx_org_members_user_id ON org_members(user_id);
 ```
 
 ---
 
-## 2. マイグレーション管理
+## 2. マイグレーション戦略
 
-### 2.1 Supabase CLI によるワークフロー
-
-```bash
-# 新しいマイグレーション作成
-supabase migration new add_user_profiles
-
-# ローカルDBへ適用
-supabase db reset          # 全マイグレーション再適用（開発時）
-supabase migration up      # 差分のみ適用
-
-# 本番へデプロイ
-supabase db push           # リモートへ push
-
-# 現在の状態をファイルへ pull（既存DBからの逆生成）
-supabase db pull
-```
-
-### 2.2 マイグレーションファイルの構成規則
+### 2a. Supabase 生 SQL マイグレーション
 
 ```
 supabase/migrations/
-  20240101000000_init_schema.sql          # 初期スキーマ
-  20240102000000_add_organizations.sql    # 機能追加
-  20240103000000_add_rls_policies.sql     # RLS設定
-  20240104000000_add_indexes.sql          # パフォーマンス改善
+  YYYYMMDDHHMMSS_create_initial_schema.sql
+  YYYYMMDDHHMMSS_add_user_profiles.sql
+  YYYYMMDDHHMMSS_add_rls_policies.sql
 ```
 
-**各ファイルのテンプレート：**
+**マイグレーションファイルの構造テンプレート**
 
 ```sql
--- Migration: 20240102000000_add_organizations.sql
--- Description: 組織テーブルとプロフィールテーブルを追加
+-- supabase/migrations/20240101000000_create_posts.sql
 
+-- ▼ UP（適用）
 BEGIN;
 
--- スキーマ変更
-CREATE TABLE IF NOT EXISTS public.organizations ( ... );
+CREATE TABLE IF NOT EXISTS posts (
+  id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id      uuid        NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  author_id   uuid        NOT NULL REFERENCES auth.users(id),
+  title       text        NOT NULL,
+  body        text,
+  status      text        NOT NULL DEFAULT 'draft', -- 'draft' | 'published' | 'archived'
+  published_at timestamptz,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  updated_at  timestamptz NOT NULL DEFAULT now()
+);
 
--- トリガー
+CREATE INDEX idx_posts_org_id    ON posts(org_id);
+CREATE INDEX idx_posts_author_id ON posts(author_id);
+CREATE INDEX idx_posts_status    ON posts(status) WHERE status = 'published';
+
 CREATE TRIGGER set_updated_at
-  BEFORE UPDATE ON public.organizations
-  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
--- RLS 有効化（必ずセットで行う）
-ALTER TABLE public.organizations ENABLE ROW LEVEL SECURITY;
+  BEFORE UPDATE ON posts
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 COMMIT;
 ```
 
-### 2.3 Drizzle ORM を使う場合
+**マイグレーション実行コマンド**
 
-```typescript
-// drizzle.config.ts
-import { defineConfig } from 'drizzle-kit';
+```bash
+# ローカル適用
+supabase db push
 
-export default defineConfig({
-  schema: './src/db/schema.ts',
-  out: './supabase/migrations',
-  dialect: 'postgresql',
-  dbCredentials: {
-    url: process.env.DATABASE_URL!,
-  },
-});
+# 新規マイグレーション作成
+supabase migration new add_posts_table
+
+# 差分確認
+supabase db diff --use-migra
+
+# リモート（本番）への適用
+supabase db push --db-url "$SUPABASE_DB_URL"
 ```
 
-```typescript
-// src/db/schema.ts
-import { pgTable, uuid, text, timestamptz } from 'drizzle-orm/pg-core';
-import { sql } from 'drizzle-orm';
+### 2b. Drizzle ORM スキーマ定義
 
-export const organizations = pgTable('organizations', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  name: text('name').notNull(),
-  slug: text('slug').unique().notNull(),
-  createdAt: timestamptz('created_at').notNull().default(sql`now()`),
-  updatedAt: timestamptz('updated_at').notNull().default(sql`now()`),
-});
+> **PostgreSQL プロジェクト必須**: `pgTable` / `pgEnum` のみ使用。`mysqlTable` / `mysqlEnum` は使わない。
 
-export const profiles = pgTable('profiles', {
-  id: uuid('id').primaryKey().references(() => authUsers.id, { onDelete: 'cascade' }),
-  orgId: uuid('org_id').references(() => organizations.id, { onDelete: 'set null' }),
-  role: text('role').notNull().default('member'),
-  displayName: text('display_name'),
-});
-```
+```ts
+// db/schema.ts
+import {
+  boolean, index, integer, numeric, pgEnum, pgTable,
+  serial, text, timestamp, uuid, varchar
+} from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
----
+// ── Enum 定義 ──────────────────────────────────────────
+export const roleEnum    = pgEnum("role",    ["owner", "admin", "member", "viewer"]);
+export const statusEnum  = pgEnum("status",  ["draft", "published", "archived"]);
+export const planEnum    = pgEnum("plan",    ["free", "pro", "enterprise"]);
 
-## 3. RLS（Row Level Security）
-
-### 3.1 設計の基本原則
-
-```sql
--- ① すべてのテーブルで RLS を有効化（デフォルト拒否）
-ALTER TABLE public.your_table ENABLE ROW LEVEL SECURITY;
-
--- ② FORCE ROW LEVEL SECURITY でサービスロールも制御
+// ── テーブル定義 ────────────────────────────────────────
+export const organizations = pgTable("organizations", {
+  id:        uuid("id").primaryKey

@@ -1,8 +1,9 @@
 ---
 name: ui-component-patterns
 description: >-
-  Next.js/Tailwind
-  CSS/TypeScriptプロジェクトでUIコンポーネントを実装・スキャフォールドするときに使う。コンポーネント構造・命名規則・ナビゲーション設定・フォームパターン・日本語業務UI規約（姓名順・郵便番号補完・和暦・全角半角・金額表示）・管理画面ガード・メールテンプレートを含む。「コンポーネント追加」「ナビ追加」「フォーム」「管理画面」「業務画面」「帳票」と言及したときにトリガー。
+  Next.js/Tailwind CSS/TypeScriptプロジェクトにおけるUIコンポーネントの設計・実装パターン。
+  ページレイアウト、ナビゲーション、管理画面、アクセスガード、多段ウィザード、
+  localStorage永続化、コンポーネントスキャフォールドの標準的な作法を定義する。
 category: ui-component
 sourceSkillIds:
   - 31a30658
@@ -93,187 +94,213 @@ sourceSkillIds:
   - 77f23611
   - 434eaa55
 generatedAt: '2026-05-11'
+integrationStrategy: latest-first
+latestSourceTimestamp: '2026-05-10T19:11:30+00:00'
+adoptedFromArchive:
+  - archive/prediction-market-analysis/.claude/skills/ui-component-patterns.md
+  - archive/aegis-market-os/.claude/skills/admin-panel.md
+  - archive/aegis-market-os/.claude/skills/auto-pipeline.md
+  - archive/aegis-market-os/.claude/skills/cache-contract.md
+  - archive/aegis-market-os/.claude/skills/localstorage-persistence.md
+  - archive/aegis-market-os/.claude/skills/nav-menu-patterns.md
+  - archive/aegis-market-os/.claude/skills/sim-3d.md
+  - archive/aegis-market-os/.claude/skills/strategy-lifecycle.md
+  - archive/aegis-market-os/.claude/skills/wizard-design.md
+  - archive/ai-company/.claude/skills/add-admin-api-route/SKILL.md
 ---
 
-# UI コンポーネントパターン
+# ui-component-patterns
 
-## 概要
-
-Next.js / Tailwind CSS / TypeScript プロジェクト全般で適用するコンポーネント設計・実装規約。  
-汎用的なコンポーネント構造から、日本語業務アプリ特有の入力パターン・管理画面ガードまでをカバーする。
+Next.js / Tailwind CSS / TypeScript プロジェクト全般で再利用できる UI 実装パターン集。  
+管理画面・ナビゲーション・多段ウィザード・localStorage 永続化・アクセスガード・SVG ビジュアライゼーションの標準作法を定義する。
 
 ---
 
-## 1. コンポーネント基本構造
+## 1. コンポーネントスキャフォールド（最小テンプレート）
 
-### ファイル配置規則
-
-```
-src/
-  components/
-    ui/               # 汎用プリミティブ（Button, Input, Modal…）
-    features/         # 機能単位の複合コンポーネント
-    layouts/          # ページレイアウト
-    guards/           # 認証・権限ガード
-  app/
-    (dashboard)/      # 認証済みルート群
-      admin/          # 管理者専用ページ
-```
-
-### 標準コンポーネントテンプレート
+新規コンポーネントは必ずこの構造から始める。
 
 ```tsx
-// src/components/features/<ComponentName>.tsx
-'use client'; // クライアント操作が必要な場合のみ
+// src/components/FeatureCard.tsx
+'use client'; // App Router の場合のみ必要な行
 
-import { useState } from 'react';
-import { SomeIcon } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { type FC } from 'react';
+import { cn } from '@/lib/utils'; // clsx + tailwind-merge のユーティリティ
 
-// ---- 型定義 ----
-interface <ComponentName>Props {
-  /** 表示ラベル */
-  label: string;
-  /** 追加CSSクラス */
+interface FeatureCardProps {
+  title: string;
+  description?: string;
   className?: string;
-  /** コールバック */
-  onAction?: (value: string) => void;
+  children?: React.ReactNode;
 }
 
-// ---- コンポーネント ----
-export function <ComponentName>({ label, className, onAction }: <ComponentName>Props) {
-  const [isLoading, setIsLoading] = useState(false);
+const FeatureCard: FC<FeatureCardProps> = ({
+  title,
+  description,
+  className,
+  children,
+}) => {
+  return (
+    <div className={cn('rounded-lg border bg-card p-4 shadow-sm', className)}>
+      <h3 className="text-sm font-semibold">{title}</h3>
+      {description && (
+        <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+      )}
+      {children}
+    </div>
+  );
+};
+
+export default FeatureCard;
+```
+
+**命名規則**
+
+| 種別 | 規則 | 例 |
+|------|------|----|
+| コンポーネントファイル | PascalCase | `UserTable.tsx` |
+| フックファイル | camelCase + `use` prefix | `useMarketData.ts` |
+| ユーティリティ | camelCase | `formatCurrency.ts` |
+| 型定義 | PascalCase + `types.ts` | `market.types.ts` |
+
+---
+
+## 2. ページレイアウトパターン
+
+### 2-1. 通常レイアウト（サイドバー + メインコンテンツ）
+
+```tsx
+// src/components/AppLayout.tsx
+'use client';
+
+import { useState } from 'react';
+import Sidebar from './Sidebar';
+import Header from './Header';
+
+interface AppLayoutProps {
+  children: React.ReactNode;
+}
+
+export default function AppLayout({ children }: AppLayoutProps) {
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   return (
-    <div className={cn('rounded-lg border bg-white p-4 shadow-sm', className)}>
-      <h2 className="text-sm font-medium text-gray-700">{label}</h2>
-      {/* 実装 */}
+    <div className="flex h-screen overflow-hidden bg-background">
+      <Sidebar open={sidebarOpen} onToggle={() => setSidebarOpen((v) => !v)} />
+      <div className="flex flex-1 flex-col overflow-hidden">
+        <Header onMenuClick={() => setSidebarOpen((v) => !v)} />
+        <main className="flex-1 overflow-y-auto p-6">{children}</main>
+      </div>
     </div>
   );
 }
-
-export default <ComponentName>;
 ```
 
-### 命名・エクスポート規則
+### 2-2. 管理画面専用レイアウト（通常レイアウトとは分離）
 
-| 種別 | 規則 | 例 |
-|------|------|-----|
-| コンポーネント名 | PascalCase | `UserProfileCard` |
-| ファイル名 | kebab-case | `user-profile-card.tsx` |
-| Props型 | `<Name>Props` | `UserProfileCardProps` |
-| エクスポート | named + default 両方 | `export function X` & `export default X` |
-| hooks | `use` プレフィックス | `useUserProfile` |
-
----
-
-## 2. ナビゲーション設定パターン
-
-### Nav設定ファイル構造
+管理画面は独立した `AdminLayout` を持ち、通常の `AppLayout` と**共用しない**。
 
 ```tsx
-// src/config/navigation.ts
-import { LayoutDashboard, Settings, Shield, Users } from 'lucide-react';
-
-export type NavSection = 'main' | 'settings' | 'admin';
-
-export interface NavItem {
-  label: string;        // 表示テキスト（日本語可）
-  href: string;         // ルートパス
-  icon: React.ComponentType<{ className?: string }>;
-  section: NavSection;
-  badge?: string;       // バッジテキスト（任意）
-  requireAdmin?: boolean;
-}
-
-export const NAV_ITEMS: NavItem[] = [
-  // main
-  { label: 'ダッシュボード', href: '/dashboard',  icon: LayoutDashboard, section: 'main' },
-  { label: 'ユーザー管理',   href: '/users',       icon: Users,           section: 'main' },
-  // settings
-  { label: '設定',           href: '/settings',    icon: Settings,        section: 'settings' },
-  // admin
-  { label: '管理者設定',     href: '/admin',       icon: Shield,          section: 'admin', requireAdmin: true },
-];
-```
-
-### Sidebar コンポーネント
-
-```tsx
-// src/components/layouts/Sidebar.tsx
+// src/pages/admin/AdminLayout.tsx  (~75行が目安)
 'use client';
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { NAV_ITEMS, NavSection } from '@/config/navigation';
 import { cn } from '@/lib/utils';
 
-const SECTION_LABELS: Record<NavSection, string> = {
-  main:     'メニュー',
-  settings: '設定',
-  admin:    '管理',
-};
+const NAV_ITEMS = [
+  { path: '/admin', label: 'Dashboard', icon: '📊' },
+  { path: '/admin/users', label: 'Users', icon: '👥' },
+  { path: '/admin/organizations', label: 'Organizations', icon: '🏢' },
+  { path: '/admin/settings', label: 'Settings', icon: '⚙️' },
+  { path: '/admin/audit-log', label: 'Audit Log', icon: '📋' },
+] as const;
 
-export function Sidebar({ isAdmin = false }: { isAdmin?: boolean }) {
+export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const sections: NavSection[] = ['main', 'settings', 'admin'];
 
   return (
-    <aside className="flex h-full w-60 flex-col border-r bg-gray-50 px-3 py-4">
-      {sections.map((section) => {
-        const items = NAV_ITEMS.filter(
-          (item) => item.section === section && (!item.requireAdmin || isAdmin)
-        );
-        if (!items.length) return null;
-        return (
-          <div key={section} className="mb-6">
-            <p className="mb-1 px-2 text-xs font-semibold uppercase tracking-wider text-gray-400">
-              {SECTION_LABELS[section]}
-            </p>
-            <nav className="space-y-0.5">
-              {items.map((item) => (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={cn(
-                    'flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors',
-                    pathname.startsWith(item.href)
-                      ? 'bg-primary/10 font-medium text-primary'
-                      : 'text-gray-600 hover:bg-gray-100'
-                  )}
-                >
-                  <item.icon className="h-4 w-4 shrink-0" />
-                  {item.label}
-                  {item.badge && (
-                    <span className="ml-auto rounded-full bg-primary px-1.5 py-0.5 text-[10px] text-white">
-                      {item.badge}
-                    </span>
-                  )}
-                </Link>
-              ))}
-            </nav>
-          </div>
-        );
-      })}
-    </aside>
+    <div className="flex h-screen overflow-hidden">
+      {/* サイドバー */}
+      <aside className="w-56 shrink-0 border-r bg-muted/40">
+        <div className="flex h-14 items-center border-b px-4">
+          <span className="text-sm font-bold text-destructive">Admin Panel</span>
+        </div>
+        <nav className="space-y-1 p-2">
+          {NAV_ITEMS.map(({ path, label, icon }) => (
+            <Link
+              key={path}
+              href={path}
+              className={cn(
+                'flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors',
+                pathname === path
+                  ? 'bg-primary text-primary-foreground'
+                  : 'hover:bg-accent',
+              )}
+            >
+              <span>{icon}</span>
+              {label}
+            </Link>
+          ))}
+        </nav>
+      </aside>
+
+      {/* メインコンテンツ */}
+      <div className="flex flex-1 flex-col overflow-hidden">
+        <header className="flex h-14 items-center border-b px-6">
+          <h1 className="text-sm font-semibold">Administration</h1>
+        </header>
+        <main className="flex-1 overflow-y-auto p-6">{children}</main>
+      </div>
+    </div>
   );
 }
 ```
 
+**管理画面ページ構成**
+
+```
+src/pages/admin/
+├── AdminLayout.tsx       # 専用レイアウト（~75行）
+├── AdminDashboard.tsx    # トップページ
+├── AdminUsers.tsx        # ユーザーCRUD
+├── AdminOrganizations.tsx
+├── AdminSettings.tsx     # APIキー・AIプロバイダー等
+└── AdminAuditLog.tsx     # 監査ログビューア
+```
+
 ---
 
-## 3. 管理画面ガードパターン
+## 3. ナビゲーションパターン
 
-### AdminGuard コンポーネント
+### 3-1. グループ折りたたみナビゲーション
 
 ```tsx
-// src/components/guards/admin-guard.tsx
+// src/components/Sidebar.tsx
 'use client';
 
-import { useRouter } from 'next/navigation';
-import { useEffect } from 'react';
-import { useAuth } from '@/hooks/use-auth'; // プロジェクトの認証hookに合わせて変更
+import { useState, useCallback } from 'react';
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+import { ChevronDown, ChevronRight } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { loadGroupOpen, saveGroupOpen } from '@/lib/navStorage';
 
-interface AdminGuardProps {
-  children: React.ReactNode;
-  /** true の場合は site
+// ナビグループ定義の型
+interface NavItem {
+  path: string;
+  label: string;
+  icon?: React.ReactNode;
+  adminOnly?: boolean;
+  badge?: string | number;
+}
+
+interface NavGroup {
+  id: string;
+  label: string;
+  sublabel?: string;
+  icon?: React.ReactNode;
+  items: NavItem[];
+}
+
+// 5グループ構成例（実プロジ

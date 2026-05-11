@@ -1,7 +1,4 @@
 ---
-name: auth-complete-flow
-description: >-
-  Next.js/Supabase/TypeScriptプロジェクトにおける認証フロー（OAuth・メール・マジックリンク・パスワードリセット）の実装・修復・監査・デバッグを行う包括的スキル。認証追加・セッション不具合・権限チェック漏れ・環境変数確認が必要なときに起動する。
 category: auth
 sourceSkillIds:
   - '906407e9'
@@ -108,212 +105,187 @@ sourceSkillIds:
   - 24b61d7c
   - 46e3a279
 generatedAt: '2026-05-11'
+integrationStrategy: latest-first
+latestSourceTimestamp: '2026-05-10T19:11:30+00:00'
+adoptedFromArchive:
+  - archive/prediction-market-analysis/.claude/skills/auth-complete-flow.md
+  - archive/aegis-market-os/.claude/skills/account-auth-ops.md
+  - archive/aegis-market-os/.claude/skills/architecture-overview.md
+  - archive/aegis-market-os/.claude/skills/auth-email-password.md
+  - archive/aegis-market-os/.claude/skills/auth-tokens-mailer.md
+  - archive/aegis-market-os/.claude/skills/dev-server-hook.md
+  - archive/aegis-market-os/.claude/skills/trpc-patterns.md
+  - archive/ai-company/.claude/skills/auth-email-flow/SKILL.md
+  - archive/ai-company/.claude/skills/nextauth-custom-error/SKILL.md
+  - archive/ai-company/.claude/skills/resend-diagnostics/SKILL.md
 ---
+```yaml
+---
+name: auth-complete-flow
+description: >-
+  Next.js/Supabase/TypeScript プロジェクトにおける認証フロー（OAuth・メール/パスワード・マジックリンク・パスワードリセット・メール変更）の
+  実装・修復・監査・デバッグを行う包括的スキル。認証追加・セッション不具合・権限チェック漏れ・環境変数確認・
+  メール未着・カスタムエラー表示が必要なときに起動する。
+category: auth
+---
+```
 
 # auth-complete-flow
 
-## このSkillが対応するシナリオ
+## いつ起動するか
 
-- 新規プロジェクトへの認証フロー追加（OAuth / メール / マジックリンク / パスワードリセット）
-- セッションが維持されない・ログアウトできない・リダイレクトループが発生する
-- RLSポリシーで権限チェックが漏れている
-- 環境変数の設定ミスによる認証エラー
-- 認証フロー全体のセキュリティ監査
+| トリガー | 例 |
+|---|---|
+| 新規認証追加 | 「Google ログインを追加したい」「マジックリンクを実装して」 |
+| セッション不具合 | 「ログイン後に 401 が返る」「ページ遷移でセッションが切れる」 |
+| OAuth エラー | 「Google ログインに失敗しました」だけ出る |
+| メール未着 | 「確認メールが届かない」「リセットリンクが来ない」 |
+| 権限漏れ | 「未ログインでも API が叩ける」「管理者専用ページに入れた」 |
+| カスタムエラー | 「メール未確認・アカウントロックを別メッセージで出したい」 |
+| 環境変数疑い | 「本番だけ認証が壊れる」 |
 
 ---
 
-## 1. 必須環境変数チェックリスト
+## 1. アーキテクチャ選択マップ
 
-認証関連の不具合の約60%は環境変数の設定ミスに起因する。最初に確認する。
+```
+プロジェクトに Supabase がある？
+  YES → Supabase Auth（§2）を使う
+  NO  → カスタム Auth（§3）を使う
+         ├─ Next.js がある？ → NextAuth v5 Credentials（§3-B）
+         └─ Express/tRPC？  → jose + Cookie セッション（§3-C）
+```
+
+> **原則**: 認証レイヤーを混在させない。Supabase Auth と NextAuth を同一プロジェクトで同時使用しない。
+
+---
+
+## 2. Supabase Auth パターン
+
+### 2-A. 必須環境変数チェックリスト
 
 ```bash
-# .env.local（Next.js開発環境）
 NEXT_PUBLIC_SUPABASE_URL=https://xxxx.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...
-
-# サーバーサイドのみ（クライアントに露出させない）
-SUPABASE_SERVICE_ROLE_KEY=eyJ...
-
-# OAuth使用時（Supabaseダッシュボードにも同じ値を設定）
-# Google: Authentication > Providers > Google
-# GitHub: Authentication > Providers > GitHub
+SUPABASE_SERVICE_ROLE_KEY=eyJ...          # サーバー専用・フロントに漏らさない
+NEXT_PUBLIC_SITE_URL=https://example.com  # OAuth コールバック・メールリンク用
 ```
 
-**確認コマンド**:
-```bash
-# 環境変数が正しくロードされているか確認
-node -e "require('dotenv').config({path:'.env.local'}); console.log(process.env.NEXT_PUBLIC_SUPABASE_URL)"
-```
+> `NEXT_PUBLIC_SITE_URL` が間違うと OAuth コールバック・メールリンクが全滅する。  
+> Vercel なら `NEXT_PUBLIC_VERCEL_URL` を fallback で使えるが本番は明示指定を推奨。
 
----
-
-## 2. Supabaseクライアントの正しい初期化パターン
-
-### 2-1. ブラウザ用クライアント（Client Components）
+### 2-B. クライアント初期化（App Router）
 
 ```typescript
-// lib/supabase/client.ts
-import { createBrowserClient } from '@supabase/ssr'
-import type { Database } from '@/types/database'
-
-export function createClient() {
-  return createBrowserClient<Database>(
+// lib/supabase/client.ts  ← ブラウザ用
+import { createBrowserClient } from '@supabase/ssr';
+export const createClient = () =>
+  createBrowserClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  )
-}
-```
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+  );
 
-### 2-2. サーバー用クライアント（Server Components / Route Handlers）
-
-```typescript
-// lib/supabase/server.ts
-import { createServerClient } from '@supabase/ssr'
-import { cookies } from 'next/headers'
-import type { Database } from '@/types/database'
-
-export async function createClient() {
-  const cookieStore = await cookies()
-
-  return createServerClient<Database>(
+// lib/supabase/server.ts  ← Server Component / Route Handler 用
+import { createServerClient } from '@supabase/ssr';
+import { cookies } from 'next/headers';
+export const createClient = () => {
+  const cookieStore = cookies();
+  return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        getAll() {
-          return cookieStore.getAll()
-        },
-        setAll(cookiesToSet) {
-          try {
-            cookiesToSet.forEach(({ name, value, options }) =>
-              cookieStore.set(name, value, options)
-            )
-          } catch {
-            // Server Componentからの呼び出しでは書き込み不可（無視して良い）
-          }
-        },
+        getAll: () => cookieStore.getAll(),
+        setAll: (pairs) =>
+          pairs.forEach(({ name, value, options }) =>
+            cookieStore.set(name, value, options)),
       },
-    }
-  )
-}
+    },
+  );
+};
 ```
 
-### 2-3. Middleware用クライアント
+> **禁止**: `createRouteHandlerClient` など旧 API（`@supabase/auth-helpers-nextjs`）は使わない。  
+> `@supabase/ssr` の `createServerClient` / `createBrowserClient` で統一。
+
+### 2-C. Middleware（セッション自動更新）
 
 ```typescript
-// lib/supabase/middleware.ts
-import { createServerClient } from '@supabase/ssr'
-import { NextResponse, type NextRequest } from 'next/server'
+// middleware.ts
+import { createServerClient } from '@supabase/ssr';
+import { NextResponse, type NextRequest } from 'next/server';
 
-export async function updateSession(request: NextRequest) {
-  let supabaseResponse = NextResponse.next({ request })
+export async function middleware(request: NextRequest) {
+  let response = NextResponse.next({ request });
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        getAll() {
-          return request.cookies.getAll()
-        },
-        setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value }) =>
-            request.cookies.set(name, value)
-          )
-          supabaseResponse = NextResponse.next({ request })
-          cookiesToSet.forEach(({ name, value, options }) =>
-            supabaseResponse.cookies.set(name, value, options)
-          )
+        getAll: () => request.cookies.getAll(),
+        setAll: (pairs) => {
+          pairs.forEach(({ name, value }) => request.cookies.set(name, value));
+          response = NextResponse.next({ request });
+          pairs.forEach(({ name, value, options }) =>
+            response.cookies.set(name, value, options));
         },
       },
-    }
-  )
+    },
+  );
 
-  // セッションのリフレッシュ（必須）
-  const { data: { user } } = await supabase.auth.getUser()
+  // セッションを必ずリフレッシュ（トークン更新）
+  const { data: { user } } = await supabase.auth.getUser();
 
-  // 未認証ユーザーの保護ルートへのアクセスをリダイレクト
-  const protectedPaths = ['/dashboard', '/settings', '/profile']
-  const isProtected = protectedPaths.some(path =>
-    request.nextUrl.pathname.startsWith(path)
-  )
-
-  if (!user && isProtected) {
-    const redirectUrl = request.nextUrl.clone()
-    redirectUrl.pathname = '/login'
-    redirectUrl.searchParams.set('redirectTo', request.nextUrl.pathname)
-    return NextResponse.redirect(redirectUrl)
+  // 保護ルートのガード例
+  if (!user && request.nextUrl.pathname.startsWith('/dashboard')) {
+    return NextResponse.redirect(new URL('/login', request.url));
   }
 
-  return supabaseResponse
-}
-```
-
-```typescript
-// middleware.ts（プロジェクトルート）
-import { type NextRequest } from 'next/server'
-import { updateSession } from '@/lib/supabase/middleware'
-
-export async function middleware(request: NextRequest) {
-  return await updateSession(request)
+  return response;
 }
 
 export const config = {
-  matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
-  ],
+  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+};
+```
+
+### 2-D. OAuth（Google / GitHub など）
+
+```typescript
+// app/auth/login/route.ts
+import { createClient } from '@/lib/supabase/server';
+import { redirect } from 'next/navigation';
+
+export async function GET() {
+  const supabase = createClient();
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider: 'google',
+    options: {
+      redirectTo: `${process.env.NEXT_PUBLIC_SITE_URL}/auth/callback`,
+      // scopes: 'openid email profile',  // 必要なら追加
+    },
+  });
+  if (error || !data.url) return redirect('/login?error=oauth_failed');
+  redirect(data.url);
+}
+
+// app/auth/callback/route.ts
+import { createClient } from '@/lib/supabase/server';
+import { NextRequest, NextResponse } from 'next/server';
+
+export async function GET(request: NextRequest) {
+  const code = request.nextUrl.searchParams.get('code');
+  if (!code) return NextResponse.redirect(new URL('/login?error=no_code', request.url));
+
+  const supabase = createClient();
+  const { error } = await supabase.auth.exchangeCodeForSession(code);
+  if (error) return NextResponse.redirect(new URL('/login?error=exchange_failed', request.url));
+
+  return NextResponse.redirect(new URL('/dashboard', request.url));
 }
 ```
 
----
+#### Google OAuth state cookie 消失バグ（頻出地雷）
 
-## 3. 認証フローの実装
-
-### 3-1. メール＋パスワード認証
-
-```typescript
-// app/auth/actions.ts
-'use server'
-
-import { revalidatePath } from 'next/cache'
-import { redirect } from 'next/navigation'
-import { createClient } from '@/lib/supabase/server'
-
-export async function signUp(formData: FormData) {
-  const supabase = await createClient()
-
-  const { error } = await supabase.auth.signUp({
-    email: formData.get('email') as string,
-    password: formData.get('password') as string,
-    options: {
-      emailRedirectTo: `${process.env.NEXT_PUBLIC_SITE_URL}/auth/callback`,
-    },
-  })
-
-  if (error) {
-    return { error: error.message }
-  }
-
-  return { message: '確認メールを送信しました。メールをご確認ください。' }
-}
-
-export async function signIn(formData: FormData) {
-  const supabase = await createClient()
-
-  const { error } = await supabase.auth.signInWithPassword({
-    email: formData.get('email') as string,
-    password: formData.get('password') as string,
-  })
-
-  if (error) {
-    return { error: error.message }
-  }
-
-  revalidatePath('/', 'layout')
-  redirect('/dashboard')
-}
-
-export async function signOut() {
-  const supabase = await createClient()
-  await supabase.auth.signOut()
-  revalidat
+**症状**: "Google ログインに失敗しました" のみ、
