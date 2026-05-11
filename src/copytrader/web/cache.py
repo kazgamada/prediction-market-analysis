@@ -469,3 +469,67 @@ def start_background_catchup() -> None:
         ).start()
         _catchup_started = True
         log.info("start_background_catchup: launched daemon thread")
+
+
+# --- 手動 "Run backfill" を daemon thread で走らせるためのジョブランナー ----
+
+_manual_jobs: dict[str, dict[str, Any]] = {}
+_manual_jobs_lock = threading.Lock()
+
+
+def start_manual_backfill(
+    *,
+    from_block: int | None,
+    to_block: int | None,
+    chunk_size: int,
+    max_workers: int,
+    commit_every: int,
+) -> str:
+    """手動 backfill をデーモンスレッドで起動する。ユーザーがページを
+    閉じたり遷移しても継続。同名ジョブが既に running なら早期 return。
+    """
+    from copytrader.indexer.backfill import backfill as do_backfill
+
+    job_id = "manual_backfill"
+    with _manual_jobs_lock:
+        existing = _manual_jobs.get(job_id)
+        if existing and existing.get("status") == "running":
+            return existing["id"]
+        _manual_jobs[job_id] = {
+            "id": job_id,
+            "status": "running",
+            "started_at": time.time(),
+            "from_block": from_block,
+            "to_block": to_block,
+            "saved": None,
+            "error": None,
+        }
+
+    def _worker() -> None:
+        try:
+            saved = do_backfill(
+                from_block=from_block,
+                to_block=to_block,
+                chunk_size=chunk_size,
+                max_workers=max_workers,
+                commit_every=commit_every,
+            )
+            with _manual_jobs_lock:
+                _manual_jobs[job_id].update(
+                    status="done", saved=saved, finished_at=time.time()
+                )
+            log.info("manual-backfill: done saved=%s", saved)
+        except Exception as e:
+            with _manual_jobs_lock:
+                _manual_jobs[job_id].update(
+                    status="failed", error=f"{type(e).__name__}: {e}", finished_at=time.time()
+                )
+            log.exception("manual-backfill: failed")
+
+    threading.Thread(target=_worker, name="manual-backfill", daemon=True).start()
+    return job_id
+
+
+def manual_backfill_status() -> dict[str, Any] | None:
+    with _manual_jobs_lock:
+        return dict(_manual_jobs.get("manual_backfill") or {}) or None

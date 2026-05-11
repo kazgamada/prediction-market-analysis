@@ -22,9 +22,11 @@ primary_region = 'nrt'
 [http_service]
   internal_port = 8501
   force_https = true
-  auto_stop_machines = 'stop'
+  # 無人時にマシンを停止すると catchup スレッドや手動 backfill が殺されるので、
+  # 最低 1 台は常時起動させ続ける。手動 backfill / live 取り込みが止まらない前提条件。
+  auto_stop_machines = 'off'
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
   processes = ['web']
 
   [http_service.concurrency]
