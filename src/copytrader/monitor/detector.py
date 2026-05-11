@@ -96,6 +96,28 @@ async def emit_signal(trade: DecodedTrade, wallet: str, on_signal: SignalHandler
         await on_signal(sig)
 
 
+async def _supervise(name: str, factory: Callable[[], Awaitable[None]]) -> None:
+    """1 つのバックグラウンドタスクを監督し、例外で死んだら再起動する。
+
+    `asyncio.TaskGroup` は 1 タスクの未捕捉例外で全体を殺してしまうため、
+    monitor 全体が落ちて Fly が再起動を諦める事象 (max restart count) に
+    繋がっていた。各タスクをこの supervisor で包むことで、live WS と
+    catchup が独立して回り続ける。
+    """
+    backoff = 1.0
+    while True:
+        try:
+            await factory()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("supervised task %s crashed; restarting in %.1fs", name, backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60.0)
+            continue
+        backoff = 1.0
+
+
 async def run(
     on_signal: SignalHandler | None = None,
     periodic_tasks: list[tuple[str, float, Callable[[], Awaitable[None]]]] | None = None,
@@ -103,20 +125,34 @@ async def run(
     """Run the live monitor: subscribe, persist trades, emit signals on matches.
 
     `periodic_tasks` is a list of (name, interval_seconds, async_callable) tuples
-    co-scheduled in the same task group; failures don't kill the monitor.
+    co-scheduled alongside the WS subscriber. Each task is supervised: if it
+    raises, only that task restarts (with exponential backoff). The other tasks
+    keep running. This is the key invariant for keeping monitor alive on Fly.
     """
     from copytrader.runtime.scheduler import run_every
 
     detector = WatchlistDetector()
 
     async def handle(trade: DecodedTrade) -> None:
-        await persist_trade(trade)
-        wallet = detector.matches(trade)
-        if wallet:
-            await emit_signal(trade, wallet, on_signal)
+        try:
+            await persist_trade(trade)
+            wallet = detector.matches(trade)
+            if wallet:
+                await emit_signal(trade, wallet, on_signal)
+        except Exception:
+            log.exception("handle(trade) failed for tx=%s log=%s", trade.tx_hash, trade.log_index)
 
-    async with asyncio.TaskGroup() as tg:
-        tg.create_task(detector.refresh_loop())
-        tg.create_task(subscribe_logs(handle))
-        for name, interval, fn in periodic_tasks or []:
-            tg.create_task(run_every(name, interval, fn))
+    tasks: list[asyncio.Task] = [
+        asyncio.create_task(_supervise("watchlist_refresh", detector.refresh_loop)),
+        asyncio.create_task(_supervise("subscribe_logs", lambda: subscribe_logs(handle))),
+    ]
+    for name, interval, fn in periodic_tasks or []:
+        tasks.append(asyncio.create_task(_supervise(name, lambda fn=fn: run_every(name, interval, fn))))
+
+    log.info("monitor started: %s tasks", len(tasks))
+    try:
+        await asyncio.gather(*tasks)
+    except asyncio.CancelledError:
+        for t in tasks:
+            t.cancel()
+        raise

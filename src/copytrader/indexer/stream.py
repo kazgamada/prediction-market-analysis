@@ -83,27 +83,27 @@ async def subscribe_logs(
                 log.info("subscribed: %s", ack.get("result"))
                 backoff = 1.0
                 async for raw in ws:
-                    msg = json.loads(raw)
-                    if msg.get("method") != "eth_subscription":
-                        continue
-                    log_ev = msg["params"]["result"]
-                    exchange = _exchange_for(log_ev["address"])
-                    if exchange == "unknown":
-                        continue
-                    log_ev_normalized = {
-                        "address": log_ev["address"],
-                        "topics": [bytes.fromhex(t[2:]) for t in log_ev["topics"]],
-                        "data": log_ev["data"],
-                        "blockNumber": int(log_ev["blockNumber"], 16),
-                        "transactionHash": bytes.fromhex(log_ev["transactionHash"][2:]),
-                        "logIndex": int(log_ev["logIndex"], 16),
-                        "blockHash": bytes.fromhex(log_ev["blockHash"][2:]),
-                        "transactionIndex": int(log_ev["transactionIndex"], 16),
-                        "removed": log_ev.get("removed", False),
-                    }
-                    if log_ev_normalized["removed"]:
-                        continue
                     try:
+                        msg = json.loads(raw)
+                        if msg.get("method") != "eth_subscription":
+                            continue
+                        log_ev = msg["params"]["result"]
+                        exchange = _exchange_for(log_ev["address"])
+                        if exchange == "unknown":
+                            continue
+                        log_ev_normalized = {
+                            "address": log_ev["address"],
+                            "topics": [bytes.fromhex(t[2:]) for t in log_ev["topics"]],
+                            "data": log_ev["data"],
+                            "blockNumber": int(log_ev["blockNumber"], 16),
+                            "transactionHash": bytes.fromhex(log_ev["transactionHash"][2:]),
+                            "logIndex": int(log_ev["logIndex"], 16),
+                            "blockHash": bytes.fromhex(log_ev["blockHash"][2:]),
+                            "transactionIndex": int(log_ev["transactionIndex"], 16),
+                            "removed": log_ev.get("removed", False),
+                        }
+                        if log_ev_normalized["removed"]:
+                            continue
                         decoded_args = (
                             contracts[exchange]
                             .events.OrderFilled()
@@ -114,9 +114,15 @@ async def subscribe_logs(
                             trade.block_timestamp = datetime.now(timezone.utc)
                             await on_trade(trade)
                     except Exception as e:
-                        log.warning("decode failed in stream: %s", e)
+                        # 単一メッセージの失敗で WS ループを止めない
+                        log.warning("decode/handle failed in stream: %s", e)
         except (websockets.WebSocketException, OSError) as e:
             log.warning("WS disconnected: %s; reconnecting in %.1fs", e, backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60.0)
+        except Exception as e:
+            # 想定外の例外でも reconnect する。死なせない。
+            log.exception("WS loop unexpected error: %s; reconnecting in %.1fs", e, backoff)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 60.0)
 

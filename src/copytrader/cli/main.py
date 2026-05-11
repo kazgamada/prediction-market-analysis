@@ -220,8 +220,8 @@ def watch_list() -> None:
     default=300,
     help="Periodic backfill catchup interval (seconds). 0 to disable.",
 )
-@click.option("--catchup-chunk-size", type=int, default=2000)
-@click.option("--catchup-workers", type=int, default=10)
+@click.option("--catchup-chunk-size", type=int, default=1000)
+@click.option("--catchup-workers", type=int, default=5)
 @click.option(
     "--catchup-recent-days",
     type=int,
