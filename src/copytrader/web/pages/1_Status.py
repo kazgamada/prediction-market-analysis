@@ -136,6 +136,17 @@ else:
 if last_trade_block:
     st.caption(f"latest indexed trade: block **{int(last_trade_block):,}**")
 
+_hb = snap.get("catchup_heartbeat")
+if _hb:
+    age = (datetime.now(timezone.utc) - _hb["updated_at"]).total_seconds() if _hb.get("updated_at") else None
+    age_str = f"{int(age)}s ago" if age is not None and age < 120 else f"{int(age // 60)}m ago" if age else "?"
+    color = "🟢" if age is not None and age < 90 else ("🟡" if age is not None and age < 600 else "🔴")
+    st.caption(
+        f"{color} **web catchup heartbeat**: iteration {_hb.get('iteration', '?')} — last beat {age_str}"
+    )
+else:
+    st.caption("🔴 **web catchup heartbeat**: まだ動いていない (Streamlit を 1 度開くと起動)")
+
 st.subheader("Open positions")
 st.dataframe(pd.DataFrame(pos_rows) if pos_rows else pd.DataFrame(), use_container_width=True)
 
