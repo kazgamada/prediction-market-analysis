@@ -336,6 +336,37 @@ def _bump_cursors_to_recent_floor() -> None:
                 log.info("bump_cursors: %s %s -> %s (recent_floor)", name, old, recent_floor)
 
 
+def _run_rpc_self_test() -> dict[str, Any]:
+    """直近 500 ブロックで CTF / NegRisk の OrderFilled を 1 度だけ取得し、
+    RPC が実際に logs を返すか確認する診断。結果は Status ページに表示される。
+    """
+    from copytrader.chain.client import PolygonClient
+
+    out: dict[str, Any] = {}
+    try:
+        client = PolygonClient()
+        head = client.block_number()
+        out["head"] = head
+        start = max(0, head - 500)
+        out["range"] = [start, head]
+        for exchange in ("ctf", "negrisk"):
+            try:
+                logs = client.get_order_filled_logs(start, head, exchange)
+                out[f"{exchange}_logs"] = len(logs)
+            except Exception as e:
+                out[f"{exchange}_logs"] = f"ERROR: {type(e).__name__}: {str(e)[:200]}"
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {str(e)[:300]}"
+    return out
+
+
+_RPC_SELFTEST_RESULT: dict[str, Any] = {}
+
+
+def rpc_selftest_result() -> dict[str, Any]:
+    return dict(_RPC_SELFTEST_RESULT)
+
+
 def _touch_heartbeat(stage: str, block: int = 0) -> None:
     """web catchup の生存確認用 cursor。block 番号は段階を数字でエンコード。
     UI からこの cursor を見れば catchup loop が回っているか分かる。
@@ -403,14 +434,18 @@ def _catchup_loop() -> None:
 def start_background_catchup() -> None:
     """プロセス内に 1 つだけ daemon catchup スレッドを起動する。
 
-    起動直後に同期で `_bump_cursors_to_recent_floor()` を呼ぶ。これで
-    Streamlit が最初にロードされた瞬間に cursor が直近 60 日相当に
-    ジャンプし、UI 上の進捗もすぐ反映される。
+    起動直後に同期で `_bump_cursors_to_recent_floor()` と RPC 自己診断を呼ぶ。
+    UI 上で RPC が正常に logs を返すか即座に分かる。
     """
-    global _catchup_started
+    global _catchup_started, _RPC_SELFTEST_RESULT
     with _catchup_start_lock:
         if _catchup_started:
             return
+        try:
+            _RPC_SELFTEST_RESULT = _run_rpc_self_test()
+            log.info("rpc-selftest: %s", _RPC_SELFTEST_RESULT)
+        except Exception:
+            log.exception("rpc-selftest failed")
         try:
             _bump_cursors_to_recent_floor()
         except Exception:
