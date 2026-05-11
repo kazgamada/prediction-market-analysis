@@ -81,3 +81,53 @@ def test_flush_cursor_is_monotonic(monkeypatch):
 
     bf._flush([], "backfill_ctf", 84_109_448)
     assert fake_cur.block_number == 84_109_448, "大きい値で前進していない"
+
+
+def test_bump_cursors_to_recent_floor_advances_old_cursor(monkeypatch):
+    """cursor が recent_floor より古ければ前進、新しければ据え置き。"""
+    from copytrader.web import cache as web_cache
+
+    class FakeCursor:
+        def __init__(self, block):
+            self.block_number = block
+            self.updated_at = None
+
+    fakes = {
+        "backfill_ctf": FakeCursor(58_680_401),
+        "backfill_negrisk": FakeCursor(90_000_000),  # 既に recent_floor より大
+    }
+
+    class FakeSession:
+        def get(self, _model, name): return fakes.get(name)
+        def add(self, _row) -> None: pass
+
+    class FakeCtx:
+        def __enter__(self): return FakeSession()
+        def __exit__(self, *exc): return False
+
+    class FakePolygonClient:
+        def block_number(self): return 86_722_859
+
+    class FakeSettings:
+        backfill_recent_days = 60
+
+    monkeypatch.setattr(web_cache, "session_scope", lambda: FakeCtx(), raising=False)
+    monkeypatch.setattr(
+        "copytrader.chain.client.PolygonClient", lambda: FakePolygonClient(), raising=False
+    )
+    monkeypatch.setattr(
+        "copytrader.config.get_settings", lambda: FakeSettings(), raising=False
+    )
+    monkeypatch.setattr(
+        "copytrader.db.session_scope", lambda: FakeCtx(), raising=False
+    )
+
+    web_cache._bump_cursors_to_recent_floor()
+
+    expected_floor = 86_722_859 - 60 * 43_200
+    assert fakes["backfill_ctf"].block_number == expected_floor, (
+        f"古い cursor が前進していない: {fakes['backfill_ctf'].block_number} != {expected_floor}"
+    )
+    assert fakes["backfill_negrisk"].block_number == 90_000_000, (
+        "新しい cursor が巻き戻された"
+    )
