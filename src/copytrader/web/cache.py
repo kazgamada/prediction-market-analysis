@@ -49,8 +49,19 @@ def _compute_status() -> dict[str, Any]:
         last_trade_ts = session.execute(select(func.max(Trade.block_timestamp))).scalar()
         last_trade_block = session.execute(select(func.max(Trade.block_number))).scalar()
 
+        heartbeat = session.execute(
+            select(IngestCursor).where(IngestCursor.name == _CATCHUP_HEARTBEAT_NAME)
+        ).scalar_one_or_none()
+        heartbeat_info = (
+            {"iteration": heartbeat.block_number, "updated_at": heartbeat.updated_at}
+            if heartbeat
+            else None
+        )
+
         cursors = (
-            session.execute(select(IngestCursor).where(IngestCursor.name.like("backfill%")))
+            session.execute(
+                select(IngestCursor).where(IngestCursor.name.like("backfill%"))
+            )
             .scalars()
             .all()
         )
@@ -144,6 +155,7 @@ def _compute_status() -> dict[str, Any]:
         "pos_rows": pos_rows,
         "order_rows": order_rows,
         "risk_rows": risk_rows,
+        "catchup_heartbeat": heartbeat_info,
     }
 
 
@@ -276,7 +288,8 @@ def start_background_warmer() -> None:
 
 _catchup_started = False
 _catchup_start_lock = threading.Lock()
-_CATCHUP_INTERVAL_SEC = 300.0
+_CATCHUP_INTERVAL_SEC = 60.0
+_CATCHUP_HEARTBEAT_NAME = "web_catchup_heartbeat"
 
 
 def _bump_cursors_to_recent_floor() -> None:
@@ -323,6 +336,28 @@ def _bump_cursors_to_recent_floor() -> None:
                 log.info("bump_cursors: %s %s -> %s (recent_floor)", name, old, recent_floor)
 
 
+def _touch_heartbeat(stage: str, block: int = 0) -> None:
+    """web catchup の生存確認用 cursor。block 番号は段階を数字でエンコード。
+    UI からこの cursor を見れば catchup loop が回っているか分かる。
+    """
+    from datetime import datetime, timezone
+
+    from copytrader.db import session_scope
+    from copytrader.models import IngestCursor
+
+    try:
+        with session_scope() as session:
+            cur = session.get(IngestCursor, _CATCHUP_HEARTBEAT_NAME)
+            now = datetime.now(timezone.utc)
+            if cur is None:
+                session.add(IngestCursor(name=_CATCHUP_HEARTBEAT_NAME, block_number=block, updated_at=now))
+            else:
+                cur.block_number = block
+                cur.updated_at = now
+    except Exception:
+        log.exception("heartbeat write failed (stage=%s)", stage)
+
+
 def _catchup_loop() -> None:
     """web プロセス内で動く保険的 catchup loop。
 
@@ -331,19 +366,34 @@ def _catchup_loop() -> None:
     settings.backfill_recent_days の窓だけを対象にする。
     backfill 自体が冪等 (ON CONFLICT DO NOTHING + 単調増加 cursor) なので
     monitor と並走しても安全。
+
+    commit_every=1 / chunk=500 / workers=3 と小さくし、進捗が秒単位で
+    UI に反映されるようにしている。
     """
     from copytrader.config import get_settings
     from copytrader.indexer.backfill import backfill as do_backfill
 
     log.info("web-catchup: thread started")
+    _touch_heartbeat("thread_started")
     backoff = 1.0
+    iteration = 0
     while True:
+        iteration += 1
+        _touch_heartbeat("loop_iter", iteration)
         try:
             recent_days = get_settings().backfill_recent_days
-            do_backfill(chunk_size=1000, max_workers=5, recent_days=recent_days)
+            saved = do_backfill(
+                chunk_size=500,
+                max_workers=3,
+                commit_every=1,
+                recent_days=recent_days,
+            )
+            log.info("web-catchup: iteration %s done, saved=%s", iteration, saved)
+            _touch_heartbeat("iter_done", iteration)
             backoff = 1.0
         except Exception:
             log.exception("web-catchup: backfill failed; retrying in %.1fs", backoff)
+            _touch_heartbeat("iter_failed", iteration)
             time.sleep(backoff)
             backoff = min(backoff * 2, 60.0)
             continue
