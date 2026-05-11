@@ -1,222 +1,131 @@
 ---
-category: auth
-sourceSkillIds:
-  - '906407e9'
-  - d718c6c5
-  - '43560110'
-  - 7f195b18
-  - 5906a766
-  - 7c03fba4
-  - 5597d0ff
-  - d0840991
-  - bcb9645b
-  - 3c592d1d
-  - 65b4cfb1
-  - a2614101
-  - 6cb76b9b
-  - 0f60149e
-  - ce004062
-  - 74d839c6
-  - 3d525e31
-  - bbe9913d
-  - c1afe582
-  - 631cc480
-  - 7434c525
-  - b013114c
-  - 48d14926
-  - 1e07217a
-  - 2d0f80c2
-  - 0fee0014
-  - e2309e2d
-  - d7fe2e18
-  - eace4dd7
-  - 39a955fa
-  - '28651465'
-  - 9c8cafea
-  - 9ace2330
-  - 9b4fb8af
-  - a1ca0bbd
-  - f743a005
-  - 86ba9955
-  - ac0d86a6
-  - 3364fc72
-  - 81a169be
-  - f8796576
-  - 1395b5d2
-  - b29ac157
-  - dff81e26
-  - c15ad940
-  - 0a98865c
-  - 3cb1943a
-  - b80db551
-  - 8f170407
-  - d5df728f
-  - e4e7c55a
-  - e4f99eac
-  - 949da0ce
-  - 4332fd57
-  - 25376c0a
-  - ff8f258a
-  - fa1bba76
-  - c6d21246
-  - 71a155ef
-  - eb5ed6c2
-  - df9e6eac
-  - 6ad27777
-  - 886b4e87
-  - d5a86c2b
-  - 42b870e9
-  - 5f4a44af
-  - 692e843b
-  - e1bd946c
-  - a23cda31
-  - 2ecdd695
-  - 374faec4
-  - 8b5881ba
-  - b4db4a06
-  - 7a6209ea
-  - 6dd2891e
-  - 10e5b740
-  - '89408744'
-  - b93def46
-  - 02e6f9d3
-  - d50886b7
-  - 1d615646
-  - 69eee762
-  - 7aa48f05
-  - 5216f037
-  - 3fbb2eee
-  - 91e27bd5
-  - 79c298d8
-  - b7cca168
-  - 655ec61e
-  - 1b3424e1
-  - 463e51f9
-  - 4f3f9e40
-  - d46525eb
-  - 5340bf4c
-  - ca67e5e7
-  - 8a752d94
-  - 15f4d701
-  - 2b626550
-  - bbd46a26
-  - 9847ce03
-  - be8b2fb2
-  - 24b61d7c
-  - 46e3a279
-generatedAt: '2026-05-11'
-integrationStrategy: latest-first
-latestSourceTimestamp: '2026-05-10T19:11:30+00:00'
-adoptedFromArchive:
-  - archive/prediction-market-analysis/.claude/skills/auth-complete-flow.md
-  - archive/aegis-market-os/.claude/skills/account-auth-ops.md
-  - archive/aegis-market-os/.claude/skills/architecture-overview.md
-  - archive/aegis-market-os/.claude/skills/auth-email-password.md
-  - archive/aegis-market-os/.claude/skills/auth-tokens-mailer.md
-  - archive/aegis-market-os/.claude/skills/dev-server-hook.md
-  - archive/aegis-market-os/.claude/skills/trpc-patterns.md
-  - archive/ai-company/.claude/skills/auth-email-flow/SKILL.md
-  - archive/ai-company/.claude/skills/nextauth-custom-error/SKILL.md
-  - archive/ai-company/.claude/skills/resend-diagnostics/SKILL.md
----
-```yaml
----
 name: auth-complete-flow
 description: >-
-  Next.js/Supabase/TypeScript プロジェクトにおける認証フロー（OAuth・メール/パスワード・マジックリンク・パスワードリセット・メール変更）の
-  実装・修復・監査・デバッグを行う包括的スキル。認証追加・セッション不具合・権限チェック漏れ・環境変数確認・
-  メール未着・カスタムエラー表示が必要なときに起動する。
+  Next.js (App Router) / Supabase / TypeScript
+  プロジェクトにおける認証フロー全般（OAuth・メール確認・マジックリンク・パスワードリセット・NextAuth v5
+  カスタムエラー）の実装・修復・監査・デバッグを行う包括的スキル。認証追加・セッション不具合・権限チェック漏れ・HTTPS本番バグ・環境変数確認が必要なときに起動する。
 category: auth
+sourceSkillIds:
+  - 2f74dbd8
+  - 1d57d2e4
+  - 66bd76e5
+  - fae179bc
+  - 2012789c
+  - ec487531
+  - 785232c6
+  - b5913cce
+  - a2254dbd
+  - 9ef22ce0
+  - 348a3298
+  - 21e3a772
+  - 1247dc38
+  - 8fe1b0a7
+  - 0c7a5fc9
+  - 2c84c48b
+  - cb2f47b7
+  - 7c767995
+  - da99bb38
+  - adc68264
+  - 8af5b12b
+  - c0eac1f9
+  - 9cabb20f
+  - 1fdaf7e3
+  - 93f9b78e
+  - e23e5149
+  - bfc7933f
+  - d25849d9
+  - 7b586499
+  - 5394377b
+  - eb90b4bf
+  - 59c4daae
+  - 07c6c38e
+  - 1e5aa1a3
+  - 07206c63
+  - f1cba622
+  - 9a8598b4
+  - 30d6d26c
+  - b1d03195
+generatedAt: '2026-05-11'
 ---
-```
 
-# auth-complete-flow
+# auth-complete-flow — 認証フロー完全実装スキル
 
-## いつ起動するか
+## いつこのスキルを使うか
 
 | トリガー | 例 |
-|---|---|
-| 新規認証追加 | 「Google ログインを追加したい」「マジックリンクを実装して」 |
-| セッション不具合 | 「ログイン後に 401 が返る」「ページ遷移でセッションが切れる」 |
-| OAuth エラー | 「Google ログインに失敗しました」だけ出る |
-| メール未着 | 「確認メールが届かない」「リセットリンクが来ない」 |
-| 権限漏れ | 「未ログインでも API が叩ける」「管理者専用ページに入れた」 |
-| カスタムエラー | 「メール未確認・アカウントロックを別メッセージで出したい」 |
-| 環境変数疑い | 「本番だけ認証が壊れる」 |
+|----------|----|
+| 認証機能の新規追加 | OAuth / Magic Link / メール確認 / パスワードリセット を追加したい |
+| セッション・リダイレクト不具合 | ログイン後に 404、無限リダイレクト、クッキーが消える |
+| 権限チェック漏れ | middleware / layout で未認証ユーザーを通してしまう |
+| 本番だけ壊れる | HTTPS 環境で `__Secure-` クッキーが読めない |
+| 環境変数疑い | `.env.local` と Vercel 設定の不一致 |
+| NextAuth カスタムエラー | `email-not-verified` / `account-locked` を UI に出したい |
 
 ---
 
-## 1. アーキテクチャ選択マップ
+## Part 1 — Supabase 認証フロー
+
+### 1-1. Supabase クライアント 3 種の役割分担
 
 ```
-プロジェクトに Supabase がある？
-  YES → Supabase Auth（§2）を使う
-  NO  → カスタム Auth（§3）を使う
-         ├─ Next.js がある？ → NextAuth v5 Credentials（§3-B）
-         └─ Express/tRPC？  → jose + Cookie セッション（§3-C）
+lib/supabase/
+  server.ts      # Server Components / Route Handlers / Server Actions 用
+  client.ts      # Client Components 用（ブラウザ）
+  middleware.ts  # Edge Middleware 専用（セッション更新）
 ```
 
-> **原則**: 認証レイヤーを混在させない。Supabase Auth と NextAuth を同一プロジェクトで同時使用しない。
-
----
-
-## 2. Supabase Auth パターン
-
-### 2-A. 必須環境変数チェックリスト
-
-```bash
-NEXT_PUBLIC_SUPABASE_URL=https://xxxx.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...
-SUPABASE_SERVICE_ROLE_KEY=eyJ...          # サーバー専用・フロントに漏らさない
-NEXT_PUBLIC_SITE_URL=https://example.com  # OAuth コールバック・メールリンク用
-```
-
-> `NEXT_PUBLIC_SITE_URL` が間違うと OAuth コールバック・メールリンクが全滅する。  
-> Vercel なら `NEXT_PUBLIC_VERCEL_URL` を fallback で使えるが本番は明示指定を推奨。
-
-### 2-B. クライアント初期化（App Router）
+#### `lib/supabase/server.ts`
 
 ```typescript
-// lib/supabase/client.ts  ← ブラウザ用
-import { createBrowserClient } from '@supabase/ssr';
-export const createClient = () =>
-  createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-  );
+import { createServerClient } from "@supabase/ssr";
+import { cookies } from "next/headers";
+import type { Database } from "@/types/database";
 
-// lib/supabase/server.ts  ← Server Component / Route Handler 用
-import { createServerClient } from '@supabase/ssr';
-import { cookies } from 'next/headers';
-export const createClient = () => {
+export function createClient() {
   const cookieStore = cookies();
-  return createServerClient(
+  return createServerClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
         getAll: () => cookieStore.getAll(),
-        setAll: (pairs) =>
-          pairs.forEach(({ name, value, options }) =>
-            cookieStore.set(name, value, options)),
+        setAll: (cookiesToSet) => {
+          try {
+            cookiesToSet.forEach(({ name, value, options }) =>
+              cookieStore.set(name, value, options)
+            );
+          } catch {
+            // Server Component から呼ばれた場合は書き込み不可 — 無視してよい
+          }
+        },
       },
-    },
+    }
   );
-};
+}
 ```
 
-> **禁止**: `createRouteHandlerClient` など旧 API（`@supabase/auth-helpers-nextjs`）は使わない。  
-> `@supabase/ssr` の `createServerClient` / `createBrowserClient` で統一。
-
-### 2-C. Middleware（セッション自動更新）
+#### `lib/supabase/client.ts`
 
 ```typescript
-// middleware.ts
-import { createServerClient } from '@supabase/ssr';
-import { NextResponse, type NextRequest } from 'next/server';
+import { createBrowserClient } from "@supabase/ssr";
+import type { Database } from "@/types/database";
+
+export function createClient() {
+  return createBrowserClient<Database>(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  );
+}
+```
+
+#### `middleware.ts`（プロジェクトルート）
+
+```typescript
+import { createServerClient } from "@supabase/ssr";
+import { NextResponse, type NextRequest } from "next/server";
 
 export async function middleware(request: NextRequest) {
-  let response = NextResponse.next({ request });
+  let supabaseResponse = NextResponse.next({ request });
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -224,68 +133,101 @@ export async function middleware(request: NextRequest) {
     {
       cookies: {
         getAll: () => request.cookies.getAll(),
-        setAll: (pairs) => {
-          pairs.forEach(({ name, value }) => request.cookies.set(name, value));
-          response = NextResponse.next({ request });
-          pairs.forEach(({ name, value, options }) =>
-            response.cookies.set(name, value, options));
+        setAll: (cookiesToSet) => {
+          cookiesToSet.forEach(({ name, value }) =>
+            request.cookies.set(name, value)
+          );
+          supabaseResponse = NextResponse.next({ request });
+          cookiesToSet.forEach(({ name, value, options }) =>
+            supabaseResponse.cookies.set(name, value, options)
+          );
         },
       },
-    },
+    }
   );
 
-  // セッションを必ずリフレッシュ（トークン更新）
-  const { data: { user } } = await supabase.auth.getUser();
+  // ⚠️ 重要: getUser() を必ず呼ぶ（セッション更新のため）
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-  // 保護ルートのガード例
-  if (!user && request.nextUrl.pathname.startsWith('/dashboard')) {
-    return NextResponse.redirect(new URL('/login', request.url));
+  // 保護ルートへの未認証アクセスをリダイレクト
+  const protectedPaths = ["/dashboard", "/settings", "/api/protected"];
+  const isProtected = protectedPaths.some((p) =>
+    request.nextUrl.pathname.startsWith(p)
+  );
+
+  if (isProtected && !user) {
+    const url = request.nextUrl.clone();
+    url.pathname = "/login";
+    url.searchParams.set("redirectTo", request.nextUrl.pathname);
+    return NextResponse.redirect(url);
   }
 
-  return response;
+  return supabaseResponse;
 }
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+  ],
 };
 ```
 
-### 2-D. OAuth（Google / GitHub など）
+---
+
+### 1-2. OTP / トークンハッシュ方式のメール認証
+
+Supabase はメールリンクに `token_hash` を付与する。  
+**`/auth/confirm` ルートでのみ処理し、他のページで OTP を直接検証しない。**
 
 ```typescript
-// app/auth/login/route.ts
-import { createClient } from '@/lib/supabase/server';
-import { redirect } from 'next/navigation';
-
-export async function GET() {
-  const supabase = createClient();
-  const { data, error } = await supabase.auth.signInWithOAuth({
-    provider: 'google',
-    options: {
-      redirectTo: `${process.env.NEXT_PUBLIC_SITE_URL}/auth/callback`,
-      // scopes: 'openid email profile',  // 必要なら追加
-    },
-  });
-  if (error || !data.url) return redirect('/login?error=oauth_failed');
-  redirect(data.url);
-}
-
-// app/auth/callback/route.ts
-import { createClient } from '@/lib/supabase/server';
-import { NextRequest, NextResponse } from 'next/server';
+// app/auth/confirm/route.ts
+import { createClient } from "@/lib/supabase/server";
+import { type EmailOtpType } from "@supabase/supabase-js";
+import { type NextRequest, NextResponse } from "next/server";
 
 export async function GET(request: NextRequest) {
-  const code = request.nextUrl.searchParams.get('code');
-  if (!code) return NextResponse.redirect(new URL('/login?error=no_code', request.url));
+  const { searchParams } = new URL(request.url);
+  const token_hash = searchParams.get("token_hash");
+  const type = searchParams.get("type") as EmailOtpType | null;
+  const next = searchParams.get("next") ?? "/dashboard";
 
-  const supabase = createClient();
-  const { error } = await supabase.auth.exchangeCodeForSession(code);
-  if (error) return NextResponse.redirect(new URL('/login?error=exchange_failed', request.url));
+  if (token_hash && type) {
+    const supabase = createClient();
+    const { error } = await supabase.auth.verifyOtp({ type, token_hash });
 
-  return NextResponse.redirect(new URL('/dashboard', request.url));
+    if (!error) {
+      return NextResponse.redirect(new URL(next, request.url));
+    }
+  }
+
+  // エラー時は dedicated エラーページへ
+  return NextResponse.redirect(new URL("/auth/auth-code-error", request.url));
 }
 ```
 
-#### Google OAuth state cookie 消失バグ（頻出地雷）
+#### メール種別ごとのフロー
 
-**症状**: "Google ログインに失敗しました" のみ、
+| type 値 | 用途 | 送信トリガー |
+|---------|------|-------------|
+| `signup` | メールアドレス確認 | `signUp()` |
+| `recovery` | パスワードリセット | `resetPasswordForEmail()` |
+| `magiclink` | Magic Link ログイン | `signInWithOtp({ email })` |
+| `email_change` | メール変更確認 | `updateUser({ email })` |
+
+#### Magic Link ログイン（クライアント側）
+
+```typescript
+const { error } = await supabase.auth.signInWithOtp({
+  email,
+  options: {
+    emailRedirectTo: `${location.origin}/auth/confirm?next=/dashboard`,
+  },
+});
+```
+
+#### パスワードリセット
+
+```typescript
+// Step 1:

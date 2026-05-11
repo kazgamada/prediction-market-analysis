@@ -1,68 +1,32 @@
 ---
 name: ai-llm-integration
 description: >-
-  Claude API / Anthropic SDK をNext.js・Server Actions・Route Handlersで統合するための
-  汎用パターン集。セットアップ・ストリーミング・バックグラウンド生成・マルチプロバイダー対応・
-  プロンプト設計・エラーハンドリング・コンテンツ生成パイプラインを網羅する。
+  Claude API / Anthropic SDK を Next.js（App Router）・Server Actions・Route Handlers
+  で 統合するための汎用パターン集。セットアップ・ストリーミング・バックグラウンド生成・
+  マルチプロバイダー対応・プロンプト設計・エラーハンドリング・コスト管理を網羅する。
 category: ai-llm
+version: 2
 sourceSkillIds:
-  - 497034fa
-  - 7f743c01
-  - 77ee08e7
-  - 48e54a63
-  - 88bff324
-  - 92cc7dd0
-  - 999c9a11
-  - 94d9d45b
-  - 93ace98e
-  - 7989c60d
-  - b11969d1
-  - d4020c79
-  - '40589624'
-  - e0dc9bf4
-  - 94d290f7
-  - 38f53581
-  - 07878b5c
-  - a568bc6f
-  - 2254a02d
-  - a53ebd7b
-  - 08da7454
-  - 54aab08c
-  - c8aaad53
-  - 1f63a199
-  - d10f3597
-  - 44ddc9f0
-  - ec0d23cc
-  - defe83e6
-  - d2a2da70
-  - c929740d
-  - f72822ef
-  - e61424f7
-  - 6700ab5b
-  - 238f1a87
-  - 1a300e69
-  - f0fe97b0
-  - 42f1f0ba
-  - acfd57cb
-  - c99c03d9
-  - d58b5c44
-  - 6aba5abb
-  - 8c7a657e
+  - 4119be00
+  - acad8888
+  - 5b9df56e
+  - d4c30a79
+  - 50e467ba
+  - e62d03ca
+  - 0ad01970
+  - 150f406c
+  - c4ce7df6
 generatedAt: '2026-05-11'
-integrationStrategy: latest-first
-latestSourceTimestamp: '2026-05-10T19:11:30+00:00'
-adoptedFromArchive:
-  - archive/prediction-market-analysis/.claude/skills/ai-llm-integration.md
-  - archive/aegis-market-os/.claude/skills/coding-conventions.md
-  - archive/AISaaS/.claude/skills/add-email-template.md
-  - archive/AISaaS/.claude/skills/content-generation-pipeline.md
-  - archive/aegis-market-os/.claude/skills/ai-llm-integration-derived.md
-  - archive/ai-agent-hub/.claude/skills/ai-llm-integration-derived.md
-  - archive/ai-company/.claude/skills/ai-llm-integration-derived.md
-  - archive/AISaaS/.claude/skills/ai-llm-integration-derived.md
-  - archive/KOKOKARA/.claude/skills/ai-llm-integration-derived.md
-  - archive/LINE-AI/.claude/skills/ai-llm-integration-derived.md
 ---
+
+<!-- 
+統合メモ:
+- ベース: ai-llm-integration（prediction-market-analysis）+ ai-llm-integration-derived（aegis-market-os, changedAt: 2026-05-07）
+- aegis-market-os 版はテスト用 derive だが effectiveTimestamp が新しいため、差分（セクション構成・補足注記）を優先採用
+- content-generation-pipeline（AISaaS）のバックグラウンド生成パターン・ステータス遷移を §5 に統合
+- add-email-template / KOKOKARA skills（選択UI・ダークテーマ・ブランチ運用・deferred tool）は
+  ai-llm-integration カテゴリと無関係のため棄却。参照先: add-email-template, skills-KOKOKARA
+-->
 
 # AI / LLM Integration — Claude API & Anthropic SDK
 
@@ -74,80 +38,84 @@ adoptedFromArchive:
 npm install @anthropic-ai/sdk
 # ストリーミング用（Next.js App Router）
 npm install ai
-# 環境変数
-# ANTHROPIC_API_KEY=sk-ant-...
+# マルチプロバイダー対応（任意）
+npm install @ai-sdk/anthropic @ai-sdk/openai
 ```
 
-### クライアント初期化
+### 環境変数
+
+```bash
+# .env.local
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...          # マルチプロバイダー時
+AI_DEFAULT_PROVIDER=anthropic  # 切り替え制御
+```
+
+### クライアント初期化（シングルトン）
 
 ```typescript
-// lib/anthropic.ts
+// lib/ai/client.ts
 import Anthropic from "@anthropic-ai/sdk";
 
-export const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
+let _client: Anthropic | null = null;
 
-// モデル定数（プロジェクト横断で統一）
-export const CLAUDE_MODELS = {
-  OPUS: "claude-opus-4-5",
-  SONNET: "claude-sonnet-4-5",
-  HAIKU: "claude-haiku-4-5",
-} as const;
-export type ClaudeModel = (typeof CLAUDE_MODELS)[keyof typeof CLAUDE_MODELS];
+export function getAnthropicClient(): Anthropic {
+  if (!_client) {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
+    _client = new Anthropic({ apiKey });
+  }
+  return _client;
+}
 ```
 
 ---
 
-## 2. 基本的なメッセージ生成
+## 2. 基本テキスト生成
 
-### シンプルなテキスト生成
+### Server Action（非ストリーミング）
 
 ```typescript
-// lib/ai/generate.ts
-import { anthropic, CLAUDE_MODELS } from "@/lib/anthropic";
+// app/actions/generate.ts
+"use server";
 
-export async function generateText(
-  prompt: string,
-  options?: {
-    model?: ClaudeModel;
-    maxTokens?: number;
-    systemPrompt?: string;
-  }
-): Promise<string> {
-  const response = await anthropic.messages.create({
-    model: options?.model ?? CLAUDE_MODELS.SONNET,
-    max_tokens: options?.maxTokens ?? 1024,
-    system: options?.systemPrompt,
+import { getAnthropicClient } from "@/lib/ai/client";
+
+export async function generateText(prompt: string): Promise<string> {
+  const client = getAnthropicClient();
+
+  const message = await client.messages.create({
+    model: "claude-opus-4-5",      // 最新モデルを常に確認
+    max_tokens: 1024,
     messages: [{ role: "user", content: prompt }],
   });
 
-  const block = response.content[0];
-  if (block.type !== "text") throw new Error("Unexpected response type");
+  const block = message.content[0];
+  if (block.type !== "text") throw new Error("Unexpected content type");
   return block.text;
 }
 ```
 
-### 構造化JSON出力
+### Route Handler（非ストリーミング）
 
 ```typescript
-export async function generateStructuredData<T>(
-  prompt: string,
-  schema: string, // JSON Schema の説明
-  systemPrompt?: string
-): Promise<T> {
-  const text = await generateText(
-    `${prompt}\n\nRespond with valid JSON only. Schema: ${schema}`,
-    {
-      systemPrompt:
-        systemPrompt ??
-        "You are a helpful assistant. Always respond with valid JSON.",
-    }
-  );
+// app/api/generate/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { getAnthropicClient } from "@/lib/ai/client";
 
-  // JSON ブロックを抽出
-  const jsonMatch = text.match(/```json\n?([\s\S]*?)\n?```/) ?? [null, text];
-  return JSON.parse(jsonMatch[1].trim()) as T;
+export async function POST(req: NextRequest) {
+  const { prompt } = await req.json();
+
+  const client = getAnthropicClient();
+  const message = await client.messages.create({
+    model: "claude-opus-4-5",
+    max_tokens: 1024,
+    messages: [{ role: "user", content: prompt }],
+  });
+
+  const text =
+    message.content[0].type === "text" ? message.content[0].text : "";
+  return NextResponse.json({ text });
 }
 ```
 
@@ -155,51 +123,80 @@ export async function generateStructuredData<T>(
 
 ## 3. ストリーミング
 
-### Route Handler（App Router）
+### Route Handler + Vercel AI SDK
 
 ```typescript
-// app/api/ai/stream/route.ts
-import { anthropic, CLAUDE_MODELS } from "@/lib/anthropic";
-import { StreamingTextResponse, AnthropicStream } from "ai"; // Vercel AI SDK
+// app/api/stream/route.ts
+import { anthropic } from "@ai-sdk/anthropic";
+import { streamText } from "ai";
+
+export const maxDuration = 60; // Vercel Functions タイムアウト
 
 export async function POST(req: Request) {
-  const { messages, systemPrompt } = await req.json();
+  const { messages } = await req.json();
 
-  const response = await anthropic.messages.create({
-    model: CLAUDE_MODELS.SONNET,
-    max_tokens: 2048,
-    system: systemPrompt,
+  const result = await streamText({
+    model: anthropic("claude-opus-4-5"),
     messages,
-    stream: true,
+    system: "You are a helpful assistant.",
   });
 
-  const stream = AnthropicStream(response);
-  return new StreamingTextResponse(stream);
+  return result.toDataStreamResponse();
 }
 ```
 
-### Vercel AI SDK を使わない手動ストリーミング
+### クライアント側（`useChat` フック）
 
 ```typescript
-// app/api/ai/stream-manual/route.ts
+// app/components/ChatInterface.tsx
+"use client";
+import { useChat } from "ai/react";
+
+export function ChatInterface() {
+  const { messages, input, handleInputChange, handleSubmit, isLoading } =
+    useChat({ api: "/api/stream" });
+
+  return (
+    <div>
+      {messages.map((m) => (
+        <div key={m.id}>
+          <strong>{m.role}:</strong> {m.content}
+        </div>
+      ))}
+      <form onSubmit={handleSubmit}>
+        <input value={input} onChange={handleInputChange} disabled={isLoading} />
+        <button type="submit" disabled={isLoading}>送信</button>
+      </form>
+    </div>
+  );
+}
+```
+
+### 生 Anthropic SDK でストリーミング（Vercel AI SDK を使わない場合）
+
+```typescript
+// app/api/stream-raw/route.ts
+import Anthropic from "@anthropic-ai/sdk";
+
 export async function POST(req: Request) {
   const { prompt } = await req.json();
+  const client = new Anthropic();
+
+  const stream = await client.messages.stream({
+    model: "claude-opus-4-5",
+    max_tokens: 1024,
+    messages: [{ role: "user", content: prompt }],
+  });
 
   const encoder = new TextEncoder();
   const readable = new ReadableStream({
     async start(controller) {
-      const stream = anthropic.messages.stream({
-        model: CLAUDE_MODELS.SONNET,
-        max_tokens: 1024,
-        messages: [{ role: "user", content: prompt }],
-      });
-
-      for await (const event of stream) {
+      for await (const chunk of stream) {
         if (
-          event.type === "content_block_delta" &&
-          event.delta.type === "text_delta"
+          chunk.type === "content_block_delta" &&
+          chunk.delta.type === "text_delta"
         ) {
-          controller.enqueue(encoder.encode(event.delta.text));
+          controller.enqueue(encoder.encode(chunk.delta.text));
         }
       }
       controller.close();
@@ -207,102 +204,34 @@ export async function POST(req: Request) {
   });
 
   return new Response(readable, {
-    headers: {
-      "Content-Type": "text/plain; charset=utf-8",
-      "Transfer-Encoding": "chunked",
-    },
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
   });
 }
 ```
 
-### クライアント側でストリームを読む
-
-```typescript
-// hooks/useAIStream.ts
-import { useState, useCallback } from "react";
-
-export function useAIStream(endpoint: string) {
-  const [text, setText] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<Error | null>(null);
-
-  const generate = useCallback(
-    async (payload: unknown) => {
-      setIsLoading(true);
-      setText("");
-      setError(null);
-
-      try {
-        const res = await fetch(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-        const reader = res.body!.getReader();
-        const decoder = new TextDecoder();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          setText((prev) => prev + decoder.decode(value));
-        }
-      } catch (e) {
-        setError(e instanceof Error ? e : new Error(String(e)));
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [endpoint]
-  );
-
-  return { text, isLoading, error, generate };
-}
-```
-
 ---
 
-## 4. Server Actions での利用
+## 4. システムプロンプトとコンテキスト設計
 
 ```typescript
-// app/actions/ai.ts
-"use server";
+// lib/ai/prompts.ts
 
-import { anthropic, CLAUDE_MODELS } from "@/lib/anthropic";
-import { createStreamableValue } from "ai/rsc"; // Vercel AI SDK RSC
+export const SYSTEM_PROMPTS = {
+  analyst: `You are an expert analyst. Respond in JSON only.
+Rules:
+- Be concise and factual
+- Include confidence scores (0-1)
+- Flag uncertainty explicitly`,
 
-// ストリームを Server Action から返す
-export async function generateWithStream(prompt: string) {
-  const stream = createStreamableValue("");
+  assistant: `You are a helpful assistant for {appName}.
+- Answer in the user's language
+- Cite sources when available`,
+} as const;
 
-  (async () => {
-    const aiStream = anthropic.messages.stream({
-      model: CLAUDE_MODELS.SONNET,
-      max_tokens: 1024,
-      messages: [{ role: "user", content: prompt }],
-    });
-
-    for await (const event of aiStream) {
-      if (
-        event.type === "content_block_delta" &&
-        event.delta.type === "text_delta"
-      ) {
-        stream.update(event.delta.text);
-      }
-    }
-    stream.done();
-  })();
-
-  return { output: stream.value };
-}
-
-// クライアント側
-// const { output } = await generateWithStream(prompt);
-// for await (const delta of readStreamableValue(output)) { ... }
-```
-
----
-
-## 5. バックグラウンド生成パイプライン
-
-コンテンツ生成を非同期で行い、DB にステータスを記録するパターン（AISaaS / content-generation-pipeline より）。
+// 変数展開ユーティリティ
+export function buildSystemPrompt(
+  key: keyof typeof SYSTEM_PROMPTS,
+  vars: Record<string, string> = {}
+): string {
+  let prompt = SYSTEM_PROMPTS[key] as string;
+  for (const [k, v] of Object.

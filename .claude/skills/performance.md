@@ -1,204 +1,201 @@
 ---
 name: performance
 description: >-
-  React Query + localStorage による Stale-While-Revalidate パターンで「ページを開いた瞬間（≤
-  0.1秒）に前回データを描画 →
-  裏で最新化」を実現するスキル。データ取得が遅い・キャッシュを保持したい・再ログイン後も即時表示したい・「読み込み中...」を見せたくないときに使う。tRPC
-  v11 / TanStack Query v5 / Next.js App Router / Vercel Serverless
-  で検証済み。あらゆるNext.js/TypeScriptプロジェクトに適用可能。
+  React Query + localStorage の Stale-While-Revalidate パターンで「ページを開いた瞬間（≤
+  0.1秒）に前回データを描画 → 裏で最新化」を実現するスキル。tRPC v11 / TanStack Query v5 / Next.js App
+  Router で検証済み。「読み込み中...」を見せたくない・キャッシュを永続化したい・再ログイン後も即時表示したい場面で使う。
 category: performance
 sourceSkillIds:
-  - 7d2fa9fe
+  - 68dca1dc
 generatedAt: '2026-05-11'
-integrationStrategy: latest-first
-latestSourceTimestamp: '2026-05-10T19:11:30+00:00'
-adoptedFromArchive:
-  - archive/SlideForgeAI/.claude/skills/instant-display-cache.md
 ---
 
 # performance — Instant Display Cache (Stale-While-Revalidate)
 
-## いつ使うか
+## 🎯 このスキルで解決する問題
 
-| 症状 | このスキルで解決 |
-|------|----------------|
-| ページ遷移のたびに「読み込み中...」が出る | ✅ |
-| 再ログイン後もデータが消えてしまう | ✅ |
-| APIレスポンスが500ms以上かかる | ✅ |
-| ユーザーが同じデータを繰り返し見る | ✅ |
-| ネットワーク不安定環境でも即表示したい | ✅ |
+| 症状 | 原因 | このスキルの解決策 |
+|---|---|---|
+| ページを開くたびに「読み込み中...」が出る | React Query のキャッシュがメモリのみで消える | localStorage に永続化してページ起動時に即注入 |
+| 再ログイン後にデータが消える | セッション切断でメモリキャッシュがクリアされる | ユーザーをキーに localStorage で保持 |
+| API が遅くてユーザーが離脱する | ネットワーク待ちがそのままUXに直結する | 旧データを先に表示しながら裏でフェッチ |
 
 ---
 
-## コアコンセプト
+## 🏗️ アーキテクチャ概要
 
 ```
-ページ表示
+ページ表示 (0ms)
     │
-    ├─① localStorage から前回データを即時描画 (≤ 0.1秒)
-    │
-    └─② バックグラウンドでAPIフェッチ
-            │
-            └─③ 新データが来たら静かに差し替え
+    ▼
+[localStorage] ──即時注入──▶ [React Query Cache] ──▶ 画面に旧データ表示 (≤100ms)
+                                      │
+                                      ▼ 裏でフェッチ開始
+                               [API / tRPC]
+                                      │
+                                      ▼ 新データ到着
+                               [React Query Cache] ──▶ 画面を静かに更新
+                                      │
+                                      ▼ 同時に保存
+                               [localStorage] ◀── 次回起動用に永続化
 ```
-
-これが **Stale-While-Revalidate (SWR)** パターン。  
-「古くてもまず見せる → 裏で更新」の優先順位がUXの核心。
 
 ---
 
-## 実装
+## 📦 実装パターン
 
-### 1. localStorage キャッシュユーティリティ
+### 1. localStorage ブリッジ（ユーティリティ）
 
 ```typescript
-// lib/cache/localStorageCache.ts
+// lib/cache/localStorageBridge.ts
 
-const CACHE_VERSION = 'v1'; // スキーマ変更時にインクリメント
+const CACHE_VERSION = "v1"; // スキーマ変更時にインクリメント
 
-interface CacheEntry<T> {
-  data: T;
-  cachedAt: number;  // Unix timestamp (ms)
-  version: string;
+function buildKey(userId: string, queryKey: string): string {
+  return `qc:${CACHE_VERSION}:${userId}:${queryKey}`;
 }
 
-export const localStorageCache = {
-  /**
-   * データを保存。TTLを超えたエントリは get() 時に破棄される。
-   */
-  set<T>(key: string, data: T): void {
-    if (typeof window === 'undefined') return; // SSR ガード
-    try {
-      const entry: CacheEntry<T> = {
-        data,
-        cachedAt: Date.now(),
-        version: CACHE_VERSION,
-      };
-      localStorage.setItem(`cache:${key}`, JSON.stringify(entry));
-    } catch (e) {
-      // localStorage が満杯の場合は無視（機能は継続）
-      console.warn('[cache] set failed:', e);
+export function saveToLocalStorage<T>(
+  userId: string,
+  queryKey: string,
+  data: T
+): void {
+  try {
+    const payload = {
+      data,
+      savedAt: Date.now(),
+    };
+    localStorage.setItem(buildKey(userId, queryKey), JSON.stringify(payload));
+  } catch (e) {
+    // localStorage が満杯 or プライベートモードでも静かに失敗
+    console.warn("[cache] localStorage write failed:", e);
+  }
+}
+
+export function loadFromLocalStorage<T>(
+  userId: string,
+  queryKey: string,
+  maxAgeMs = 24 * 60 * 60 * 1000 // デフォルト24時間
+): T | undefined {
+  try {
+    const raw = localStorage.getItem(buildKey(userId, queryKey));
+    if (!raw) return undefined;
+
+    const { data, savedAt } = JSON.parse(raw) as { data: T; savedAt: number };
+
+    // 有効期限チェック（古すぎるキャッシュは使わない）
+    if (Date.now() - savedAt > maxAgeMs) {
+      localStorage.removeItem(buildKey(userId, queryKey));
+      return undefined;
     }
-  },
 
-  /**
-   * キャッシュを取得。TTL超過・バージョン不一致は null を返す。
-   * @param ttlMs ミリ秒。デフォルト 5分。
-   */
-  get<T>(key: string, ttlMs = 5 * 60 * 1000): T | null {
-    if (typeof window === 'undefined') return null;
-    try {
-      const raw = localStorage.getItem(`cache:${key}`);
-      if (!raw) return null;
+    return data;
+  } catch {
+    return undefined;
+  }
+}
 
-      const entry: CacheEntry<T> = JSON.parse(raw);
-
-      // バージョン不一致は破棄
-      if (entry.version !== CACHE_VERSION) {
-        localStorage.removeItem(`cache:${key}`);
-        return null;
-      }
-
-      // TTL チェック
-      if (Date.now() - entry.cachedAt > ttlMs) {
-        localStorage.removeItem(`cache:${key}`);
-        return null;
-      }
-
-      return entry.data;
-    } catch {
-      return null;
-    }
-  },
-
-  remove(key: string): void {
-    if (typeof window === 'undefined') return;
-    localStorage.removeItem(`cache:${key}`);
-  },
-
-  /** プレフィックスが一致するキャッシュを一括削除（ログアウト時など） */
-  clearByPrefix(prefix: string): void {
-    if (typeof window === 'undefined') return;
-    Object.keys(localStorage)
-      .filter(k => k.startsWith(`cache:${prefix}`))
-      .forEach(k => localStorage.removeItem(k));
-  },
-};
+/** ユーザーログアウト時に全キャッシュを削除 */
+export function clearUserCache(userId: string): void {
+  const prefix = `qc:${CACHE_VERSION}:${userId}:`;
+  Object.keys(localStorage)
+    .filter((k) => k.startsWith(prefix))
+    .forEach((k) => localStorage.removeItem(k));
+}
 ```
 
 ---
 
-### 2. 汎用 SWR フック
+### 2. QueryClient にキャッシュを事前注入するプロバイダー
 
 ```typescript
-// hooks/useInstantCache.ts
-import { useEffect, useRef } from 'react';
-import { useQuery, useQueryClient, QueryKey } from '@tanstack/react-query';
-import { localStorageCache } from '@/lib/cache/localStorageCache';
+// providers/QueryProvider.tsx
+"use client";
 
-interface UseInstantCacheOptions<T> {
-  queryKey: QueryKey;
-  /** キャッシュストレージのキー（文字列で一意にする） */
-  cacheKey: string;
-  fetchFn: () => Promise<T>;
-  /** localStorage TTL（ms）。デフォルト 5分 */
-  cacheTtlMs?: number;
-  /** React Query の staleTime（ms）。デフォルト 0（常にバックグラウンド再検証） */
-  staleTimeMs?: number;
-  /** キャッシュ無効化（ログアウト後など false にするとキャッシュを使わない） */
-  enabled?: boolean;
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { useState, useEffect } from "react";
+import { loadFromLocalStorage, saveToLocalStorage } from "@/lib/cache/localStorageBridge";
+
+interface QueryProviderProps {
+  children: React.ReactNode;
+  userId?: string; // 未ログイン時は undefined
 }
 
-export function useInstantCache<T>({
-  queryKey,
-  cacheKey,
-  fetchFn,
-  cacheTtlMs = 5 * 60 * 1000,
-  staleTimeMs = 0,
-  enabled = true,
-}: UseInstantCacheOptions<T>) {
-  const queryClient = useQueryClient();
-  const initializedRef = useRef(false);
+export function QueryProvider({ children, userId }: QueryProviderProps) {
+  const [queryClient] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: {
+          queries: {
+            // ウィンドウフォーカス時に自動リフェッチ（SWR の核心）
+            refetchOnWindowFocus: true,
+            // キャッシュは5分間有効（staleTime 中は再フェッチしない）
+            staleTime: 5 * 60 * 1000,
+            // gcTime は長めに（メモリ上でのキャッシュ保持期間）
+            gcTime: 10 * 60 * 1000,
+          },
+        },
+      })
+  );
 
-  // ① マウント時に localStorage → QueryClient へ即時注入
+  // ① ページ起動時: localStorage → QueryClient へ注入
   useEffect(() => {
-    if (!enabled || initializedRef.current) return;
-    initializedRef.current = true;
+    if (!userId) return;
 
-    const cached = localStorageCache.get<T>(cacheKey, cacheTtlMs);
-    if (cached !== null) {
-      queryClient.setQueryData(queryKey, cached);
+    const KEYS_TO_PRELOAD = ["slides", "userProfile", "projects"] as const;
+
+    for (const key of KEYS_TO_PRELOAD) {
+      const cached = loadFromLocalStorage(userId, key);
+      if (cached) {
+        // setQueryData で即時注入（ネットワークなし）
+        queryClient.setQueryData([key, userId], cached);
+      }
     }
-  }, [enabled]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [userId, queryClient]);
 
-  // ② React Query が バックグラウンドでフェッチ → 成功時に localStorage 更新
-  const query = useQuery({
-    queryKey,
-    queryFn: async () => {
-      const fresh = await fetchFn();
-      localStorageCache.set(cacheKey, fresh); // キャッシュ更新
-      return fresh;
-    },
-    staleTime: staleTimeMs,
-    enabled,
-    // キャッシュ済みデータがあれば placeholderData として使う（ローディング状態を出さない）
-    placeholderData: (prev) => prev,
-  });
+  // ② データ更新時: QueryClient → localStorage へ保存
+  useEffect(() => {
+    if (!userId) return;
 
-  return query;
+    const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
+      // 新鮮なデータが到着したときだけ保存
+      if (event.type === "updated" && event.query.state.status === "success") {
+        const [key] = event.query.queryKey as string[];
+        if (key && event.query.state.data) {
+          saveToLocalStorage(userId, key, event.query.state.data);
+        }
+      }
+    });
+
+    return unsubscribe;
+  }, [userId, queryClient]);
+
+  return (
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  );
 }
 ```
 
 ---
 
-### 3. 使用例 — ダッシュボードページ
+### 3. tRPC と組み合わせる場合
 
 ```typescript
-// app/dashboard/page.tsx  (Next.js App Router)
-'use client';
+// app/layout.tsx (App Router)
+import { QueryProvider } from "@/providers/QueryProvider";
+import { TRPCProvider } from "@/providers/TRPCProvider";
+import { auth } from "@/lib/auth";
 
-import { useInstantCache } from '@/hooks/useInstantCache';
+export default async function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  const session = await auth();
 
-interface DashboardData {
-  projects: { id: string; name: string; updatedAt: string }[];
-  stats: { total: number; active: number };
+  return (
+    <html lang="ja">
+      <body>
+        {/* tRPC は QueryClient を内部で使うので QueryProvider の内側に置く */}
+        <QueryProvider userId={session?.user?.id}>
+          <TRP

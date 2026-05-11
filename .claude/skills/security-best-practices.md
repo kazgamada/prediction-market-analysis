@@ -1,240 +1,187 @@
 ---
-category: security
-sourceSkillIds:
-  - d4182b48
-  - f74e42a4
-  - '60724619'
-  - 8dccdfd5
-  - 86844c6c
-  - c2e259b3
-  - c0fe524b
-  - 72f8c951
-  - 842f585e
-  - 1a51c1ed
-  - 4c9135cd
-  - bcd96325
-  - 988462cc
-  - cda747b6
-  - '785e3460'
-  - 056c5810
-  - 63ca3004
-  - ab17e3f5
-  - b5d28376
-  - f789f626
-  - 871a9182
-  - 49682a71
-  - e2242131
-  - 46c447b2
-  - 58257c07
-generatedAt: '2026-05-11'
-integrationStrategy: latest-first
-latestSourceTimestamp: '2026-05-10T19:11:30+00:00'
-adoptedFromArchive:
-  - archive/prediction-market-analysis/.claude/skills/security-best-practices.md
-  - archive/aegis-market-os/.claude/skills/security-rate-limit.md
-  - archive/AISaaS/.claude/skills/add-audit-log.md
-  - archive/AISaaS/.claude/skills/add-encrypted-field.md
-  - archive/AISaaS/.claude/skills/add-rate-limit.md
-  - archive/AISaaS/.claude/skills/incident-response.md
-  - archive/AISaaS/.claude/skills/rotate-secret.md
-  - archive/task-matrix/.claude/skills/security-review.md
----
-```yaml
----
 name: security-best-practices
 description: >-
   Next.js/Supabase/TypeScriptプロジェクトにおけるセキュリティのベストプラクティス。
-  認証・認可、レート制限、AES-256-GCM暗号化、監査ログ、インシデント対応、シークレット管理、
-  セキュリティレビューチェックリストを網羅した包括的なセキュリティガイド。
+  認証・認可、レート制限、PII暗号化、監査ログ、インシデント対応、シークレット管理を網羅した包括的なセキュリティガイド。
 category: security
----
-```
-
-# Security Best Practices
-
-Next.js / Supabase / TypeScript プロジェクト向けの包括的セキュリティガイド。
-
-> **このSkillの使い方**
-> - 新機能実装時 → 各セクションのチェックリストを確認
-> - インシデント発生時 → §6「インシデント対応」を開いて上から実行
-> - コードレビュー時 → §7「セキュリティレビューチェックリスト」を活用
-> - PII追加時 → §3「暗号化」を参照
-> - シークレット変更時 → §5「シークレット管理」を必ず確認
-
+sourceSkillIds:
+  - d1d927c6
+  - b5f82bc0
+  - 550a948c
+  - 75f78551
+  - 2e1f3893
+  - df5813f3
+  - 0f81e61b
+  - dba5acfd
+generatedAt: '2026-05-11'
 ---
 
-## §1 認証・認可
+# セキュリティ ベストプラクティス
 
-### 1.1 Supabase Auth の基本設定
+Next.js / Supabase / TypeScript プロジェクト全体に適用される、セキュリティ設計・実装・運用の標準ガイド。
+**新機能を実装するとき・レビューするとき・インシデントが起きたとき**、このSkillを起点にする。
+
+---
+
+## 目次
+
+1. [ミドルウェアと HTTP セキュリティヘッダー](#1-ミドルウェアと-http-セキュリティヘッダー)
+2. [認証・認可チェックリスト](#2-認証認可チェックリスト)
+3. [レート制限](#3-レート制限)
+4. [PII 暗号化（AES-256-GCM）](#4-pii-暗号化aes-256-gcm)
+5. [監査ログ](#5-監査ログ)
+6. [シークレット管理とローテーション](#6-シークレット管理とローテーション)
+7. [セキュリティレビュー手順](#7-セキュリティレビュー手順)
+8. [インシデント対応プレイブック](#8-インシデント対応プレイブック)
+
+---
+
+## 1. ミドルウェアと HTTP セキュリティヘッダー
+
+### 標準ミドルウェア適用順序
 
 ```typescript
-// lib/supabase/server.ts
-import { createServerClient } from '@supabase/ssr'
-import { cookies } from 'next/headers'
+// lib/security-middleware.ts
+import helmet from 'helmet';
+import cors from 'cors';
 
-export function createClient() {
-  const cookieStore = cookies()
-  return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        get(name: string) { return cookieStore.get(name)?.value },
-        set(name: string, value: string, options: CookieOptions) {
-          cookieStore.set({ name, value, ...options })
-        },
-        remove(name: string, options: CookieOptions) {
-          cookieStore.set({ name, value: '', ...options })
-        },
+export function applySecurityMiddleware(app: Express) {
+  // 1. helmet — CSP / HSTS / X-Frame-Options / X-Content-Type-Options
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'strict-dynamic'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],   // 必要最小限に絞ること
+        imgSrc: ["'self'", "data:", "https:"],
+        connectSrc: ["'self'", process.env.NEXT_PUBLIC_SUPABASE_URL!],
+        frameSrc: ["'none'"],
       },
-    }
-  )
+    },
+    hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
+  }));
+
+  // 2. CORS — 本番環境は許可オリジンを明示的に絞る
+  app.use(cors({
+    origin: process.env.NODE_ENV === 'production'
+      ? [process.env.APP_URL!]           // TODO: 追加オリジンが必要な場合はここに列挙
+      : true,
+    credentials: true,
+  }));
+
+  // 3. trust proxy — Vercel / Railway の X-Forwarded-For を有効化
+  app.set('trust proxy', 1);
 }
 ```
 
-### 1.2 Cookie セキュリティ設定
-
-```typescript
-// Cookie は常に以下の設定を使うこと
-const SECURE_COOKIE_OPTIONS = {
-  httpOnly: true,          // XSS からの保護
-  sameSite: 'lax' as const, // CSRF 保護（OAuth を壊さない）
-  secure: process.env.NODE_ENV === 'production', // 本番は HTTPS のみ
-  path: '/',
-  maxAge: 60 * 60 * 24 * 30, // 30日（要件に応じて調整）
-}
-```
-
-### 1.3 tRPC / API ルートでの認可パターン
-
-```typescript
-// server/trpc/middleware.ts
-
-/** 認証済みユーザー必須 */
-export const protectedProcedure = t.procedure.use(async ({ ctx, next }) => {
-  if (!ctx.user) throw new TRPCError({ code: 'UNAUTHORIZED' })
-  return next({ ctx: { ...ctx, user: ctx.user } })
-})
-
-/** 管理者専用 */
-export const adminProcedure = protectedProcedure.use(async ({ ctx, next }) => {
-  if (ctx.user.role !== 'admin') throw new TRPCError({ code: 'FORBIDDEN' })
-  return next()
-})
-
-// ✅ 正しい例: ctx.user.id でスコープを絞る
-export const getUserPosts = protectedProcedure
-  .query(async ({ ctx }) => {
-    return db.posts.findMany({
-      where: { userId: ctx.user.id }, // 自分のデータのみ
-    })
-  })
-
-// ❌ 誤った例: 全ユーザーのデータを返す
-export const getAllPosts = protectedProcedure
-  .query(async () => {
-    return db.posts.findMany() // IDOR 脆弱性
-  })
-```
-
-### 1.4 Next.js Middleware での認証ガード
+### Next.js の場合（`middleware.ts`）
 
 ```typescript
 // middleware.ts
-import { createMiddlewareClient } from '@supabase/auth-helpers-nextjs'
-import { NextResponse } from 'next/server'
-import type { NextRequest } from 'next/server'
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
 
-export async function middleware(req: NextRequest) {
-  const res = NextResponse.next()
-  const supabase = createMiddlewareClient({ req, res })
-  const { data: { session } } = await supabase.auth.getSession()
+export function middleware(request: NextRequest) {
+  const response = NextResponse.next();
 
-  const isProtectedRoute = req.nextUrl.pathname.startsWith('/dashboard')
-  if (isProtectedRoute && !session) {
-    const redirectUrl = new URL('/login', req.url)
-    redirectUrl.searchParams.set('redirectTo', req.nextUrl.pathname)
-    return NextResponse.redirect(redirectUrl)
-  }
-  return res
+  // セキュリティヘッダーを追加
+  response.headers.set('X-Frame-Options', 'DENY');
+  response.headers.set('X-Content-Type-Options', 'nosniff');
+  response.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  response.headers.set(
+    'Permissions-Policy',
+    'camera=(), microphone=(), geolocation=()'
+  );
+
+  return response;
 }
 
 export const config = {
-  matcher: ['/dashboard/:path*', '/api/protected/:path*'],
-}
+  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+};
 ```
 
 ---
 
-## §2 レート制限
+## 2. 認証・認可チェックリスト
 
-### 2.1 汎用 rateLimit ユーティリティ
+新しいAPI/ページを実装する際、以下を必ず確認する。
+
+### tRPC の場合
 
 ```typescript
-// lib/rate-limit.ts
-import { LRUCache } from 'lru-cache'
-import type { NextRequest } from 'next/server'
+// ✅ protectedProcedure — 認証済みユーザーのデータアクセス
+export const getMyItems = protectedProcedure
+  .query(async ({ ctx }) => {
+    return db.item.findMany({
+      where: { userId: ctx.user.id },  // ← ctx.user.id で必ずフィルタ
+    });
+  });
 
-interface RateLimitOptions {
-  /** 時間窓（ミリ秒）*/
-  windowMs: number
-  /** 上限リクエスト数 */
-  max: number
-  /** キーの生成関数（デフォルト: IP アドレス）*/
-  keyGenerator?: (req: NextRequest) => string
-}
+// ✅ adminProcedure — 管理者専用操作
+export const deleteUser = adminProcedure
+  .input(z.object({ targetUserId: z.string() }))
+  .mutation(async ({ ctx, input }) => {
+    // ctx.user.role === 'admin' はミドルウェア層で保証済み
+  });
 
-const caches = new Map<string, LRUCache<string, number[]>>()
-
-export function rateLimit(options: RateLimitOptions) {
-  const { windowMs, max, keyGenerator } = options
-  const cacheKey = `${windowMs}:${max}`
-
-  if (!caches.has(cacheKey)) {
-    caches.set(cacheKey, new LRUCache<string, number[]>({
-      max: 10_000,
-      ttl: windowMs,
-    }))
-  }
-  const cache = caches.get(cacheKey)!
-
-  return {
-    check(req: NextRequest): { success: boolean; remaining: number; reset: number } {
-      const key = keyGenerator?.(req) ??
-        req.headers.get('x-forwarded-for')?.split(',')[0].trim() ??
-        req.headers.get('x-real-ip') ??
-        'unknown'
-
-      const now = Date.now()
-      const timestamps = (cache.get(key) ?? []).filter(t => now - t < windowMs)
-      const success = timestamps.length < max
-
-      if (success) {
-        timestamps.push(now)
-        cache.set(key, timestamps)
-      }
-
-      return {
-        success,
-        remaining: Math.max(0, max - timestamps.length),
-        reset: Math.ceil((timestamps[0] ?? now) + windowMs),
-      }
-    },
-  }
-}
-
-// レート制限違反レスポンス生成
-export function rateLimitResponse(reset: number) {
-  return new Response('Too Many Requests', {
-    status: 429,
-    headers: {
-      'Retry-After': String(Math.ceil((reset - Date.now()) / 1000)),
-      'X-RateLimit-Reset': String(reset),
-    },
-  })
-}
+// ⚠️ publicProcedure — 認証不要だが公開範囲を最小限に
+export const getPublicStats = publicProcedure
+  .query(async () => {
+    return { total: await db.item.count() }; // 個人情報を含まない値のみ
+  });
 ```
 
-### 2.2 用途別推奨設定
+### チェックリスト
 
-| エンドポイント | 推奨制限 | 理由
+```
+認証・認可
+- [ ] 全 protectedProcedure で ctx.user.id によるデータアクセス制限があるか
+- [ ] publicProcedure が不要なデータを公開していないか
+- [ ] adminProcedure が適切に使われているか
+- [ ] セッション有効期限が適切か（推奨: 30日以内）
+- [ ] Cookie 設定: httpOnly: true, sameSite: "lax", secure: true（本番）
+
+Supabase RLS
+- [ ] すべてのテーブルで RLS が有効か（auth.uid() = user_id パターン）
+- [ ] Service Role Key をクライアントサイドで使用していないか
+- [ ] anon キーの権限が最小権限原則を満たしているか
+```
+
+### Supabase RLS ポリシーのひな形
+
+```sql
+-- users テーブルの基本パターン
+ALTER TABLE items ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "users can read own items"
+  ON items FOR SELECT
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "users can insert own items"
+  ON items FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+-- 管理者は全件参照可（service role は RLS をバイパスするため、
+-- アプリ層でも role チェックを行うこと）
+CREATE POLICY "admins can read all items"
+  ON items FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM profiles
+      WHERE profiles.id = auth.uid()
+        AND profiles.role = 'admin'
+    )
+  );
+```
+
+---
+
+## 3. レート制限
+
+### 推奨制限値
+
+| エンドポイント種別 | 推奨制限 | 理由 |
+|---|---|---|
+| 公開 POST API（フォーム投稿等） | 10 req/min/IP | スパム・DoS 防止 |
+| メール送

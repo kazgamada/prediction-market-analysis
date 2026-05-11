@@ -1,306 +1,224 @@
 ---
 name: ui-component-patterns
 description: >-
-  Next.js/Tailwind CSS/TypeScriptプロジェクトにおけるUIコンポーネントの設計・実装パターン。
-  ページレイアウト、ナビゲーション、管理画面、アクセスガード、多段ウィザード、
-  localStorage永続化、コンポーネントスキャフォールドの標準的な作法を定義する。
+  Next.js / Tailwind CSS / TypeScript プロジェクトにおける UI コンポーネントの設計・実装パターン。
+  ページレイアウト、ナビゲーション、管理画面、アクセスガード、一括操作 UI、 コンポーネントスキャフォールドの標準的な作法を定義する。 日本語業務 UI
+  規約・GDPR セルフサービス UI も含む。
 category: ui-component
 sourceSkillIds:
-  - 31a30658
-  - 599fb175
-  - '6e708673'
-  - dbcda494
-  - 58b43453
-  - b3100292
-  - 1a340d56
-  - 3c2e65fe
-  - c0e8c7a4
-  - c5409679
-  - 1217c356
-  - e7b097a2
-  - e9390261
-  - 12de9eb8
-  - 2a92e748
-  - d3686b17
-  - b0a42ccc
-  - 89d0d7de
-  - 3ec995d8
-  - ee3f7180
-  - 72a9c66e
-  - 829c79d8
-  - d645c58a
-  - a5c0b83b
-  - 6a4eae1f
-  - 33d841a8
-  - 7415edf9
-  - '33593959'
-  - 396f57ca
-  - a1155806
-  - 445b6452
-  - 02943869
-  - 8c82e4e2
-  - 4e8f1d59
-  - 006d9e9f
-  - b2517622
-  - 35d0dc33
-  - 24d1d816
-  - 92db6536
-  - 0488cb30
-  - d4497da7
-  - ddd494df
-  - e47ac311
-  - 3a698492
-  - 595255b8
-  - 65a92c76
-  - cdb9241f
-  - d8ff8fe6
-  - 1e11f2ae
-  - b192776e
-  - cd6696c6
-  - b0301649
-  - 263c55d6
-  - dc43009e
-  - d675c999
-  - 6a42ba2b
-  - f03a99ec
-  - 155f83e7
-  - 5f865b4b
-  - 7773eb42
-  - 3728b7e1
-  - 4c88935b
-  - c11d1ffe
-  - 8c1bdc2f
-  - d9f02e80
-  - aac58b03
-  - 5c3327ac
-  - 69aa32ef
-  - 88a081a3
-  - 37ab3c26
-  - e7f652fa
-  - 3057d446
-  - fa8b7acd
-  - 436fe824
-  - 2444360f
-  - 223550d1
-  - 852eb091
-  - c5225752
-  - '59199837'
-  - 2b3ac591
-  - 00718710
-  - ab6a4325
-  - 258bff15
-  - b8f1e1bd
-  - 0affee22
-  - 77f23611
-  - 434eaa55
+  - 64a324c6
+  - a863600a
+  - '81222662'
+  - debfceca
+  - 8ed74b50
+  - 3a311cce
+  - 85dcabfc
+  - 7ee36646
+  - edc407e2
+  - 9dde8e3a
+  - 3d7e0994
+  - 96b3e3af
+  - bd1252ec
+  - d91aec82
+  - d055fb14
+  - c66b7f6e
+  - '36153534'
+  - bc950ac7
+  - 5f50170c
+  - 5a130b89
+  - 8a6f7ae0
+  - c047749e
+  - a12bfe2f
+  - d411e64a
+  - 42063f52
+  - b4487d87
+  - e0972bf4
+  - 3f3245b3
 generatedAt: '2026-05-11'
-integrationStrategy: latest-first
-latestSourceTimestamp: '2026-05-10T19:11:30+00:00'
-adoptedFromArchive:
-  - archive/prediction-market-analysis/.claude/skills/ui-component-patterns.md
-  - archive/aegis-market-os/.claude/skills/admin-panel.md
-  - archive/aegis-market-os/.claude/skills/auto-pipeline.md
-  - archive/aegis-market-os/.claude/skills/cache-contract.md
-  - archive/aegis-market-os/.claude/skills/localstorage-persistence.md
-  - archive/aegis-market-os/.claude/skills/nav-menu-patterns.md
-  - archive/aegis-market-os/.claude/skills/sim-3d.md
-  - archive/aegis-market-os/.claude/skills/strategy-lifecycle.md
-  - archive/aegis-market-os/.claude/skills/wizard-design.md
-  - archive/ai-company/.claude/skills/add-admin-api-route/SKILL.md
 ---
 
-# ui-component-patterns
+# UI Component Patterns
 
-Next.js / Tailwind CSS / TypeScript プロジェクト全般で再利用できる UI 実装パターン集。  
-管理画面・ナビゲーション・多段ウィザード・localStorage 永続化・アクセスガード・SVG ビジュアライゼーションの標準作法を定義する。
+## 目次
+
+1. [ディレクトリ構造と命名規則](#1-ディレクトリ構造と命名規則)
+2. [コンポーネントスキャフォールド](#2-コンポーネントスキャフォールド)
+3. [ページレイアウトパターン](#3-ページレイアウトパターン)
+4. [ナビゲーション管理](#4-ナビゲーション管理)
+5. [管理画面パターン](#5-管理画面パターン)
+6. [アクセスガード](#6-アクセスガード)
+7. [一括操作 UI（Bulk Actions）](#7-一括操作-ui)
+8. [日本語業務 UI 規約](#8-日本語業務-ui-規約)
+9. [GDPR セルフサービス UI](#9-gdpr-セルフサービス-ui)
+10. [Admin API ルート](#10-admin-api-ルート)
 
 ---
 
-## 1. コンポーネントスキャフォールド（最小テンプレート）
+## 1. ディレクトリ構造と命名規則
 
-新規コンポーネントは必ずこの構造から始める。
+```
+src/
+├── app/                          # App Router (Next.js 13+)
+│   ├── (auth)/                   # 認証不要レイアウト群
+│   ├── (admin)/                  # 管理者レイアウト群
+│   │   └── admin/
+│   │       ├── layout.tsx        # AdminLayout（サイドバー付き）
+│   │       ├── page.tsx          # AdminDashboard
+│   │       ├── users/page.tsx
+│   │       └── settings/page.tsx
+│   ├── (viewer)/                 # 一般ユーザーレイアウト群
+│   └── api/
+│       └── admin/                # Admin API Routes
+│           └── [resource]/
+│               └── route.ts
+├── components/
+│   ├── ui/                       # Primitive UI（Button, Input, etc.）
+│   ├── layout/                   # Header, Sidebar, Footer
+│   └── features/                 # ドメイン固有コンポーネント
+└── lib/
+    └── auth/
+        └── requireAdmin.ts
+```
+
+### 命名規則
+
+| 対象 | 規則 | 例 |
+|------|------|----|
+| コンポーネントファイル | PascalCase | `UserTable.tsx` |
+| ページファイル | `page.tsx` (App Router) | `app/admin/users/page.tsx` |
+| フック | `use` プレフィックス | `useAdminUsers.ts` |
+| 型定義 | `*.types.ts` または同ファイル内 | `UserTable.types.ts` |
+
+> **Note (App Router バージョン差異):**  
+> Next.js 13–14 では `params` は同期オブジェクト。  
+> Next.js 15+ では `params` が **Promise** になる。バージョンに応じて以下を使い分ける。
+>
+> ```ts
+> // Next.js 15+
+> export default async function Page({ params }: { params: Promise<{ id: string }> }) {
+>   const { id } = await params;
+> }
+> ```
+
+---
+
+## 2. コンポーネントスキャフォールド
+
+### 基本テンプレート
 
 ```tsx
-// src/components/FeatureCard.tsx
-'use client'; // App Router の場合のみ必要な行
+// components/features/ExampleCard.tsx
+"use client"; // データフェッチのみなら不要
 
-import { type FC } from 'react';
-import { cn } from '@/lib/utils'; // clsx + tailwind-merge のユーティリティ
+import { type FC } from "react";
+import { cn } from "@/lib/utils"; // clsx + tailwind-merge ユーティリティ
 
-interface FeatureCardProps {
+interface ExampleCardProps {
   title: string;
   description?: string;
   className?: string;
-  children?: React.ReactNode;
 }
 
-const FeatureCard: FC<FeatureCardProps> = ({
+export const ExampleCard: FC<ExampleCardProps> = ({
   title,
   description,
   className,
-  children,
 }) => {
   return (
-    <div className={cn('rounded-lg border bg-card p-4 shadow-sm', className)}>
-      <h3 className="text-sm font-semibold">{title}</h3>
+    <div className={cn("rounded-lg border bg-card p-4 shadow-sm", className)}>
+      <h3 className="text-lg font-semibold">{title}</h3>
       {description && (
-        <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+        <p className="mt-1 text-sm text-muted-foreground">{description}</p>
       )}
-      {children}
     </div>
   );
 };
-
-export default FeatureCard;
 ```
 
-**命名規則**
+### ローディング・エラー状態を含む非同期コンポーネント
 
-| 種別 | 規則 | 例 |
-|------|------|----|
-| コンポーネントファイル | PascalCase | `UserTable.tsx` |
-| フックファイル | camelCase + `use` prefix | `useMarketData.ts` |
-| ユーティリティ | camelCase | `formatCurrency.ts` |
-| 型定義 | PascalCase + `types.ts` | `market.types.ts` |
+```tsx
+"use client";
+
+import { Loader2, AlertCircle } from "lucide-react";
+
+interface AsyncContentProps<T> {
+  data: T | undefined;
+  isLoading: boolean;
+  error: Error | null;
+  children: (data: T) => React.ReactNode;
+}
+
+export function AsyncContent<T>({
+  data,
+  isLoading,
+  error,
+  children,
+}: AsyncContentProps<T>) {
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="flex items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-4 text-destructive">
+        <AlertCircle className="h-4 w-4 shrink-0" />
+        <p className="text-sm">{error.message}</p>
+      </div>
+    );
+  }
+  if (!data) return null;
+  return <>{children(data)}</>;
+}
+```
 
 ---
 
-## 2. ページレイアウトパターン
+## 3. ページレイアウトパターン
 
-### 2-1. 通常レイアウト（サイドバー + メインコンテンツ）
+### 汎用ページテンプレート（App Router）
 
 ```tsx
-// src/components/AppLayout.tsx
-'use client';
+// app/(viewer)/dashboard/page.tsx
+import { Suspense } from "react";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { DashboardContent } from "@/components/features/DashboardContent";
+import { Skeleton } from "@/components/ui/skeleton";
 
-import { useState } from 'react';
-import Sidebar from './Sidebar';
-import Header from './Header';
+export const metadata = { title: "ダッシュボード" };
 
-interface AppLayoutProps {
-  children: React.ReactNode;
-}
-
-export default function AppLayout({ children }: AppLayoutProps) {
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-
+export default function DashboardPage() {
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
-      <Sidebar open={sidebarOpen} onToggle={() => setSidebarOpen((v) => !v)} />
-      <div className="flex flex-1 flex-col overflow-hidden">
-        <Header onMenuClick={() => setSidebarOpen((v) => !v)} />
-        <main className="flex-1 overflow-y-auto p-6">{children}</main>
-      </div>
+    <div className="flex flex-col gap-6 p-6">
+      <PageHeader
+        title="ダッシュボード"
+        description="全体の状況を確認します"
+      />
+      <Suspense fallback={<Skeleton className="h-64 w-full" />}>
+        <DashboardContent />
+      </Suspense>
     </div>
   );
 }
 ```
 
-### 2-2. 管理画面専用レイアウト（通常レイアウトとは分離）
-
-管理画面は独立した `AdminLayout` を持ち、通常の `AppLayout` と**共用しない**。
+### PageHeader コンポーネント
 
 ```tsx
-// src/pages/admin/AdminLayout.tsx  (~75行が目安)
-'use client';
+// components/layout/PageHeader.tsx
+interface PageHeaderProps {
+  title: string;
+  description?: string;
+  actions?: React.ReactNode;
+}
 
-import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import { cn } from '@/lib/utils';
-
-const NAV_ITEMS = [
-  { path: '/admin', label: 'Dashboard', icon: '📊' },
-  { path: '/admin/users', label: 'Users', icon: '👥' },
-  { path: '/admin/organizations', label: 'Organizations', icon: '🏢' },
-  { path: '/admin/settings', label: 'Settings', icon: '⚙️' },
-  { path: '/admin/audit-log', label: 'Audit Log', icon: '📋' },
-] as const;
-
-export default function AdminLayout({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
-
+export function PageHeader({ title, description, actions }: PageHeaderProps) {
   return (
-    <div className="flex h-screen overflow-hidden">
-      {/* サイドバー */}
-      <aside className="w-56 shrink-0 border-r bg-muted/40">
-        <div className="flex h-14 items-center border-b px-4">
-          <span className="text-sm font-bold text-destructive">Admin Panel</span>
-        </div>
-        <nav className="space-y-1 p-2">
-          {NAV_ITEMS.map(({ path, label, icon }) => (
-            <Link
-              key={path}
-              href={path}
-              className={cn(
-                'flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors',
-                pathname === path
-                  ? 'bg-primary text-primary-foreground'
-                  : 'hover:bg-accent',
-              )}
-            >
-              <span>{icon}</span>
-              {label}
-            </Link>
-          ))}
-        </nav>
-      </aside>
-
-      {/* メインコンテンツ */}
-      <div className="flex flex-1 flex-col overflow-hidden">
-        <header className="flex h-14 items-center border-b px-6">
-          <h1 className="text-sm font-semibold">Administration</h1>
-        </header>
-        <main className="flex-1 overflow-y-auto p-6">{children}</main>
-      </div>
-    </div>
-  );
-}
-```
-
-**管理画面ページ構成**
-
-```
-src/pages/admin/
-├── AdminLayout.tsx       # 専用レイアウト（~75行）
-├── AdminDashboard.tsx    # トップページ
-├── AdminUsers.tsx        # ユーザーCRUD
-├── AdminOrganizations.tsx
-├── AdminSettings.tsx     # APIキー・AIプロバイダー等
-└── AdminAuditLog.tsx     # 監査ログビューア
-```
-
----
-
-## 3. ナビゲーションパターン
-
-### 3-1. グループ折りたたみナビゲーション
-
-```tsx
-// src/components/Sidebar.tsx
-'use client';
-
-import { useState, useCallback } from 'react';
-import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import { ChevronDown, ChevronRight } from 'lucide-react';
-import { cn } from '@/lib/utils';
-import { loadGroupOpen, saveGroupOpen } from '@/lib/navStorage';
-
-// ナビグループ定義の型
-interface NavItem {
-  path: string;
-  label: string;
-  icon?: React.ReactNode;
-  adminOnly?: boolean;
-  badge?: string | number;
-}
-
-interface NavGroup {
-  id: string;
-  label: string;
-  sublabel?: string;
-  icon?: React.ReactNode;
-  items: NavItem[];
-}
-
-// 5グループ構成例（実プロジ
+    <div className="flex items-start justify-between gap-4">
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">{title}</h1>
+        {description && (
+          <p className="text-sm text-muted-foreground"
