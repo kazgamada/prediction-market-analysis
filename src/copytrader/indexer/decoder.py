@@ -42,36 +42,42 @@ def _hexify(b: bytes | str) -> str:
 
 
 def decode(log: dict, args: dict, exchange: str) -> DecodedTrade | None:
-    """Decode an OrderFilled event log + decoded args into a normalized trade.
+    """Decode a V2 OrderFilled event into a normalized trade row.
 
-    Returns None for trades that aren't USDC <-> outcome-token (e.g. fpmm splits).
-    The Polymarket CTF Exchange always has one side as USDC (asset_id == 0); skip
-    anything else defensively.
+    V2 イベントは V1 と異なり、`side` (uint8: 0=BUY, 1=SELL maker のオーダー方向)
+    と `tokenId` を直接持つ (V1 の makerAssetId/takerAssetId ペアではない)。
+
+    保存する `side` は **taker pov** にして V1 と同じ意味にする:
+    - maker side BUY (maker が tokens を買う) → taker は tokens を渡している = SELL
+    - maker side SELL (maker が tokens を売る) → taker は tokens を受け取る = BUY
+
+    `maker_asset_id` / `taker_asset_id` は後方互換のため、どちら側が USDC かを
+    "0" と tokenId で再現する (`wallet_side()` 等の既存ロジックがそのまま動く)。
     """
-    maker_asset = int(args["makerAssetId"])
-    taker_asset = int(args["takerAssetId"])
-    if maker_asset != 0 and taker_asset != 0:
+    side_raw = int(args["side"])  # 0 = maker BUY, 1 = maker SELL
+    token_id_int = int(args["tokenId"])
+    if token_id_int == 0:
         return None
-    if maker_asset == 0 and taker_asset == 0:
-        return None
+    token_id = str(token_id_int)
 
     maker_amount = int(args["makerAmountFilled"])
     taker_amount = int(args["takerAmountFilled"])
     fee = int(args.get("fee", 0))
 
-    if maker_asset == 0:
-        # maker provides USDC -> taker receives USDC's counter-asset (sells)
-        # Wait: maker gives USDC, taker gives outcome tokens.
-        # From the taker's perspective: taker is providing tokens for USDC = SELL.
-        token_id = str(taker_asset)
+    if side_raw == 0:
+        # maker is buying tokens: maker provides USDC, taker provides tokens
         usdc_amount = Decimal(maker_amount)
         token_amount = Decimal(taker_amount)
+        maker_asset_id = "0"
+        taker_asset_id = token_id
         side = "SELL"  # taker pov
     else:
-        token_id = str(maker_asset)
+        # maker is selling tokens: maker provides tokens, taker provides USDC
         usdc_amount = Decimal(taker_amount)
         token_amount = Decimal(maker_amount)
-        side = "BUY"  # taker pov: gets tokens for USDC
+        maker_asset_id = token_id
+        taker_asset_id = "0"
+        side = "BUY"  # taker pov
 
     if token_amount <= 0:
         return None
@@ -100,8 +106,8 @@ def decode(log: dict, args: dict, exchange: str) -> DecodedTrade | None:
         order_hash=order_hash,
         maker=str(args["maker"]).lower(),
         taker=str(args["taker"]).lower(),
-        maker_asset_id=str(maker_asset),
-        taker_asset_id=str(taker_asset),
+        maker_asset_id=maker_asset_id,
+        taker_asset_id=taker_asset_id,
         maker_amount=maker_amount,
         taker_amount=taker_amount,
         fee=fee,

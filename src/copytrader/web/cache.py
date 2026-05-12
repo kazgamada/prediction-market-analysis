@@ -49,8 +49,19 @@ def _compute_status() -> dict[str, Any]:
         last_trade_ts = session.execute(select(func.max(Trade.block_timestamp))).scalar()
         last_trade_block = session.execute(select(func.max(Trade.block_number))).scalar()
 
+        heartbeat = session.execute(
+            select(IngestCursor).where(IngestCursor.name == _CATCHUP_HEARTBEAT_NAME)
+        ).scalar_one_or_none()
+        heartbeat_info = (
+            {"iteration": heartbeat.block_number, "updated_at": heartbeat.updated_at}
+            if heartbeat
+            else None
+        )
+
         cursors = (
-            session.execute(select(IngestCursor).where(IngestCursor.name.like("backfill%")))
+            session.execute(
+                select(IngestCursor).where(IngestCursor.name.like("backfill%"))
+            )
             .scalars()
             .all()
         )
@@ -144,6 +155,7 @@ def _compute_status() -> dict[str, Any]:
         "pos_rows": pos_rows,
         "order_rows": order_rows,
         "risk_rows": risk_rows,
+        "catchup_heartbeat": heartbeat_info,
     }
 
 
@@ -272,3 +284,252 @@ def start_background_warmer() -> None:
             target=_warm_loop, name="page-cache-warmer", daemon=True
         ).start()
         _warmer_started = True
+
+
+_catchup_started = False
+_catchup_start_lock = threading.Lock()
+_CATCHUP_INTERVAL_SEC = 60.0
+_CATCHUP_HEARTBEAT_NAME = "web_catchup_heartbeat"
+
+
+def _bump_cursors_to_recent_floor() -> None:
+    """cursor が `head - backfill_recent_days * 43200` より古い場合、
+    その値まで前進させて古い履歴をスキップする。
+
+    catchup ループが動かなくても、Streamlit が起動した瞬間に cursor が
+    直近 N 日相当の位置に書き換わるので、UI 上の進捗もすぐ更新される。
+    trade テーブルへの insert は別途 catchup / WS で進めるので、cursor の
+    先行は無害 (idempotent insert + max-cursor 保護)。
+    """
+    from datetime import datetime, timezone
+
+    from copytrader.chain.client import PolygonClient
+    from copytrader.config import get_settings
+    from copytrader.db import session_scope
+    from copytrader.models import IngestCursor
+
+    recent_days = get_settings().backfill_recent_days
+    if not recent_days or recent_days <= 0:
+        return
+
+    try:
+        head = PolygonClient().block_number()
+    except Exception:
+        log.exception("bump_cursors: chain head fetch failed")
+        return
+
+    POLYGON_BLOCKS_PER_DAY = 43_200
+    recent_floor = max(0, head - recent_days * POLYGON_BLOCKS_PER_DAY)
+
+    now = datetime.now(timezone.utc)
+    with session_scope() as session:
+        for exchange in ("ctf", "negrisk"):
+            name = f"backfill_{exchange}"
+            cur = session.get(IngestCursor, name)
+            if cur is None:
+                session.add(IngestCursor(name=name, block_number=recent_floor, updated_at=now))
+                log.info("bump_cursors: created %s at recent_floor=%s", name, recent_floor)
+            elif (cur.block_number or 0) < recent_floor:
+                old = cur.block_number
+                cur.block_number = recent_floor
+                cur.updated_at = now
+                log.info("bump_cursors: %s %s -> %s (recent_floor)", name, old, recent_floor)
+
+
+def _run_rpc_self_test() -> dict[str, Any]:
+    """直近 500 ブロックで CTF / NegRisk の OrderFilled を 1 度だけ取得し、
+    RPC が実際に logs を返すか確認する診断。結果は Status ページに表示される。
+    """
+    from copytrader.chain.client import PolygonClient
+
+    out: dict[str, Any] = {}
+    try:
+        client = PolygonClient()
+        head = client.block_number()
+        out["head"] = head
+        start = max(0, head - 500)
+        out["range"] = [start, head]
+        for exchange in ("ctf", "negrisk"):
+            try:
+                logs = client.get_order_filled_logs(start, head, exchange)
+                out[f"{exchange}_logs"] = len(logs)
+            except Exception as e:
+                out[f"{exchange}_logs"] = f"ERROR: {type(e).__name__}: {str(e)[:200]}"
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {str(e)[:300]}"
+    return out
+
+
+_RPC_SELFTEST_RESULT: dict[str, Any] = {}
+_RPC_SELFTEST_TS: float = 0.0
+_RPC_SELFTEST_TTL_SEC = 30.0
+
+
+def rpc_selftest_result() -> dict[str, Any]:
+    """30 秒キャッシュ付きで RPC self-test を即時実行。
+    呼ばれるたびにキャッシュが切れていれば再評価。
+    """
+    global _RPC_SELFTEST_RESULT, _RPC_SELFTEST_TS
+    now = time.time()
+    if not _RPC_SELFTEST_RESULT or (now - _RPC_SELFTEST_TS) > _RPC_SELFTEST_TTL_SEC:
+        try:
+            _RPC_SELFTEST_RESULT = _run_rpc_self_test()
+        except Exception as e:
+            _RPC_SELFTEST_RESULT = {"error": f"selftest fn raised: {type(e).__name__}: {str(e)[:300]}"}
+        _RPC_SELFTEST_TS = now
+        log.info("rpc-selftest (on-demand): %s", _RPC_SELFTEST_RESULT)
+    return dict(_RPC_SELFTEST_RESULT)
+
+
+def _touch_heartbeat(stage: str, block: int = 0) -> None:
+    """web catchup の生存確認用 cursor。block 番号は段階を数字でエンコード。
+    UI からこの cursor を見れば catchup loop が回っているか分かる。
+    """
+    from datetime import datetime, timezone
+
+    from copytrader.db import session_scope
+    from copytrader.models import IngestCursor
+
+    try:
+        with session_scope() as session:
+            cur = session.get(IngestCursor, _CATCHUP_HEARTBEAT_NAME)
+            now = datetime.now(timezone.utc)
+            if cur is None:
+                session.add(IngestCursor(name=_CATCHUP_HEARTBEAT_NAME, block_number=block, updated_at=now))
+            else:
+                cur.block_number = block
+                cur.updated_at = now
+    except Exception:
+        log.exception("heartbeat write failed (stage=%s)", stage)
+
+
+def _catchup_loop() -> None:
+    """web プロセス内で動く保険的 catchup loop。
+
+    monitor プロセスが死んでいても backfill が止まらないよう、
+    web (Streamlit) プロセスでも同じ catchup を回す。
+    settings.backfill_recent_days の窓だけを対象にする。
+    backfill 自体が冪等 (ON CONFLICT DO NOTHING + 単調増加 cursor) なので
+    monitor と並走しても安全。
+
+    commit_every=1 / chunk=500 / workers=3 と小さくし、進捗が秒単位で
+    UI に反映されるようにしている。
+    """
+    from copytrader.config import get_settings
+    from copytrader.indexer.backfill import backfill as do_backfill
+
+    log.info("web-catchup: thread started")
+    _touch_heartbeat("thread_started")
+    backoff = 1.0
+    iteration = 0
+    while True:
+        iteration += 1
+        _touch_heartbeat("loop_iter", iteration)
+        try:
+            recent_days = get_settings().backfill_recent_days
+            saved = do_backfill(
+                chunk_size=500,
+                max_workers=3,
+                commit_every=1,
+                recent_days=recent_days,
+            )
+            log.info("web-catchup: iteration %s done, saved=%s", iteration, saved)
+            _touch_heartbeat("iter_done", iteration)
+            backoff = 1.0
+        except Exception:
+            log.exception("web-catchup: backfill failed; retrying in %.1fs", backoff)
+            _touch_heartbeat("iter_failed", iteration)
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 60.0)
+            continue
+        time.sleep(_CATCHUP_INTERVAL_SEC)
+
+
+def start_background_catchup() -> None:
+    """プロセス内に 1 つだけ daemon catchup スレッドを起動する。
+
+    起動直後に同期で `_bump_cursors_to_recent_floor()` と RPC 自己診断を呼ぶ。
+    UI 上で RPC が正常に logs を返すか即座に分かる。
+    """
+    global _catchup_started, _RPC_SELFTEST_RESULT
+    with _catchup_start_lock:
+        if _catchup_started:
+            return
+        try:
+            _RPC_SELFTEST_RESULT = _run_rpc_self_test()
+            log.info("rpc-selftest: %s", _RPC_SELFTEST_RESULT)
+        except Exception:
+            log.exception("rpc-selftest failed")
+        try:
+            _bump_cursors_to_recent_floor()
+        except Exception:
+            log.exception("start_background_catchup: bump failed")
+        threading.Thread(
+            target=_catchup_loop, name="web-catchup", daemon=True
+        ).start()
+        _catchup_started = True
+        log.info("start_background_catchup: launched daemon thread")
+
+
+# --- 手動 "Run backfill" を daemon thread で走らせるためのジョブランナー ----
+
+_manual_jobs: dict[str, dict[str, Any]] = {}
+_manual_jobs_lock = threading.Lock()
+
+
+def start_manual_backfill(
+    *,
+    from_block: int | None,
+    to_block: int | None,
+    chunk_size: int,
+    max_workers: int,
+    commit_every: int,
+) -> str:
+    """手動 backfill をデーモンスレッドで起動する。ユーザーがページを
+    閉じたり遷移しても継続。同名ジョブが既に running なら早期 return。
+    """
+    from copytrader.indexer.backfill import backfill as do_backfill
+
+    job_id = "manual_backfill"
+    with _manual_jobs_lock:
+        existing = _manual_jobs.get(job_id)
+        if existing and existing.get("status") == "running":
+            return existing["id"]
+        _manual_jobs[job_id] = {
+            "id": job_id,
+            "status": "running",
+            "started_at": time.time(),
+            "from_block": from_block,
+            "to_block": to_block,
+            "saved": None,
+            "error": None,
+        }
+
+    def _worker() -> None:
+        try:
+            saved = do_backfill(
+                from_block=from_block,
+                to_block=to_block,
+                chunk_size=chunk_size,
+                max_workers=max_workers,
+                commit_every=commit_every,
+            )
+            with _manual_jobs_lock:
+                _manual_jobs[job_id].update(
+                    status="done", saved=saved, finished_at=time.time()
+                )
+            log.info("manual-backfill: done saved=%s", saved)
+        except Exception as e:
+            with _manual_jobs_lock:
+                _manual_jobs[job_id].update(
+                    status="failed", error=f"{type(e).__name__}: {e}", finished_at=time.time()
+                )
+            log.exception("manual-backfill: failed")
+
+    threading.Thread(target=_worker, name="manual-backfill", daemon=True).start()
+    return job_id
+
+
+def manual_backfill_status() -> dict[str, Any] | None:
+    with _manual_jobs_lock:
+        return dict(_manual_jobs.get("manual_backfill") or {}) or None

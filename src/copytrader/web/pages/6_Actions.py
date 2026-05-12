@@ -12,7 +12,6 @@ from copytrader.web.logs import (
     run_with_live_logs,
 )
 from copytrader.web.nav import render_sidebar_menu_help
-from copytrader.web.progress import backfill_progress_fn
 
 render_sidebar_menu_help()
 _any_running = render_running_jobs_banner()
@@ -81,28 +80,37 @@ with c1:
     )
     if st.button(
         "Run backfill",
-        help="OrderFilled ログを DB に取り込みます。途中で止めても cursor から再開可能。",
+        help="OrderFilled ログを DB に取り込みます。デーモンスレッドで走るのでページを閉じても継続。",
     ):
-        from copytrader.indexer.backfill import backfill
+        from copytrader.web.cache import start_manual_backfill
 
         try:
             fb = int(from_block_in) if from_block_in else None
             tb = int(to_block_in) if to_block_in else None
-            saved = run_with_live_logs(
-                "backfill (this can take hours for full history)",
-                backfill,
+            job_id = start_manual_backfill(
                 from_block=fb,
                 to_block=tb,
                 chunk_size=int(chunk_size),
                 max_workers=int(max_workers),
                 commit_every=int(commit_every),
-                progress_fn=backfill_progress_fn(),
-                persist_key="actions.last_backfill",
             )
-            st.success(f"saved {saved} new trades")
+            st.success(f"backfill job started: {job_id} (ページを閉じても継続)")
             st.rerun()
         except Exception as e:
             st.error(str(e))
+
+    from copytrader.web.cache import manual_backfill_status
+
+    _job = manual_backfill_status()
+    if _job:
+        elapsed = int(_job.get("finished_at", _job["started_at"]) - _job["started_at"])
+        if _job["status"] == "running":
+            st.info(f"⏳ manual backfill running ({elapsed}s elapsed). "
+                    f"進捗は Status ページの backfill_ctf / backfill_negrisk を見てください。")
+        elif _job["status"] == "done":
+            st.success(f"✅ manual backfill done: saved {_job.get('saved')} trades in {elapsed}s")
+        elif _job["status"] == "failed":
+            st.error(f"❌ manual backfill failed in {elapsed}s: {_job.get('error')}")
 
 with c2:
     max_pages = st.number_input(

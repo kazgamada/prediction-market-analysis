@@ -170,6 +170,10 @@ def backfill(
             exch_start, end, exchange=exchange,
             chunk_size=chunk_size, max_workers=max_workers,
         ):
+            log.debug(
+                "exchange=%s chunk start=%s end=%s raw_logs=%s",
+                exchange, chunk_start, chunk_end, len(logs),
+            )
             decoded = []
             for raw in logs:
                 try:
@@ -199,8 +203,8 @@ def backfill(
                 saved = _flush(buffer_rows, cursor_name, last_chunk_end)
                 total += saved
                 log.info(
-                    "exchange=%s flushed up_to=%s rows=%s total=%s",
-                    exchange, last_chunk_end, saved, total,
+                    "exchange=%s flushed up_to=%s raw_logs_in_chunk=%s decoded=%s rows_saved=%s total=%s",
+                    exchange, last_chunk_end, len(logs), len(decoded), saved, total,
                 )
                 buffer_rows = []
                 buffer_chunks = 0

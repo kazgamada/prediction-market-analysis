@@ -14,7 +14,7 @@ import json
 
 import streamlit.components.v1 as components
 
-from copytrader.web.cache import start_background_warmer
+from copytrader.web.cache import start_background_catchup, start_background_warmer
 
 _TIPS: dict[str, str] = {
     "app": "ホーム — シークレット設定の状態と Phase ガイド。最初に開く画面。",
@@ -33,6 +33,7 @@ def render_sidebar_menu_help() -> None:
     副作用としてページキャッシュ warmer を 1 度だけ起動する。
     """
     start_background_warmer()
+    start_background_catchup()
     payload = json.dumps(_TIPS, ensure_ascii=False)
     components.html(
         f"""
