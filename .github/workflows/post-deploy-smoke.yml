@@ -1,0 +1,24 @@
+name: Post-deploy smoke
+
+on:
+  workflow_run:
+    workflows: ["Deploy to Fly.io"]
+    types: [completed]
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - name: Wait for boot
+        run: sleep 30
+      - name: /healthz
+        run: |
+          for i in 1 2 3 4 5; do
+            if curl -fsS "https://prediction-market-analysis.fly.dev/_stcore/health"; then
+              exit 0
+            fi
+            echo "attempt $i failed, retrying"
+            sleep 10
+          done
+          exit 1

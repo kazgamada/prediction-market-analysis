@@ -1,9 +1,14 @@
 FROM python:3.12-slim AS base
 
+ARG GIT_SHA=dev
+ARG BUILD_TIME=dev
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    GIT_SHA=${GIT_SHA} \
+    BUILD_TIME=${BUILD_TIME}
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates \
@@ -25,4 +30,5 @@ ENV PATH="/app/.venv/bin:${PATH}" \
 
 EXPOSE 8501 8080
 
+# Default to web; fly.toml overrides per-process.
 CMD ["python", "-m", "copytrader.runtime.web_main"]
