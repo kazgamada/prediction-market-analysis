@@ -1,0 +1,52 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: copytrader
+      POSTGRES_USER: copytrader
+      POSTGRES_PASSWORD: copytrader
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U copytrader"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://copytrader:copytrader@postgres:5432/copytrader
+    ports:
+      - "8501:8501"
+      - "8080:8080"
+    command: python -m copytrader.runtime.web_main
+
+  indexer:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://copytrader:copytrader@postgres:5432/copytrader
+    command: python -m copytrader.runtime.indexer_main
+
+  worker:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://copytrader:copytrader@postgres:5432/copytrader
+    command: python -m copytrader.runtime.worker_main
+
+volumes:
+  pgdata:
