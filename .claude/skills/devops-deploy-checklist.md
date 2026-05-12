@@ -5,231 +5,203 @@ description: >-
   コード品質・セキュリティ・環境変数・Cron保護・ブランチ戦略・CI/CDパイプラインを網羅した汎用ガイド。
 category: devops
 sourceSkillIds:
-  - 820cc3f2
-  - b1da6443
-  - 68f5d615
-  - 146803d5
-  - e7d366ff
-  - 97734b6c
-  - af50e4b7
-  - 670db250
-  - 1fe77be8
-  - '70452492'
-  - 37f074ef
-  - 64b04175
-  - 1095d4f8
-  - 508b354a
-  - b0d998cd
-  - 46d099b6
-  - 06212e83
-  - 7954a210
-  - 57966bf7
-  - 5d66c491
-  - c481b53b
-  - 94a98cd9
-  - 17c743b2
-  - bc464b65
-  - ce9e57e1
-  - 4c6ef214
-  - 6c2fb525
-  - b0afe3eb
-  - 30939cf3
-  - 958029db
-  - f7569a49
-  - a629c68c
-  - 09bac265
-  - 32b13307
-  - e4bfdb6a
-  - 6e71714f
-  - e25c6a79
-  - 9d0b29ca
-generatedAt: '2026-05-08'
+  - 78d0ca03
+  - 1e512dda
+  - fad3a941
+  - 3c24f4d4
+  - 943e5ff5
+  - 7114bb14
+  - ea263728
+  - d4c547dc
+  - a3480d4e
+  - 03b8d29a
+  - 38182ce6
+  - 4e6ea1fd
+  - 8534b8f3
+  - '48612727'
+  - 3e434ce8
+generatedAt: '2026-05-11'
 ---
 
 # DevOps デプロイチェックリスト
 
-Vercel + GitHub Actions + Next.js スタックにおける**デプロイ前の必須確認事項**と**運用パターン**をまとめたガイド。
-本番リリース前に必ずこのチェックリストを通過させること。
+Vercel / GitHub Actions / Next.js スタックで本番リリースする際に **必ず通す**総合チェックリスト。  
+新機能追加・大規模改修・初回リリースのいずれにも使える。
+
+---
+
+## 0. 事前確認：ブランチ・作業環境
+
+```bash
+# 現在のブランチを確認
+git branch --show-current
+
+# リモートとの差分を確認
+git fetch origin
+git status
+```
+
+- [ ] 正しいブランチで作業しているか（`main` への直接 push は明示的な許可がある場合のみ）
+- [ ] `node_modules` が必要な場合はインストール済みか
+- [ ] ローカルの `.env.local` が最新か（後述の環境変数チェックリストを参照）
+
+> **鉄則**: コミットは小さく・こまめに push。タグ push は読み取り専用トークン環境では 403 になることがある（ローカル保持で OK）。
 
 ---
 
 ## 1. コード品質チェック
 
-### 1-1. ローカルビルド確認
-
 ```bash
-# TypeScript型チェック
-npx tsc --noEmit
+# TypeScript 型チェック
+npm run check          # tsc --noEmit 相当
 
-# ESLint
-npx eslint . --ext .ts,.tsx --max-warnings 0
+# テスト実行
+npm run test           # Vitest / Jest
 
-# ビルド成功確認
+# ビルド確認（本番バンドルでエラーが出ないか）
 npm run build
+
+# APIバンドル再構築（サーバーコードを変更した場合）
+npm run build:api
 ```
 
-**判定基準**: エラー0件、警告0件でビルドが通ること。
+### チェック項目
 
-### 1-2. 依存関係の健全性
+- [ ] `npm run check` がエラー 0 件
+- [ ] `npm run test` が全パス（スキップは理由をコメントに残す）
+- [ ] `npm run build` がエラー 0 件
+- [ ] サーバーコード変更時は `npm run build:api` を実行済み
 
-```bash
-# 脆弱性スキャン
-npm audit --audit-level=high
-
-# 未使用依存の確認（任意）
-npx depcheck
-```
-
-> ⚠️ `high` 以上の脆弱性がある場合はデプロイをブロックする。
-
----
-
-## 2. 環境変数チェック
-
-### 2-1. 必須変数の存在確認
-
-`lib/env.ts` などに環境変数バリデーションを集約する：
+### よくある TypeScript エラーと修正パターン
 
 ```typescript
-// lib/env.ts
-import { z } from "zod";
+// ❌ TS2322: string | null を string に代入
+const id: string = row.id;
 
-const envSchema = z.object({
-  // DB
-  DATABASE_URL: z.string().url(),
-  // Auth
-  NEXTAUTH_SECRET: z.string().min(32),
-  NEXTAUTH_URL: z.string().url(),
-  // 外部サービス（例）
-  OPENAI_API_KEY: z.string().startsWith("sk-"),
-  // Cron保護
-  CRON_SECRET: z.string().min(32),
-});
+// ✅ null 合体演算子
+const id: string = row.id ?? "";
 
-export const env = envSchema.parse(process.env);
-```
+// ✅ null チェック
+if (row.id) {
+  const id: string = row.id;
+}
 
-### 2-2. Vercel 環境変数チェックリスト
-
-| 変数名 | Production | Preview | Development | 備考 |
-|--------|:---:|:---:|:---:|------|
-| `DATABASE_URL` | ✅ | ✅ | ✅ | 本番/ステージングで別DB |
-| `NEXTAUTH_SECRET` | ✅ | ✅ | ✅ | 環境ごとに異なる値 |
-| `NEXTAUTH_URL` | ✅ | ✅ | ✅ | 各環境のURL |
-| `CRON_SECRET` | ✅ | — | — | Production のみ必須 |
-| `NEXT_PUBLIC_*` | ✅ | ✅ | ✅ | クライアント公開変数 |
-
-> ⚠️ `NEXT_PUBLIC_` プレフィックスの変数はクライアントバンドルに含まれる。**シークレット値を絶対に設定しない**。
-
-### 2-3. `.env.example` の同期確認
-
-```bash
-# .env.example に全キーが記載されているか確認
-diff <(grep -E '^[A-Z]' .env.local | cut -d= -f1 | sort) \
-     <(grep -E '^[A-Z]' .env.example | cut -d= -f1 | sort)
+// ✅ フィルタで除外
+const ids = rows.filter((r): r is typeof r & { id: string } => r.id !== null);
 ```
 
 ---
 
-## 3. セキュリティチェック
+## 2. API ルートの認可ガード
 
-### 3-1. API Route の認証ガード
+**全 API ルートに認可ガードが付いているか** を確認する。付け忘れは無認証公開エンドポイントになる最重要バグ。
 
-すべての保護が必要なエンドポイントに認証チェックを実装する：
-
-```typescript
-// lib/api-guard.ts
-import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
-
-/** 通常APIの認証ガード */
-export async function requireAuth() {
-  const session = await getServerSession(authOptions);
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  return null; // OK
-}
-
-/** Cron専用ガード */
-export function requireCron(req: NextRequest) {
-  const authHeader = req.headers.get("authorization");
-  const expected = `Bearer ${process.env.CRON_SECRET}`;
-  if (authHeader !== expected) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
-  return null; // OK
-}
-
-/** エラーを安全にシリアライズ（スタックトレース漏洩防止） */
-export function safeError(error: unknown, context?: string) {
-  const message = error instanceof Error ? error.message : "Unknown error";
-  console.error(`[${context ?? "API"}]`, error);
-  return NextResponse.json(
-    { error: process.env.NODE_ENV === "production" ? "Internal Server Error" : message },
-    { status: 500 }
-  );
-}
+```bash
+# 認可ガードが付いていない API ルートを検出
+grep -rL "requireAuth\|requireAdmin\|requireCron\|devOnly\|verifySignature" \
+  app/api/ --include="*.ts" --include="*.tsx"
 ```
 
-### 3-2. Cron エンドポイントの実装パターン
+### ガードの種類と使い分け
+
+| ガード | 用途 |
+|--------|------|
+| `requireAuth()` | 一般ユーザー認証が必要なエンドポイント |
+| `requireAdmin()` | 管理者のみアクセス可能なエンドポイント |
+| `requireCron()` | Vercel Cron からの呼び出しのみ許可 |
+| `devOnly()` | 開発環境限定のデバッグエンドポイント |
+| `verifySignature()` | Webhook など外部署名検証が必要なエンドポイント |
+
+### Cron エンドポイントのテンプレート
 
 ```typescript
-// app/api/cron/[name]/route.ts
-import { NextRequest, NextResponse } from "next/server";
+// app/api/cron/<name>/route.ts
+import { NextResponse } from "next/server";
 import { requireCron, safeError } from "@/lib/api-guard";
 
 /**
- * GET /api/cron/[name]
- * Vercel Cron から呼び出される。CRON_SECRET による認証必須。
+ * GET /api/cron/<name>
+ * Vercel Cron によって定期実行される。CRON_SECRET で保護。
  */
-export async function GET(req: NextRequest) {
-  const guard = requireCron(req);
-  if (guard) return guard; // 401/403 を返す
+export async function GET(req: Request) {
+  const guardError = requireCron(req);
+  if (guardError) return guardError;
 
   try {
     // バッチ処理の実装
-    await runBatchJob();
-    return NextResponse.json({ ok: true, timestamp: new Date().toISOString() });
-  } catch (error) {
-    return safeError(error, "cron/[name]");
+    const result = await runBatchJob();
+    return NextResponse.json({ ok: true, result });
+  } catch (err) {
+    return safeError(err);
   }
+}
+```
+
+```typescript
+// lib/api-guard.ts（最小実装例）
+import { NextResponse } from "next/server";
+
+export function requireCron(req: Request): NextResponse | null {
+  const authHeader = req.headers.get("authorization");
+  const expected = `Bearer ${process.env.CRON_SECRET}`;
+  if (authHeader !== expected) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  return null;
+}
+
+export function safeError(err: unknown): NextResponse {
+  const message = err instanceof Error ? err.message : "Internal Server Error";
+  console.error(err);
+  return NextResponse.json({ error: message }, { status: 500 });
 }
 ```
 
 ```json
-// vercel.json
+// vercel.json（Cron スケジュール定義）
 {
   "crons": [
     {
-      "path": "/api/cron/daily-summary",
-      "schedule": "0 9 * * *"
+      "path": "/api/cron/<name>",
+      "schedule": "0 * * * *"
     }
   ]
 }
 ```
 
-### 3-3. セキュリティヘッダーの設定
+### チェック項目
 
-```typescript
-// next.config.ts
-const securityHeaders = [
-  { key: "X-DNS-Prefetch-Control", value: "on" },
-  { key: "X-Frame-Options", value: "SAMEORIGIN" },
-  { key: "X-Content-Type-Options", value: "nosniff" },
-  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-  {
-    key: "Permissions-Policy",
-    value: "camera=(), microphone=(), geolocation=()",
-  },
-  {
-    key: "Content-Security-Policy",
-    value: [
-      "default-src 'self'",
-      "script-src 'self' 'unsafe-eval' 'unsafe-inline'", // Next.js要件
-      "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data: https:",
-      "font-src 'self'",
-      "connect-src 'self' https:",
-    ].join
+- [ ] 全 API ルートに適切なガードが付いている
+- [ ] Cron エンドポイントには `requireCron()` ガードが付いている
+- [ ] `vercel.json` の `crons` にスケジュールが登録されている
+- [ ] `CRON_SECRET` が全環境（本番・プレビュー）に設定されている
+
+---
+
+## 3. 環境変数チェックリスト
+
+### 必須変数の確認
+
+```bash
+# ローカル環境の変数確認（値は表示しない）
+cat .env.local | grep -v "^#" | cut -d= -f1
+
+# 本番環境の変数一覧（Vercel CLI）
+vercel env ls --environment=production
+```
+
+### 変数カテゴリ別チェック
+
+| カテゴリ | 変数例 | 生成方法 |
+|----------|--------|----------|
+| 認証・暗号化 | `AUTH_SECRET` / `NEXTAUTH_SECRET` | `openssl rand -base64 32` |
+| データベース | `DATABASE_URL` | Supabase / PlanetScale ダッシュボード |
+| Cron 保護 | `CRON_SECRET` | `openssl rand -hex 32` |
+| 外部 API | `STRIPE_SECRET_KEY` など | 各サービスのダッシュボード |
+| Webhook | `WEBHOOK_SECRET` | 各サービスのダッシュボード |
+
+### 新規シークレット生成
+
+```bash
+# 汎用シークレット（Base64）
+openssl rand -

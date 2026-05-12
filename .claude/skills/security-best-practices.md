@@ -1,252 +1,187 @@
 ---
 name: security-best-practices
 description: >-
-  Next.js/Supabase/TypeScriptプロジェクトにおけるセキュリティのベストプラクティス。認証・認可、レート制限、暗号化、監査ログ、インシデント対応、シークレット管理を網羅した包括的なセキュリティガイド。
+  Next.js/Supabase/TypeScriptプロジェクトにおけるセキュリティのベストプラクティス。
+  認証・認可、レート制限、PII暗号化、監査ログ、インシデント対応、シークレット管理を網羅した包括的なセキュリティガイド。
 category: security
 sourceSkillIds:
-  - d4182b48
-  - f74e42a4
-  - '60724619'
-  - 8dccdfd5
-  - 86844c6c
-  - c2e259b3
-  - c0fe524b
-  - 72f8c951
-  - 842f585e
-  - 1a51c1ed
-  - 4c9135cd
-  - bcd96325
-  - 988462cc
-  - cda747b6
-  - '785e3460'
-  - 056c5810
-  - 63ca3004
-  - b5d28376
-  - f789f626
-  - 871a9182
-  - 49682a71
-  - e2242131
-  - 46c447b2
-  - 58257c07
-generatedAt: '2026-05-08'
+  - d1d927c6
+  - b5f82bc0
+  - 550a948c
+  - 75f78551
+  - 2e1f3893
+  - df5813f3
+  - 0f81e61b
+  - dba5acfd
+generatedAt: '2026-05-11'
 ---
 
-# Security Best Practices
+# セキュリティ ベストプラクティス
 
-Next.js / Supabase / TypeScript プロジェクト向けの包括的なセキュリティガイド。
+Next.js / Supabase / TypeScript プロジェクト全体に適用される、セキュリティ設計・実装・運用の標準ガイド。
+**新機能を実装するとき・レビューするとき・インシデントが起きたとき**、このSkillを起点にする。
 
 ---
 
-## 1. 認証・認可（Authentication & Authorization）
+## 目次
 
-### 1.1 Supabase Auth の基本設定
+1. [ミドルウェアと HTTP セキュリティヘッダー](#1-ミドルウェアと-http-セキュリティヘッダー)
+2. [認証・認可チェックリスト](#2-認証認可チェックリスト)
+3. [レート制限](#3-レート制限)
+4. [PII 暗号化（AES-256-GCM）](#4-pii-暗号化aes-256-gcm)
+5. [監査ログ](#5-監査ログ)
+6. [シークレット管理とローテーション](#6-シークレット管理とローテーション)
+7. [セキュリティレビュー手順](#7-セキュリティレビュー手順)
+8. [インシデント対応プレイブック](#8-インシデント対応プレイブック)
 
-すべての保護リソースへのアクセスはサーバーサイドで認証を検証する。クライアント側の認証状態のみに依存しない。
+---
+
+## 1. ミドルウェアと HTTP セキュリティヘッダー
+
+### 標準ミドルウェア適用順序
 
 ```typescript
-// lib/supabase/server.ts
-import { createServerClient } from '@supabase/ssr'
-import { cookies } from 'next/headers'
+// lib/security-middleware.ts
+import helmet from 'helmet';
+import cors from 'cors';
 
-export function createClient() {
-  const cookieStore = cookies()
-  return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll: () => cookieStore.getAll(),
-        setAll: (cookiesToSet) => {
-          cookiesToSet.forEach(({ name, value, options }) =>
-            cookieStore.set(name, value, options)
-          )
-        },
+export function applySecurityMiddleware(app: Express) {
+  // 1. helmet — CSP / HSTS / X-Frame-Options / X-Content-Type-Options
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'strict-dynamic'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],   // 必要最小限に絞ること
+        imgSrc: ["'self'", "data:", "https:"],
+        connectSrc: ["'self'", process.env.NEXT_PUBLIC_SUPABASE_URL!],
+        frameSrc: ["'none'"],
       },
-    }
-  )
-}
+    },
+    hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
+  }));
 
-// Server Action / Route Handler での認証確認
-export async function requireAuth() {
-  const supabase = createClient()
-  const { data: { user }, error } = await supabase.auth.getUser()
-  if (error || !user) {
-    throw new Error('Unauthorized')
-  }
-  return user
-}
-```
+  // 2. CORS — 本番環境は許可オリジンを明示的に絞る
+  app.use(cors({
+    origin: process.env.NODE_ENV === 'production'
+      ? [process.env.APP_URL!]           // TODO: 追加オリジンが必要な場合はここに列挙
+      : true,
+    credentials: true,
+  }));
 
-### 1.2 ロールベースアクセス制御（RBAC）
-
-```typescript
-// lib/auth/rbac.ts
-type Role = 'admin' | 'member' | 'viewer'
-
-const ROLE_HIERARCHY: Record<Role, number> = {
-  admin: 3,
-  member: 2,
-  viewer: 1,
-}
-
-export async function requireRole(minimumRole: Role) {
-  const user = await requireAuth()
-  const supabase = createClient()
-
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('role')
-    .eq('id', user.id)
-    .single()
-
-  const userRole = profile?.role as Role
-  if (!userRole || ROLE_HIERARCHY[userRole] < ROLE_HIERARCHY[minimumRole]) {
-    throw new Error(`Forbidden: requires ${minimumRole} role`)
-  }
-
-  return { user, role: userRole }
-}
-
-// 使用例
-export async function adminAction() {
-  const { user } = await requireRole('admin')
-  // admin専用処理
+  // 3. trust proxy — Vercel / Railway の X-Forwarded-For を有効化
+  app.set('trust proxy', 1);
 }
 ```
 
-### 1.3 Middleware による保護
+### Next.js の場合（`middleware.ts`）
 
 ```typescript
 // middleware.ts
-import { createServerClient } from '@supabase/ssr'
-import { NextResponse, type NextRequest } from 'next/server'
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
 
-const PROTECTED_PATHS = ['/dashboard', '/admin', '/api/protected']
-const ADMIN_PATHS = ['/admin']
+export function middleware(request: NextRequest) {
+  const response = NextResponse.next();
 
-export async function middleware(request: NextRequest) {
-  const { pathname } = request.nextUrl
+  // セキュリティヘッダーを追加
+  response.headers.set('X-Frame-Options', 'DENY');
+  response.headers.set('X-Content-Type-Options', 'nosniff');
+  response.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  response.headers.set(
+    'Permissions-Policy',
+    'camera=(), microphone=(), geolocation=()'
+  );
 
-  // 保護対象パスの確認
-  const isProtected = PROTECTED_PATHS.some(p => pathname.startsWith(p))
-  if (!isProtected) return NextResponse.next()
-
-  const response = NextResponse.next()
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { cookies: { /* cookie handlers */ } }
-  )
-
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) {
-    const loginUrl = new URL('/login', request.url)
-    loginUrl.searchParams.set('redirectTo', pathname)
-    return NextResponse.redirect(loginUrl)
-  }
-
-  // 管理者パスの追加チェック
-  if (ADMIN_PATHS.some(p => pathname.startsWith(p))) {
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('role')
-      .eq('id', user.id)
-      .single()
-
-    if (profile?.role !== 'admin') {
-      return NextResponse.redirect(new URL('/403', request.url))
-    }
-  }
-
-  return response
+  return response;
 }
 
 export const config = {
   matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
-}
+};
 ```
 
 ---
 
-## 2. Row Level Security（RLS）
+## 2. 認証・認可チェックリスト
 
-Supabase のすべてのテーブルで RLS を有効化する。「デフォルト拒否」原則を徹底する。
+新しいAPI/ページを実装する際、以下を必ず確認する。
 
-```sql
--- すべてのテーブルで RLS を有効化
-ALTER TABLE public.items ENABLE ROW LEVEL SECURITY;
-
--- ❌ 危険: 全件アクセス許可
--- CREATE POLICY "allow_all" ON items FOR ALL USING (true);
-
--- ✅ 安全: 所有者のみアクセス
-CREATE POLICY "owner_select" ON public.items
-  FOR SELECT USING (auth.uid() = user_id);
-
-CREATE POLICY "owner_insert" ON public.items
-  FOR INSERT WITH CHECK (auth.uid() = user_id);
-
-CREATE POLICY "owner_update" ON public.items
-  FOR UPDATE USING (auth.uid() = user_id)
-  WITH CHECK (auth.uid() = user_id);
-
-CREATE POLICY "owner_delete" ON public.items
-  FOR DELETE USING (auth.uid() = user_id);
-
--- チームベースのアクセス制御
-CREATE POLICY "team_member_select" ON public.team_items
-  FOR SELECT USING (
-    EXISTS (
-      SELECT 1 FROM team_members
-      WHERE team_id = team_items.team_id
-        AND user_id = auth.uid()
-        AND status = 'active'
-    )
-  );
-
--- 管理者は全件参照可能
-CREATE POLICY "admin_full_access" ON public.items
-  FOR ALL USING (
-    EXISTS (
-      SELECT 1 FROM profiles
-      WHERE id = auth.uid() AND role = 'admin'
-    )
-  );
-```
-
-### RLS チェックリスト
-
-- [ ] 全テーブルで `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` を実行
-- [ ] `service_role` キーはサーバーサイドのみ使用（クライアントに露出しない）
-- [ ] `anon` キーで意図しないデータが取得できないか確認
-- [ ] INSERT の `WITH CHECK` と UPDATE の `USING` / `WITH CHECK` を両方定義
-
----
-
-## 3. レート制限（Rate Limiting）
-
-### 3.1 In-Memory レート制限（小規模向け）
+### tRPC の場合
 
 ```typescript
-// lib/security/rate-limit.ts
-interface RateLimitEntry {
-  count: number
-  resetAt: number
-}
+// ✅ protectedProcedure — 認証済みユーザーのデータアクセス
+export const getMyItems = protectedProcedure
+  .query(async ({ ctx }) => {
+    return db.item.findMany({
+      where: { userId: ctx.user.id },  // ← ctx.user.id で必ずフィルタ
+    });
+  });
 
-const store = new Map<string, RateLimitEntry>()
+// ✅ adminProcedure — 管理者専用操作
+export const deleteUser = adminProcedure
+  .input(z.object({ targetUserId: z.string() }))
+  .mutation(async ({ ctx, input }) => {
+    // ctx.user.role === 'admin' はミドルウェア層で保証済み
+  });
 
-interface RateLimitOptions {
-  maxRequests: number
-  windowMs: number
-  identifier?: string
-}
+// ⚠️ publicProcedure — 認証不要だが公開範囲を最小限に
+export const getPublicStats = publicProcedure
+  .query(async () => {
+    return { total: await db.item.count() }; // 個人情報を含まない値のみ
+  });
+```
 
-export function rateLimit(options: RateLimitOptions) {
-  return {
-    check: (key: string): { success: boolean; remaining: number; resetAt: number } => {
-      const now = Date.now()
-      const entry = store.get(key)
+### チェックリスト
 
-      if
+```
+認証・認可
+- [ ] 全 protectedProcedure で ctx.user.id によるデータアクセス制限があるか
+- [ ] publicProcedure が不要なデータを公開していないか
+- [ ] adminProcedure が適切に使われているか
+- [ ] セッション有効期限が適切か（推奨: 30日以内）
+- [ ] Cookie 設定: httpOnly: true, sameSite: "lax", secure: true（本番）
+
+Supabase RLS
+- [ ] すべてのテーブルで RLS が有効か（auth.uid() = user_id パターン）
+- [ ] Service Role Key をクライアントサイドで使用していないか
+- [ ] anon キーの権限が最小権限原則を満たしているか
+```
+
+### Supabase RLS ポリシーのひな形
+
+```sql
+-- users テーブルの基本パターン
+ALTER TABLE items ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "users can read own items"
+  ON items FOR SELECT
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "users can insert own items"
+  ON items FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+-- 管理者は全件参照可（service role は RLS をバイパスするため、
+-- アプリ層でも role チェックを行うこと）
+CREATE POLICY "admins can read all items"
+  ON items FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM profiles
+      WHERE profiles.id = auth.uid()
+        AND profiles.role = 'admin'
+    )
+  );
+```
+
+---
+
+## 3. レート制限
+
+### 推奨制限値
+
+| エンドポイント種別 | 推奨制限 | 理由 |
+|---|---|---|
+| 公開 POST API（フォーム投稿等） | 10 req/min/IP | スパム・DoS 防止 |
+| メール送

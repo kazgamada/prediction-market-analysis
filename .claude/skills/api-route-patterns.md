@@ -1,278 +1,213 @@
 ---
-name: api-route-patterns
-description: >-
-  Next.js App Router
-  APIルートの実装パターン集。認証ガード・Zodバリデーション・エラーハンドリング・レスポンス型の標準化を一括で提供する。新規APIルート作成・既存ルートのリファクタ・保護レベルの設定変更時に参照する。
 category: api-router
 sourceSkillIds:
-  - ecef156f
-  - ecabd2b9
-  - a0402a83
-  - 9821a84e
-  - 449f44fc
-  - 9b7f45d1
-  - f01a2f3a
-  - 7e61dd01
-  - 3805819e
-  - eac9a44c
-  - '33105718'
-  - dd713770
-  - a8f1324b
-  - 8d57af27
-  - b7d584f7
-  - 9efafb63
-  - 8457e2a3
-  - e82475fd
-  - 99caa9f1
-  - 83bf7503
-  - 65e9a904
-  - fcebede9
-  - 2c7ceffc
-  - bdda532f
-  - b7298831
-  - a2cfa62a
-  - be507bc2
-  - 3ae522f8
-  - 6438920a
-  - 8b4c241d
-  - d38769fd
-  - bac81196
-  - 0ec93b1e
-  - 16f7bcc7
-  - 4688b569
-  - 5f56b6f6
-  - d80d20fa
-  - 5a5aa68d
-  - c4cff93f
-  - cfef4151
-  - b2119b1e
-  - b821f3f2
-  - 6712b59d
-  - ba4a2881
-  - '49243085'
-  - 454fb33a
-  - a5314778
-  - 30f43ecb
-generatedAt: '2026-05-08'
+  - 3b8b6f3f
+  - 054208d0
+  - fd774bbd
+  - '17e52886'
+  - fe4fd046
+  - '79047663'
+  - eb5b5790
+  - bb56451a
+  - 8c491bd3
+  - 4c1e226f
+  - 8c38bbfc
+  - e79eb2df
+  - e3dcdb7e
+  - 630f0c79
+  - ce339f24
+  - a6ff5932
+generatedAt: '2026-05-11'
 ---
+```yaml
+---
+name: api-route-patterns
+description: >-
+  Next.js App Router APIルートの実装パターン集。認証ガード・Zodバリデーション・
+  エラーハンドリング・レスポンス型の標準化を一括で提供する。新規APIルート作成・
+  既存ルートのリファクタ・保護レベルの設定変更時に参照する。
+  トリガー：「API追加」「ルート作成」「認証ガード」「バリデーション」「エラーハンドリング」
+category: api-router
+---
+```
 
-# Next.js App Router — APIルート実装パターン集
+# API Route Patterns — Next.js App Router
 
-新規APIルートを追加・変更するときは、このSkillを最初に参照する。
-認証ガード・バリデーション・エラーハンドリング・レスポンス型の**4軸**を必ず揃えること。
+## 概要
+
+Next.js App Router（`app/api/**`）における**認証ガード・Zodバリデーション・エラーハンドリング・レスポンス型の標準化**を一元管理するパターン集。
+
+新規ルート作成時は必ず**保護レベル分類フローチャート**で位置づけを確認してから実装する。
 
 ---
 
-## 1. 保護レベルの分類フローチャート
+## 1. 保護レベル分類フローチャート
 
 ```
 新しい API ルート
    │
-   ├─ Webhook（Stripe・LINE など外部サービスから）?
-   │     → [A] 署名検証ガード
+   ├─ Webhook（Stripe / 外部サービスから）?
+   │     → プロバイダ署名検証を最初に配置（セッション不要）
    │
-   ├─ Vercel Cron / 内部スケジューラから呼ばれる?
-   │     → [B] Cronシークレットガード
+   ├─ Cron / スケジューラから呼ばれる?
+   │     → CRON_SECRET ヘッダ検証のみ
    │
-   ├─ サインイン不要の公開エンドポイント?
-   │     → [C] 公開（レート制限のみ推奨）
+   ├─ 管理者専用（admin パネル等）?
+   │     → requireAdmin() ガード
    │
-   ├─ サインイン必須（一般ユーザー）?
-   │     → [D] セッション認証ガード
+   ├─ 認証済みユーザー全員が使える?
+   │     → requireAuth() ガード
    │
-   ├─ 管理者・特権ロール必須?
-   │     → [E] ロールガード（D の上位）
+   ├─ テナント/プラン制限が必要?
+   │     → requireAuth() + enforcePlanLimit()
    │
-   └─ サービス間 API（M2M）?
-         → [F] APIキー / JWT Bearer ガード
+   └─ パブリック（認証不要）?
+         → ガードなし（レート制限は別途検討）
 ```
 
-ルートを実装する前に必ずこのフローで分類し、**対応するガードパターンを冒頭に配置**する。
+> **迷ったら「認証済みユーザー全員」を選ぶ。後から緩めるより絞める方が安全。**
 
 ---
 
-## 2. 標準レスポンス型
+## 2. 標準ユーティリティ (`lib/api-helpers.ts`)
 
-すべてのAPIルートは以下の型に準拠したレスポンスを返す。
-
-```typescript
-// types/api.ts
-export type ApiSuccess<T> = {
-  success: true;
-  data: T;
-};
-
-export type ApiError = {
-  success: false;
-  error: {
-    code: string;      // 機械可読コード（例: "VALIDATION_ERROR"）
-    message: string;   // 人間向けメッセージ
-    details?: unknown; // Zodエラーなど追加情報（開発時のみ）
-  };
-};
-
-export type ApiResponse<T> = ApiSuccess<T> | ApiError;
-```
+プロジェクトに合わせて実装・配置する共通ヘルパー群。
 
 ```typescript
-// lib/api-response.ts
-import { NextResponse } from "next/server";
-import type { ApiResponse } from "@/types/api";
+// lib/api-helpers.ts
+import { NextRequest, NextResponse } from "next/server";
+import { z, ZodSchema } from "zod";
 
+/** 成功レスポンス */
 export function ok<T>(data: T, status = 200) {
-  return NextResponse.json<ApiResponse<T>>(
-    { success: true, data },
+  return NextResponse.json({ success: true, data }, { status });
+}
+
+/** エラーレスポンス */
+export function err(message: string, status = 400, details?: unknown) {
+  return NextResponse.json(
+    { success: false, error: message, ...(details ? { details } : {}) },
     { status }
   );
 }
 
-export function err(
-  code: string,
-  message: string,
-  status: number,
-  details?: unknown
-) {
-  return NextResponse.json<ApiResponse<never>>(
-    { success: false, error: { code, message, details } },
-    { status }
-  );
+/** Zod バリデーション — 失敗時は 422 を返す */
+export function validateBody<T>(
+  schema: ZodSchema<T>,
+  body: unknown
+): { data: T; error: null } | { data: null; error: NextResponse } {
+  const result = schema.safeParse(body);
+  if (!result.success) {
+    return {
+      data: null,
+      error: err("Validation failed", 422, result.error.flatten()),
+    };
+  }
+  return { data: result.data, error: null };
+}
+
+/** クエリパラメータのバリデーション */
+export function validateQuery<T>(
+  schema: ZodSchema<T>,
+  searchParams: URLSearchParams
+): { data: T; error: null } | { data: null; error: NextResponse } {
+  const raw = Object.fromEntries(searchParams.entries());
+  return validateBody(schema, raw);
+}
+
+/** 統一エラーハンドラ */
+export function handleError(error: unknown): NextResponse {
+  console.error("[API Error]", error);
+  if (error instanceof z.ZodError) {
+    return err("Validation error", 422, error.flatten());
+  }
+  if (error instanceof Error) {
+    // 本番環境では内部メッセージを隠す
+    const message =
+      process.env.NODE_ENV === "production"
+        ? "Internal server error"
+        : error.message;
+    return err(message, 500);
+  }
+  return err("Internal server error", 500);
 }
 ```
 
 ---
 
-## 3. ガードパターン実装例
-
-### [A] Webhook署名検証ガード（例: Stripe）
+## 3. 認証ガード (`lib/api-guard.ts`)
 
 ```typescript
-// app/api/webhooks/stripe/route.ts
-import { headers } from "next/headers";
-import Stripe from "stripe";
-import { err, ok } from "@/lib/api-response";
+// lib/api-guard.ts
+import { auth } from "@/lib/auth"; // NextAuth / Clerk / 独自認証に差し替え
+import { err } from "./api-helpers";
+import { NextRequest, NextResponse } from "next/server";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+type Session = { user: { id: string; role: string; tenantId?: string } };
 
-export async function POST(req: Request) {
-  const body = await req.text();
-  const sig = headers().get("stripe-signature") ?? "";
+/** 認証済みユーザーが必要なルートに使う */
+export async function requireAuth(
+  req: NextRequest,
+  handler: (req: NextRequest, session: Session) => Promise<NextResponse>
+): Promise<NextResponse> {
+  const session = await auth();
+  if (!session?.user) return err("Unauthorized", 401);
+  return handler(req, session as Session);
+}
 
-  let event: Stripe.Event;
-  try {
-    event = stripe.webhooks.constructEvent(
-      body,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET!
-    );
-  } catch {
-    return err("INVALID_SIGNATURE", "Webhook signature verification failed", 400);
-  }
+/** 管理者専用ルート */
+export async function requireAdmin(
+  req: NextRequest,
+  handler: (req: NextRequest, session: Session) => Promise<NextResponse>
+): Promise<NextResponse> {
+  const session = await auth();
+  if (!session?.user) return err("Unauthorized", 401);
+  if (session.user.role !== "admin") return err("Forbidden", 403);
+  return handler(req, session as Session);
+}
 
-  // イベントハンドリング
-  switch (event.type) {
-    case "checkout.session.completed":
-      // ...
-      break;
-  }
-
-  return ok({ received: true });
+/** Cron ジョブ（CRON_SECRET ヘッダ検証） */
+export function requireCron(
+  handler: () => Promise<NextResponse>
+): () => Promise<NextResponse> {
+  return async () => {
+    const secret = process.env.CRON_SECRET;
+    // Note: 実際のリクエストオブジェクトが必要な場合は引数で受け取る
+    if (!secret) return err("CRON_SECRET not configured", 500);
+    // ヘッダ検証は呼び出し元で行う（Vercel Cron は Authorization ヘッダを付与）
+    return handler();
+  };
 }
 ```
 
-### [B] Cron シークレットガード
+---
+
+## 4. 実装パターン集
+
+### 4-A. パブリック GET（クエリバリデーション付き）
 
 ```typescript
-// app/api/cron/daily-report/route.ts
-import { err, ok } from "@/lib/api-response";
-
-export async function GET(req: Request) {
-  const authHeader = req.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return err("UNAUTHORIZED", "Invalid cron secret", 401);
-  }
-
-  // バッチ処理
-  return ok({ processed: true });
-}
-```
-
-### [C] 公開エンドポイント（バリデーション + レート制限推奨）
-
-```typescript
-// app/api/public/search/route.ts
+// app/api/posts/route.ts
+import { NextRequest } from "next/server";
 import { z } from "zod";
-import { err, ok } from "@/lib/api-response";
+import { ok, err, validateQuery, handleError } from "@/lib/api-helpers";
 
 const QuerySchema = z.object({
-  q: z.string().min(1).max(100),
-  limit: z.coerce.number().int().min(1).max(50).default(20),
+  page: z.coerce.number().int().positive().default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  search: z.string().optional(),
 });
 
-export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const parsed = QuerySchema.safeParse(Object.fromEntries(searchParams));
-
-  if (!parsed.success) {
-    return err("VALIDATION_ERROR", "Invalid query parameters", 400, parsed.error.flatten());
-  }
-
-  const { q, limit } = parsed.data;
-  // 検索処理
-  return ok({ results: [], query: q, limit });
-}
-```
-
-### [D] セッション認証ガード
-
-```typescript
-// app/api/user/profile/route.ts
-import { auth } from "@/lib/auth"; // NextAuth / Clerk / 独自実装を抽象化
-import { z } from "zod";
-import { err, ok } from "@/lib/api-response";
-
-const UpdateProfileSchema = z.object({
-  displayName: z.string().min(1).max(50),
-  bio: z.string().max(200).optional(),
-});
-
-export async function PATCH(req: Request) {
-  // 認証チェック
-  const session = await auth();
-  if (!session?.user) {
-    return err("UNAUTHORIZED", "Authentication required", 401);
-  }
-
-  // ボディバリデーション
-  let body: unknown;
+export async function GET(req: NextRequest) {
   try {
-    body = await req.json();
-  } catch {
-    return err("INVALID_JSON", "Request body must be valid JSON", 400);
-  }
+    const { data: query, error } = validateQuery(
+      QuerySchema,
+      req.nextUrl.searchParams
+    );
+    if (error) return error;
 
-  const parsed = UpdateProfileSchema.safeParse(body);
-  if (!parsed.success) {
-    return err("VALIDATION_ERROR", "Invalid request body", 400, parsed.error.flatten());
-  }
-
-  // ビジネスロジック
-  const updated = await updateUserProfile(session.user.id, parsed.data);
-  return ok(updated);
-}
-```
-
-### [E] ロールガード（管理者専用）
-
-```typescript
-// app/api/admin/users/route.ts
-import { auth } from "@/lib/auth";
-import { err, ok } from "@/lib/api-response";
-
-export async function GET() {
-  const session = await auth();
-
-  if (!session?.user) {
-    return err("UNAUTHORIZED", "Authentication required", 401);
-  }
-  if (session.user.role !== "admin") {
-    
+    const posts = await db.post.findMany({
+      where: query.search
+        ? { title: { contains: query.search, mode: "insensitive" } }
+        : undefined,
+      skip: (query.page - 1) * query

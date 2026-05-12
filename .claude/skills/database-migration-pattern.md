@@ -1,279 +1,201 @@
 ---
 name: database-migration-pattern
 description: >-
-  Supabase/PostgreSQL/TypeScriptプロジェクトにおけるDBスキーマ設計・マイグレーション・RLS・ロール管理・型安全クエリパターンの包括的ガイド。テーブル設計の原則からRLSポリシー実装、Supabase型生成、ロール階層管理まで一貫した実装パターンを提供する。あらゆる規模のSaaSアプリケーションで再利用可能。
+  Supabase/PostgreSQL/TypeScriptプロジェクトにおけるDBスキーマ設計・マイグレーション・RLS・ロール管理・型安全クエリパターンの包括的ガイド。テーブル設計の原則からRLSポリシー実装、Supabase型生成、ロール階層管理、冪等マイグレーション、スキーマ適応クエリまで一貫した実装パターンを提供する。あらゆる規模のSaaSアプリケーションで再利用可能。
 category: database
 sourceSkillIds:
-  - 9d448d77
-  - 5bef0317
-  - 7d0415e4
-  - cbdc86c8
-  - e5845d0c
-  - 1995fa50
-  - 25d8fc4d
-  - c514c569
-  - 96d3d7f7
-  - 21b9c181
-  - cf410174
-  - 1d622eda
-  - 6c2269d6
-  - e56bc2e3
-  - e4a08f9b
-  - d230fdc8
-  - 82268d2d
-  - 83707fc9
-  - b044825d
-  - cf418dd7
-  - 2939a8d3
-  - fc4cfdc8
-  - ea286644
-  - 2046db07
-  - b5039c50
-  - 4c136abd
-  - 1b52eb9e
-  - 30f4ddfd
-  - c195dbea
-  - 1a7e6aed
-  - 508fa540
-  - fb628cbd
-  - '95e52879'
-  - '47e09525'
-  - 9070c634
-  - ffb93ef2
-  - 136b5c66
-  - 3016ef88
-  - 5dd236b5
-  - 3b5ef258
-  - 55fed88d
-  - 004ef737
-  - 6e2cc8c0
-  - c4f4a058
-  - 1c4515e3
-  - 70a5bdd1
-  - '80e90864'
-  - 518cc299
-  - 316229ba
-  - b0f4688e
-  - 7fa58c94
-  - 581cb13e
-  - e9c92773
-  - adcf7fac
-  - c43446ec
-  - f307026c
-  - fb55253b
-  - 9410bf95
-  - 19905f06
-  - d71ca081
-  - 035f6180
-  - 35b8d486
-  - b1d00934
-  - 8f37a730
-  - 682b6d0a
-  - b425c23e
-  - e72ea834
-  - a4a74c16
-  - c102fab4
-  - 483baeca
-  - d61c19fe
-  - 629b9751
-  - cffa8a2f
-  - a91bd380
-  - 0c8fa595
-  - 9b140983
-  - 3e07c6ea
-  - 1c090351
-  - d9938ed7
-  - 6acd0362
-  - c169e753
-  - 55a4242e
-generatedAt: '2026-05-08'
+  - a4ed7a36
+  - a8640f40
+  - 12ba1851
+  - '35616135'
+  - 91d394af
+  - 82eca7f0
+  - ea609157
+  - a2d648e3
+  - b7f939a7
+  - 46cf8d7e
+  - edc9c129
+  - daf97aca
+  - 5e853d72
+  - cc21eb64
+  - b77fd81f
+  - 32ede95b
+  - 2d1c64c8
+  - d676f894
+  - d6637bb5
+  - d95d73f8
+  - 4adc4e5c
+  - 806b5b83
+  - cf920cdb
+  - 0ee5a1e8
+  - d51e038f
+  - c5bded6d
+  - '89024666'
+  - a3e04bbe
+  - 41f175ef
+  - 16966ace
+  - bc81c831
+  - 85eeda05
+  - 8e4316ac
+  - 8598329c
+generatedAt: '2026-05-11'
 ---
 
-# Database Migration Pattern — Supabase / PostgreSQL / TypeScript
+# database-migration-pattern
 
-## 概要
+Supabase / PostgreSQL / TypeScript プロジェクトにおける DB 設計・マイグレーション・RLS・ロール管理・型安全クエリの包括的実装ガイド。
 
-このSkillはSupabase + PostgreSQL + TypeScriptスタックにおける以下の領域を網羅します。
+---
 
-| 領域 | 内容 |
-|------|------|
-| スキーマ設計 | テーブル命名規則・カラム設計・インデックス戦略 |
-| マイグレーション | ファイル管理・適用手順・ロールバック |
-| RLS | ポリシー設計・デバッグ手順 |
-| ロール管理 | 階層設計・権限付与パターン |
-| 型安全クエリ | Supabase型生成・TypeScriptクライアントパターン |
+## 目次
+
+1. [テーブル設計の原則](#1-テーブル設計の原則)
+2. [冪等マイグレーションパターン](#2-冪等マイグレーションパターン)
+3. [RLS ポリシー実装](#3-rls-ポリシー実装)
+4. [ロール階層管理](#4-ロール階層管理)
+5. [Supabase クライアント使い分け](#5-supabase-クライアント使い分け)
+6. [型安全クエリパターン](#6-型安全クエリパターン)
+7. [スキーマ適応クエリ（列存在チェック）](#7-スキーマ適応クエリ列存在チェック)
+8. [月次セキュリティレビューチェックリスト](#8-月次セキュリティレビューチェックリスト)
 
 ---
 
 ## 1. テーブル設計の原則
 
-### 命名規則
+### 基本構造
 
 ```sql
--- ✅ Good: snake_case、複数形、明確な名前
-CREATE TABLE user_profiles (...)
-CREATE TABLE subscription_plans (...)
-CREATE TABLE audit_logs (...)
-
--- ❌ Bad: camelCase、単数形、曖昧な名前
-CREATE TABLE UserProfile (...)
-CREATE TABLE data (...)
-```
-
-### 標準カラム構成
-
-すべてのテーブルに以下の基本カラムを含める：
-
-```sql
-CREATE TABLE example_table (
-  -- Primary Key
-  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-
-  -- Ownership (マルチテナントの場合)
-  user_id       UUID REFERENCES auth.users(id) ON DELETE CASCADE,
-  -- または
-  organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
-
-  -- ビジネスデータ
-  name          TEXT NOT NULL,
-  description   TEXT,
-  status        TEXT NOT NULL DEFAULT 'active'
-                CHECK (status IN ('active', 'inactive', 'deleted')),
-  metadata      JSONB DEFAULT '{}'::jsonb,
-
-  -- 監査カラム（必須）
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  deleted_at    TIMESTAMPTZ  -- ソフトデリートの場合
+-- 全テーブル共通の基底構造
+CREATE TABLE IF NOT EXISTS public.{table_name} (
+  id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  updated_at  timestamptz NOT NULL DEFAULT now()
 );
-```
 
-### updated_at 自動更新トリガー
-
-```sql
--- 汎用トリガー関数（一度定義すれば全テーブルで再利用）
-CREATE OR REPLACE FUNCTION update_updated_at_column()
+-- updated_at 自動更新トリガー（プロジェクト全体で共有）
+CREATE OR REPLACE FUNCTION public.set_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN
-  NEW.updated_at = NOW();
+  NEW.updated_at = now();
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
--- 各テーブルに適用
-CREATE TRIGGER set_updated_at
-  BEFORE UPDATE ON example_table
-  FOR EACH ROW
-  EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER trg_{table_name}_updated_at
+  BEFORE UPDATE ON public.{table_name}
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 ```
 
-### インデックス戦略
+### 設計チェックリスト
+
+| 項目 | 確認内容 |
+|------|----------|
+| PK | `uuid` + `gen_random_uuid()` を使用（連番は避ける） |
+| タイムスタンプ | `created_at` / `updated_at` を全テーブルに付与 |
+| soft delete | 必要なら `deleted_at timestamptz` を追加（物理削除は最後の手段） |
+| 外部キー | `ON DELETE` 動作を明示（`CASCADE` / `SET NULL` / `RESTRICT`） |
+| インデックス | 検索条件・結合キーに必ず作成 |
+| RLS | 全テーブルで `ENABLE ROW LEVEL SECURITY` を宣言 |
+
+---
+
+## 2. 冪等マイグレーションパターン
+
+既存デプロイを壊さずに列・インデックス・テーブルを追加する。  
+`IF NOT EXISTS` / `IF EXISTS` を必ず付け、何度実行しても安全にする。
 
 ```sql
--- 外部キーには必ずインデックス
-CREATE INDEX idx_example_user_id ON example_table(user_id);
-CREATE INDEX idx_example_org_id  ON example_table(organization_id);
+-- ✅ 列を追加（冪等）
+ALTER TABLE public.users
+  ADD COLUMN IF NOT EXISTS display_name text,
+  ADD COLUMN IF NOT EXISTS avatar_url   text,
+  ADD COLUMN IF NOT EXISTS role         text NOT NULL DEFAULT 'member';
 
--- 頻出フィルタ条件
-CREATE INDEX idx_example_status  ON example_table(status)
-  WHERE deleted_at IS NULL;  -- 部分インデックスで効率化
+-- ✅ インデックスを追加（冪等）
+CREATE INDEX IF NOT EXISTS idx_users_role
+  ON public.users (role);
 
--- 複合インデックス（カーディナリティ高い列を先に）
-CREATE INDEX idx_example_user_status
-  ON example_table(user_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_orders_user_created
+  ON public.orders (user_id, created_at DESC);
 
--- JSONB検索
-CREATE INDEX idx_example_metadata ON example_table USING GIN(metadata);
+-- ✅ テーブルを追加（冪等）
+CREATE TABLE IF NOT EXISTS public.org_members (
+  id         uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id     uuid        NOT NULL REFERENCES public.orgs(id) ON DELETE CASCADE,
+  user_id    uuid        NOT NULL REFERENCES auth.users(id)  ON DELETE CASCADE,
+  role       text        NOT NULL DEFAULT 'member',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, user_id)
+);
 
--- テキスト全文検索
-CREATE INDEX idx_example_name_fts
-  ON example_table USING GIN(to_tsvector('japanese', name));
+-- ✅ 列削除（冪等）
+ALTER TABLE public.orders
+  DROP COLUMN IF EXISTS legacy_column;
+
+-- ✅ ENUM 値追加（冪等 — PostgreSQL 12+）
+DO $$
+BEGIN
+  ALTER TYPE public.status_enum ADD VALUE IF NOT EXISTS 'archived';
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+```
+
+### `/api/setup` エンドポイントパターン（Prisma 非使用プロジェクト）
+
+```typescript
+// app/api/setup/route.ts
+import { createAdminClient } from '@/lib/supabase/admin';
+import { NextResponse } from 'next/server';
+
+const MIGRATION_SQL = /* sql */`
+  ALTER TABLE public.users ADD COLUMN IF NOT EXISTS display_name text;
+  CREATE INDEX IF NOT EXISTS idx_users_display_name ON public.users (display_name);
+`;
+
+export async function POST(request: Request) {
+  // 本番では認証ヘッダーやシークレットで保護すること
+  const authHeader = request.headers.get('authorization');
+  if (authHeader !== `Bearer ${process.env.SETUP_SECRET}`) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const admin = createAdminClient();
+  const { error } = await admin.rpc('exec_sql', { sql: MIGRATION_SQL });
+  // ※ exec_sql は社内定義の PostgreSQL 関数。直接 supabase.rpc を使う場合は
+  //   postgres.js / pg ドライバ経由で実行する
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+  return NextResponse.json({ ok: true });
+}
 ```
 
 ---
 
-## 2. マイグレーション管理
+## 3. RLS ポリシー実装
 
-### ファイル命名規則
-
-```
-supabase/migrations/
-├── 20240101000000_init_schema.sql          # 初期スキーマ
-├── 20240115120000_add_organizations.sql    # 機能追加
-├── 20240120093000_add_rls_policies.sql     # RLS追加
-├── 20240201150000_add_subscription.sql     # サブスク機能
-└── 20240210080000_alter_users_add_role.sql # カラム追加
-```
-
-**命名規則**: `YYYYMMDDHHMMSS_<動詞>_<対象>_<内容>.sql`
-
-### マイグレーションファイルの構造
+### 基本パターン
 
 ```sql
--- Migration: 20240201150000_add_subscription.sql
--- Description: サブスクリプション管理テーブルの追加
--- Author: team
--- Depends on: 20240115120000_add_organizations.sql
+-- RLS を有効化（テーブル作成直後に必ず実行）
+ALTER TABLE public.posts ENABLE ROW LEVEL SECURITY;
 
-BEGIN;
+-- ① 本人のみ読み書き可能
+CREATE POLICY "users: own rows"
+  ON public.posts
+  FOR ALL
+  USING  (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
 
--- ========================================
--- テーブル作成
--- ========================================
-CREATE TABLE subscription_plans (
-  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  name        TEXT NOT NULL,
-  price_jpy   INTEGER NOT NULL CHECK (price_jpy >= 0),
-  features    JSONB NOT NULL DEFAULT '[]'::jsonb,
-  is_active   BOOLEAN NOT NULL DEFAULT true,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+-- ② 認証済みユーザーは SELECT のみ
+CREATE POLICY "posts: authenticated read"
+  ON public.posts
+  FOR SELECT
+  USING (auth.role() = 'authenticated');
 
-CREATE TABLE user_subscriptions (
-  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id     UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  plan_id     UUID NOT NULL REFERENCES subscription_plans(id),
-  status      TEXT NOT NULL DEFAULT 'active'
-              CHECK (status IN ('active', 'cancelled', 'expired', 'trial')),
-  starts_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  ends_at     TIMESTAMPTZ,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE(user_id)  -- ユーザーは1プランのみ
-);
-
--- ========================================
--- インデックス
--- ========================================
-CREATE INDEX idx_user_subscriptions_user_id ON user_subscriptions(user_id);
-CREATE INDEX idx_user_subscriptions_status  ON user_subscriptions(status)
-  WHERE status = 'active';
-
--- ========================================
--- トリガー
--- ========================================
-CREATE TRIGGER set_updated_at
-  BEFORE UPDATE ON subscription_plans
-  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER set_updated_at
-  BEFORE UPDATE ON user_subscriptions
-  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
--- ========================================
--- RLS
--- ========================================
-ALTER TABLE subscription_plans    ENABLE ROW LEVEL SECURITY;
-ALTER TABLE user_subscriptions    ENABLE ROW LEVEL SECURITY;
-
--- plans は全員読める
-CREATE POLICY "plans_select_all" ON subscription_plans
-  FOR SELECT USING (is_active = true);
-
--- subscriptions は本人のみ
-CREATE POLICY "subscriptions_select_own" ON user_subscriptions
-  FOR SELECT USING (auth.uid() = user_id);
-
-CREATE POLICY "subscriptions_insert_own" ON user_subscriptions
-  
+-- ③ 組織メンバーのみアクセス（サブクエリ）
+CREATE POLICY "org_items: member access"
+  ON public.org_items
+  FOR ALL
+  USING (
+    EXISTS

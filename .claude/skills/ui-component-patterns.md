@@ -1,299 +1,224 @@
 ---
 name: ui-component-patterns
 description: >-
-  Next.js/Tailwind CSS/TypeScriptプロジェクトにおけるUIコンポーネントの設計・実装パターン。
-  ページレイアウト、ナビゲーション、管理画面、アクセスガード、コンポーネントスキャフォールドの標準的な作法を定義する。
+  Next.js / Tailwind CSS / TypeScript プロジェクトにおける UI コンポーネントの設計・実装パターン。
+  ページレイアウト、ナビゲーション、管理画面、アクセスガード、一括操作 UI、 コンポーネントスキャフォールドの標準的な作法を定義する。 日本語業務 UI
+  規約・GDPR セルフサービス UI も含む。
 category: ui-component
 sourceSkillIds:
-  - 599fb175
-  - '6e708673'
-  - dbcda494
-  - 58b43453
-  - b3100292
-  - 1a340d56
-  - 3c2e65fe
-  - c0e8c7a4
-  - c5409679
-  - 1217c356
-  - e7b097a2
-  - e9390261
-  - 12de9eb8
-  - d3686b17
-  - b0a42ccc
-  - 89d0d7de
-  - 3ec995d8
-  - ee3f7180
-  - 72a9c66e
-  - d645c58a
-  - a5c0b83b
-  - 6a4eae1f
-  - 33d841a8
-  - '33593959'
-  - 396f57ca
-  - a1155806
-  - 445b6452
-  - 02943869
-  - 8c82e4e2
-  - 4e8f1d59
-  - b2517622
-  - 35d0dc33
-  - 24d1d816
-  - 92db6536
-  - 0488cb30
-  - d4497da7
-  - ddd494df
-  - e47ac311
-  - 3a698492
-  - 595255b8
-  - 65a92c76
-  - cdb9241f
-  - 1e11f2ae
-  - b192776e
-  - cd6696c6
-  - b0301649
-  - dc43009e
-  - 6a42ba2b
-  - 155f83e7
-  - 7773eb42
-  - 4c88935b
-  - c11d1ffe
-  - 8c1bdc2f
-  - d9f02e80
-  - aac58b03
-  - 69aa32ef
-  - 88a081a3
-  - 37ab3c26
-  - e7f652fa
-  - fa8b7acd
-  - 436fe824
-  - 2444360f
-  - 223550d1
-  - 852eb091
-  - '59199837'
-  - 00718710
-  - 258bff15
-  - b8f1e1bd
-  - 0affee22
-  - 434eaa55
-  - 6b5055b4
-  - baae9114
-generatedAt: '2026-05-08'
+  - 64a324c6
+  - a863600a
+  - '81222662'
+  - debfceca
+  - 8ed74b50
+  - 3a311cce
+  - 85dcabfc
+  - 7ee36646
+  - edc407e2
+  - 9dde8e3a
+  - 3d7e0994
+  - 96b3e3af
+  - bd1252ec
+  - d91aec82
+  - d055fb14
+  - c66b7f6e
+  - '36153534'
+  - bc950ac7
+  - 5f50170c
+  - 5a130b89
+  - 8a6f7ae0
+  - c047749e
+  - a12bfe2f
+  - d411e64a
+  - 42063f52
+  - b4487d87
+  - e0972bf4
+  - 3f3245b3
+generatedAt: '2026-05-11'
 ---
 
 # UI Component Patterns
 
-Next.js (App Router) + Tailwind CSS + TypeScript プロジェクトにおける、UIコンポーネントの設計・実装の標準パターン集。
+## 目次
+
+1. [ディレクトリ構造と命名規則](#1-ディレクトリ構造と命名規則)
+2. [コンポーネントスキャフォールド](#2-コンポーネントスキャフォールド)
+3. [ページレイアウトパターン](#3-ページレイアウトパターン)
+4. [ナビゲーション管理](#4-ナビゲーション管理)
+5. [管理画面パターン](#5-管理画面パターン)
+6. [アクセスガード](#6-アクセスガード)
+7. [一括操作 UI（Bulk Actions）](#7-一括操作-ui)
+8. [日本語業務 UI 規約](#8-日本語業務-ui-規約)
+9. [GDPR セルフサービス UI](#9-gdpr-セルフサービス-ui)
+10. [Admin API ルート](#10-admin-api-ルート)
 
 ---
 
-## 1. ディレクトリ構造の原則
+## 1. ディレクトリ構造と命名規則
 
 ```
 src/
-├── app/
-│   ├── (admin)/          # 管理者用ルートグループ（URLに現れない）
-│   ├── (auth)/           # 認証系ルートグループ
-│   ├── (dashboard)/      # 一般ユーザー用ダッシュボード
-│   └── (legal)/          # 利用規約等
+├── app/                          # App Router (Next.js 13+)
+│   ├── (auth)/                   # 認証不要レイアウト群
+│   ├── (admin)/                  # 管理者レイアウト群
+│   │   └── admin/
+│   │       ├── layout.tsx        # AdminLayout（サイドバー付き）
+│   │       ├── page.tsx          # AdminDashboard
+│   │       ├── users/page.tsx
+│   │       └── settings/page.tsx
+│   ├── (viewer)/                 # 一般ユーザーレイアウト群
+│   └── api/
+│       └── admin/                # Admin API Routes
+│           └── [resource]/
+│               └── route.ts
 ├── components/
-│   ├── ui/               # 汎用Atomicコンポーネント（Button, Input等）
-│   ├── layout/           # レイアウト系（Header, Sidebar, Footer）
-│   ├── guards/           # アクセス制御コンポーネント
-│   └── features/         # 機能別コンポーネント
+│   ├── ui/                       # Primitive UI（Button, Input, etc.）
+│   ├── layout/                   # Header, Sidebar, Footer
+│   └── features/                 # ドメイン固有コンポーネント
 └── lib/
-    └── api/              # APIクライアント
+    └── auth/
+        └── requireAdmin.ts
 ```
 
-**ルートグループ（Route Groups）** を使ってレイアウトを分離する。`(admin)`, `(dashboard)`, `(auth)` などは URL に影響しない。
+### 命名規則
+
+| 対象 | 規則 | 例 |
+|------|------|----|
+| コンポーネントファイル | PascalCase | `UserTable.tsx` |
+| ページファイル | `page.tsx` (App Router) | `app/admin/users/page.tsx` |
+| フック | `use` プレフィックス | `useAdminUsers.ts` |
+| 型定義 | `*.types.ts` または同ファイル内 | `UserTable.types.ts` |
+
+> **Note (App Router バージョン差異):**  
+> Next.js 13–14 では `params` は同期オブジェクト。  
+> Next.js 15+ では `params` が **Promise** になる。バージョンに応じて以下を使い分ける。
+>
+> ```ts
+> // Next.js 15+
+> export default async function Page({ params }: { params: Promise<{ id: string }> }) {
+>   const { id } = await params;
+> }
+> ```
 
 ---
 
-## 2. レイアウトコンポーネント
+## 2. コンポーネントスキャフォールド
 
-### 基本レイアウト構造
+### 基本テンプレート
 
 ```tsx
-// src/components/layout/AppLayout.tsx
-import { ReactNode } from "react";
-import { Sidebar } from "./Sidebar";
-import { Header } from "./Header";
+// components/features/ExampleCard.tsx
+"use client"; // データフェッチのみなら不要
 
-interface AppLayoutProps {
-  children: ReactNode;
+import { type FC } from "react";
+import { cn } from "@/lib/utils"; // clsx + tailwind-merge ユーティリティ
+
+interface ExampleCardProps {
+  title: string;
+  description?: string;
+  className?: string;
 }
 
-export function AppLayout({ children }: AppLayoutProps) {
+export const ExampleCard: FC<ExampleCardProps> = ({
+  title,
+  description,
+  className,
+}) => {
   return (
-    <div className="flex h-screen bg-gray-50">
-      <Sidebar />
-      <div className="flex flex-col flex-1 overflow-hidden">
-        <Header />
-        <main className="flex-1 overflow-y-auto p-6">
-          {children}
-        </main>
-      </div>
+    <div className={cn("rounded-lg border bg-card p-4 shadow-sm", className)}>
+      <h3 className="text-lg font-semibold">{title}</h3>
+      {description && (
+        <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+      )}
     </div>
   );
-}
+};
 ```
 
-### 管理者専用レイアウト
+### ローディング・エラー状態を含む非同期コンポーネント
 
 ```tsx
-// src/components/layout/AdminLayout.tsx
-import { ReactNode } from "react";
-import { AdminSidebar } from "./AdminSidebar";
-import { AdminHeader } from "./AdminHeader";
+"use client";
 
-interface AdminLayoutProps {
-  children: ReactNode;
+import { Loader2, AlertCircle } from "lucide-react";
+
+interface AsyncContentProps<T> {
+  data: T | undefined;
+  isLoading: boolean;
+  error: Error | null;
+  children: (data: T) => React.ReactNode;
 }
 
-export function AdminLayout({ children }: AdminLayoutProps) {
-  return (
-    <div className="flex h-screen bg-gray-100">
-      <AdminSidebar />
-      <div className="flex flex-col flex-1 overflow-hidden">
-        <AdminHeader />
-        <main className="flex-1 overflow-y-auto p-8">
-          {children}
-        </main>
-      </div>
-    </div>
-  );
-}
-```
-
-### App Router での layout.tsx への適用
-
-```tsx
-// src/app/(admin)/layout.tsx
-import { AdminLayout } from "@/components/layout/AdminLayout";
-import { AdminGuard } from "@/components/guards/AdminGuard";
-
-export default function AdminRootLayout({
+export function AsyncContent<T>({
+  data,
+  isLoading,
+  error,
   children,
-}: {
-  children: React.ReactNode;
-}) {
-  return (
-    <AdminGuard requireSiteOwner>
-      <AdminLayout>{children}</AdminLayout>
-    </AdminGuard>
-  );
+}: AsyncContentProps<T>) {
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="flex items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-4 text-destructive">
+        <AlertCircle className="h-4 w-4 shrink-0" />
+        <p className="text-sm">{error.message}</p>
+      </div>
+    );
+  }
+  if (!data) return null;
+  return <>{children(data)}</>;
 }
 ```
 
 ---
 
-## 3. ナビゲーション設定パターン
+## 3. ページレイアウトパターン
 
-ナビゲーション項目は **設定オブジェクト** として一元管理する。
-
-```tsx
-// src/config/navigation.ts
-import {
-  LayoutDashboard,
-  Users,
-  Settings,
-  FileText,
-  type LucideIcon,
-} from "lucide-react";
-
-export interface NavItem {
-  label: string;
-  href: string;
-  icon: LucideIcon;
-  section: "main" | "settings" | "admin";
-  badge?: string | number;
-}
-
-export const NAV_ITEMS: NavItem[] = [
-  // main
-  { label: "ダッシュボード", href: "/dashboard",    icon: LayoutDashboard, section: "main" },
-  { label: "ユーザー管理",   href: "/admin/users",  icon: Users,           section: "admin" },
-  { label: "設定",           href: "/settings",     icon: Settings,        section: "settings" },
-  { label: "ドキュメント",   href: "/docs",         icon: FileText,        section: "main" },
-];
-```
+### 汎用ページテンプレート（App Router）
 
 ```tsx
-// src/components/layout/Sidebar.tsx
-"use client";
+// app/(viewer)/dashboard/page.tsx
+import { Suspense } from "react";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { DashboardContent } from "@/components/features/DashboardContent";
+import { Skeleton } from "@/components/ui/skeleton";
 
-import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { NAV_ITEMS, type NavItem } from "@/config/navigation";
-import { cn } from "@/lib/utils";
+export const metadata = { title: "ダッシュボード" };
 
-function NavLink({ item }: { item: NavItem }) {
-  const pathname = usePathname();
-  const isActive = pathname === item.href || pathname.startsWith(item.href + "/");
-  const Icon = item.icon;
-
+export default function DashboardPage() {
   return (
-    <Link
-      href={item.href}
-      className={cn(
-        "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-        isActive
-          ? "bg-primary text-primary-foreground"
-          : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-      )}
-    >
-      <Icon className="h-4 w-4" />
-      {item.label}
-      {item.badge && (
-        <span className="ml-auto rounded-full bg-red-500 px-1.5 py-0.5 text-xs text-white">
-          {item.badge}
-        </span>
-      )}
-    </Link>
-  );
-}
-
-export function Sidebar() {
-  const mainItems    = NAV_ITEMS.filter((i) => i.section === "main");
-  const settingsItems = NAV_ITEMS.filter((i) => i.section === "settings");
-
-  return (
-    <aside className="w-64 border-r bg-white flex flex-col">
-      <div className="p-4 border-b">
-        <h1 className="text-lg font-bold">App Name</h1>
-      </div>
-      <nav className="flex-1 p-4 space-y-1">
-        {mainItems.map((item) => (
-          <NavLink key={item.href} item={item} />
-        ))}
-      </nav>
-      <div className="p-4 border-t space-y-1">
-        {settingsItems.map((item) => (
-          <NavLink key={item.href} item={item} />
-        ))}
-      </div>
-    </aside>
+    <div className="flex flex-col gap-6 p-6">
+      <PageHeader
+        title="ダッシュボード"
+        description="全体の状況を確認します"
+      />
+      <Suspense fallback={<Skeleton className="h-64 w-full" />}>
+        <DashboardContent />
+      </Suspense>
+    </div>
   );
 }
 ```
 
----
-
-## 4. アクセスガードパターン
-
-### クライアントサイドガード
+### PageHeader コンポーネント
 
 ```tsx
-// src/components/guards/AdminGuard.tsx
-"use client";
-
-import { useEffect } from "react";
-import { useRouter } from "next/navigation";
-import { useAuth } from "@/hooks/useAuth";
-
-interface AdminGuardProps {
-  children: React.ReactNode;
-  requireSiteOwner?: boolean;
+// components/layout/PageHeader.tsx
+interface PageHeaderProps {
+  title: string;
+  description?: string;
+  actions?: React.ReactNode;
 }
 
-export function AdminGuard({ children, requireSiteOwner = false }: AdminGuardProps) {
-  const {
+export function PageHeader({ title, description, actions }: PageHeaderProps) {
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">{title}</h1>
+        {description && (
+          <p className="text-sm text-muted-foreground"

@@ -5,269 +5,182 @@ description: >-
   UX・型安全・セキュリティ・状態管理・進捗トラッキング・アナリティクス・通知の 実装パターンを網羅する汎用ガイドライン。
 category: other
 sourceSkillIds:
-  - edaeb07a
-  - f166cb84
-  - '58003741'
-  - b0b81d04
-  - d1e6b496
-  - e134e8f8
-  - 9411d04d
-  - 74ffc8bf
-  - 8a117c47
-  - acaf99c8
-  - 0eb20442
-  - 2b5a0039
-  - 8b5dde02
-  - 42f265c6
-  - a063eb59
-  - 951a8d02
-  - d0fbe2de
-  - 61accb90
-  - f39e4252
-  - e8385482
-  - 8b693914
-  - 7f3001e7
-  - d9258a7e
-  - dfcc72f0
-  - 6c7abe15
-  - f654b05f
-  - b0daf76b
-  - bd5ba427
-  - 6898907b
-  - c9059c14
-  - cdf33693
-  - d7c9e9fd
-  - e222d135
-  - c9e5eed7
-  - 1cbf55ef
-  - 12f7940a
-  - a5df638b
-  - cdb391a7
-generatedAt: '2026-05-08'
+  - 4c20b5c7
+  - b6bf62e3
+  - af5835a8
+  - b65d7e1f
+  - 5c2b73a0
+  - b32c6c80
+  - 833f68c8
+  - 68c72247
+  - c0d09ec0
+  - 4537f343
+  - 9b072ef4
+  - 350b3fe4
+  - 6d68ad95
+  - 3acf4ab3
+  - 11134f28
+  - 9db6a344
+  - b2127f6a
+  - a6958a08
+  - 0707f500
+  - 8215d63c
+generatedAt: '2026-05-11'
 ---
 
-# Next.js / TypeScript 汎用ベストプラクティス
+# General Best Practices — Next.js / TypeScript
 
-あらゆるNext.js/TypeScriptプロジェクトに適用できる設計原則と実装パターン集。
-新規機能追加・コードレビュー・リファクタリング時の判断基準として参照する。
+複数プロジェクトの実装パターンを統合した汎用ガイドライン。
+新機能追加・バグ修正・リファクタリング問わず、常にこのドキュメントを参照すること。
 
 ---
 
-## 1. TypeScript 型安全の原則
+## 目次
 
-### 1-1. `any` を使わない
-
-```typescript
-// ❌ Bad
-function process(data: any) { ... }
-
-// ✅ Good
-function process(data: unknown) {
-  if (typeof data === 'string') { ... }
-}
-
-// ✅ Good — 外部API応答には Zod でバリデーション
-import { z } from 'zod';
-
-const ResponseSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  createdAt: z.coerce.date(),
-});
-type Response = z.infer<typeof ResponseSchema>;
-```
-
-### 1-2. 共有型は `types/` に集約する
-
-```
-src/
-  types/
-    api.ts        # APIリクエスト/レスポンス型
-    domain.ts     # ドメインモデル型
-    ui.ts         # UIコンポーネントProps型
-```
-
-```typescript
-// types/domain.ts
-export interface User {
-  id: string;
-  email: string;
-  role: 'admin' | 'member' | 'viewer';
-  createdAt: Date;
-}
-
-// 型の再エクスポートで一元管理
-export type { User };
-```
-
-### 1-3. 関数の戻り値型を明示する
-
-```typescript
-// ❌ Bad — 戻り値型が推論に依存
-async function fetchUser(id: string) {
-  return await db.user.findUnique({ where: { id } });
-}
-
-// ✅ Good — 明示的な戻り値型
-async function fetchUser(id: string): Promise<User | null> {
-  return await db.user.findUnique({ where: { id } });
-}
-```
+1. [破壊的操作の UX](#1-破壊的操作の-ux)
+2. [セキュリティ — オープンリダイレクト対策](#2-セキュリティ--オープンリダイレクト対策)
+3. [進捗トラッキング（TodoWrite）](#3-進捗トラッキングtodowrite)
+4. [管理者アラート・通知パターン](#4-管理者アラート通知パターン)
+5. [表示条件・ステータス管理](#5-表示条件ステータス管理)
+6. [キーボードナビゲーションのデバッグ](#6-キーボードナビゲーションのデバッグ)
+7. [Git スナップショット運用](#7-git-スナップショット運用)
+8. [開発サーバー起動](#8-開発サーバー起動)
 
 ---
 
-## 2. コンポーネント設計パターン
+## 1. 破壊的操作の UX
 
-### 2-1. Server Component / Client Component の分離
+### 原則
 
-```
-// ✅ データ取得はServer Componentで行い、
-//    インタラクティブな部分のみClient Componentに委譲する
+| # | 原則 | 理由 |
+|---|------|------|
+| 1 | **取消不能であることを明示** | 「削除します」だけでなく「この操作は取り消せません」を入れる |
+| 2 | **件数を必ず表示** | `${count} 件のデータを削除します`。0 件・1 件でも崩れない文言に |
+| 3 | **進行中はボタン無効化 + 表示変更** | 再クリックによる二重実行を防ぐ |
+| 4 | **成功後はサーバーから再取得** | 楽観的削除は整合性ズレが devtools でしか見えなくなる |
+| 5 | **失敗時は理由を alert に出す** | `alert(\`削除に失敗しました: ${json.error ?? res.status}\`)` |
 
-// app/users/page.tsx (Server Component)
-import { UserList } from '@/components/UserList';
-import { fetchUsers } from '@/lib/api/users';
-
-export default async function UsersPage() {
-  const users = await fetchUsers();
-  return <UserList initialUsers={users} />;
-}
-
-// components/UserList.tsx (Client Component)
-'use client';
-export function UserList({ initialUsers }: { initialUsers: User[] }) {
-  const [users, setUsers] = useState(initialUsers);
-  // インタラクション処理...
-}
-```
-
-### 2-2. ローディング・エラー・空状態を必ず実装する
+### 最小テンプレート
 
 ```typescript
-// components/DataView.tsx
-interface DataViewProps<T> {
-  data: T[] | undefined;
-  isLoading: boolean;
-  error: Error | null;
-  renderItem: (item: T) => React.ReactNode;
-  emptyMessage?: string;
-}
+const [deleting, setDeleting] = useState(false);
 
-export function DataView<T>({
-  data,
-  isLoading,
-  error,
-  renderItem,
-  emptyMessage = 'データがありません',
-}: DataViewProps<T>) {
-  if (isLoading) return <LoadingSpinner />;
-  if (error) return <ErrorMessage message={error.message} />;
-  if (!data?.length) return <EmptyState message={emptyMessage} />;
+async function handleDelete(ids: string[]) {
+  if (ids.length === 0) return;
+  const confirmed = window.confirm(
+    `${ids.length} 件のデータを削除します。\nこの操作は取り消せません。`
+  );
+  if (!confirmed) return;
 
-  return <ul>{data.map(renderItem)}</ul>;
-}
-```
-
-### 2-3. カスタムフックでロジックを分離する
-
-```typescript
-// hooks/useAsync.ts
-export function useAsync<T>(
-  asyncFn: () => Promise<T>,
-  deps: React.DependencyList = []
-) {
-  const [state, setState] = useState<{
-    data: T | null;
-    isLoading: boolean;
-    error: Error | null;
-  }>({ data: null, isLoading: true, error: null });
-
-  useEffect(() => {
-    let cancelled = false;
-    setState(prev => ({ ...prev, isLoading: true, error: null }));
-
-    asyncFn()
-      .then(data => {
-        if (!cancelled) setState({ data, isLoading: false, error: null });
-      })
-      .catch(error => {
-        if (!cancelled) setState({ data: null, isLoading: false, error });
-      });
-
-    return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
-
-  return state;
-}
-```
-
----
-
-## 3. 状態管理パターン
-
-### 3-1. 状態の置き場所の選択基準
-
-```
-UIローカル状態 (useState)
-  ↓ 複数コンポーネントで共有
-Context + useReducer
-  ↓ サーバー状態（fetch/cache）
-TanStack Query / SWR
-  ↓ グローバルクライアント状態
-Zustand / Jotai
-```
-
-### 3-2. URLを状態として扱う（検索・フィルタ）
-
-```typescript
-// hooks/useSearchParams.ts
-'use client';
-import { useRouter, useSearchParams, usePathname } from 'next/navigation';
-
-export function useUrlState<T extends Record<string, string>>(defaults: T) {
-  const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
-
-  const state = Object.fromEntries(
-    Object.entries(defaults).map(([key, defaultVal]) => [
-      key,
-      searchParams.get(key) ?? defaultVal,
-    ])
-  ) as T;
-
-  const setState = (updates: Partial<T>) => {
-    const params = new URLSearchParams(searchParams.toString());
-    Object.entries(updates).forEach(([key, value]) => {
-      if (value === defaults[key]) {
-        params.delete(key);
-      } else {
-        params.set(key, value);
-      }
+  setDeleting(true);
+  try {
+    const res = await fetch("/api/resource", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
     });
-    router.replace(`${pathname}?${params.toString()}`);
-  };
+    const json = await res.json();
+    if (!res.ok) {
+      alert(`削除に失敗しました: ${json.error ?? res.status}`);
+      return;
+    }
+    await refetch(); // サーバーから再取得
+  } finally {
+    setDeleting(false);
+  }
+}
 
-  return [state, setState] as const;
+// JSX
+<button
+  onClick={() => handleDelete(selectedIds)}
+  disabled={deleting || selectedIds.length === 0}
+>
+  {deleting ? "削除中…" : `${selectedIds.length} 件を削除`}
+</button>
+```
+
+---
+
+## 2. セキュリティ — オープンリダイレクト対策
+
+### 問題
+
+認証成功後の `?next=...` による元ページ復帰は標準 UX だが、
+**無検証の `res.redirect(302, next)` はオープンリダイレクト脆弱性**。
+フィッシング補助として悪用される。
+
+### 対策：`sanitizeNext()` で相対パスのみ許可
+
+```typescript
+// lib/auth/redirect.ts
+export function sanitizeNext(raw: unknown, fallback = "/"): string {
+  if (typeof raw !== "string" || raw.length === 0) return fallback;
+  // 相対パスのみ許可（// や http:// で始まる外部 URL を弾く）
+  if (!raw.startsWith("/") || raw.startsWith("//")) return fallback;
+  // 制御文字・改行を排除
+  if (/[\r\n]/.test(raw)) return fallback;
+  return raw;
 }
 ```
 
-### 3-3. 動的依存値を持つキャッシュに注意する
+```typescript
+// 使用例: pages/api/auth/callback.ts（Pages Router）
+import { sanitizeNext } from "@/lib/auth/redirect";
+
+export default function handler(req, res) {
+  // ... 認証処理 ...
+  const next = sanitizeNext(req.query.next, "/dashboard");
+  res.redirect(302, next);
+}
+```
+
+### チェックリスト
+
+- [ ] `next` パラメータは必ず `sanitizeNext()` を通す
+- [ ] 外部 URL（`http://`, `https://`, `//`）は全てデフォルトパスへフォールバック
+- [ ] 改行文字（`%0a`, `%0d`）インジェクションを防ぐ
+
+---
+
+## 3. 進捗トラッキング（TodoWrite）
+
+### 使うべき条件
+
+| 条件 | 使う | 使わない |
+|------|------|----------|
+| ステップ数 | 3 以上 | 1〜2（ノイズになる） |
+| 並列に見える作業の順序付け | ✅ | — |
+| ユーザーが複数依頼を同時に出した | ✅ | — |
+| セッション中に新タスクが発見された | ✅ | — |
+
+### 書き方の規約
+
+```
+content:    "Add DELETE endpoint to /api/admin/resource for bulk delete"
+activeForm: "Adding DELETE endpoint for bulk delete"
+status:     pending | in_progress | completed
+```
+
+- `content` は **命令形**（何をするか）
+- `activeForm` は **進行形 / 現在分詞**（今やっていること）
+- ステータスは必ず `pending → in_progress → completed` の順に遷移
+- 着手前に全タスクを `pending` で書き出し、着手時に `in_progress` へ更新
+- 完了したら即 `completed` へ更新し、未着手タスクを可視化し続ける
+
+---
+
+## 4. 管理者アラート・通知パターン
+
+### アーキテクチャ
+
+```
+server/services/admin-alerts.ts   ← 集計・閾値判定ロジック
+server/jobs/alert-scheduler.ts    ← cron / スケジューラ登録
+lib/notify/email.ts               ← メール送信アダプタ
+lib/notify/slack.ts               ← Slack Webhook アダプタ
+```
+
+### 統一インターフェース
 
 ```typescript
-// ❌ Bad — accountId が変わっても再フェッチされない
-const { data } = useCachedFetch(`/api/data`); // 固定キー
-
-// ✅ Good — 依存値をキーに含め、変化を検知する
-const { data } = useQuery({
-  queryKey: ['data', accountId, filter],  // 動的キー
-  queryFn: () => fetchData(accountId, filter),
-  enabled: !!accountId,
-});
-
-// ✅ Good — useEffect で明示的に依存を管理する場合
-const [data, setData] = useState(null);
-useEffect(() => {
-  if (!accountId) return;
-  fetchData(accountId
+//

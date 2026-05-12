@@ -1,59 +1,57 @@
 ---
 name: ai-llm-integration
 description: >-
-  Claude API / Anthropic SDK をNext.js・Server Actions・Route Handlersで統合するための
-  汎用パターン集。セットアップ・ストリーミング・バックグラウンド生成・マルチプロバイダー対応・ プロンプト設計・エラーハンドリングを網羅する。
+  Claude API / Anthropic SDK を Next.js（App Router）・Server Actions・Route Handlers
+  で 統合するための汎用パターン集。セットアップ・ストリーミング・バックグラウンド生成・
+  マルチプロバイダー対応・プロンプト設計・エラーハンドリング・コスト管理を網羅する。
 category: ai-llm
+version: 2
 sourceSkillIds:
-  - 497034fa
-  - 77ee08e7
-  - 48e54a63
-  - 92cc7dd0
-  - 94d9d45b
-  - 93ace98e
-  - b11969d1
-  - d4020c79
-  - e0dc9bf4
-  - 94d290f7
-  - 38f53581
-  - 07878b5c
-  - a568bc6f
-  - a53ebd7b
-  - 08da7454
-  - 54aab08c
-  - 1f63a199
-  - 44ddc9f0
-  - defe83e6
-  - f72822ef
-  - 6700ab5b
-  - 1a300e69
-  - 42f1f0ba
-  - c99c03d9
-  - 6aba5abb
-generatedAt: '2026-05-08'
+  - 4119be00
+  - acad8888
+  - 5b9df56e
+  - d4c30a79
+  - 50e467ba
+  - e62d03ca
+  - 0ad01970
+  - 150f406c
+  - c4ce7df6
+generatedAt: '2026-05-11'
 ---
+
+<!-- 
+統合メモ:
+- ベース: ai-llm-integration（prediction-market-analysis）+ ai-llm-integration-derived（aegis-market-os, changedAt: 2026-05-07）
+- aegis-market-os 版はテスト用 derive だが effectiveTimestamp が新しいため、差分（セクション構成・補足注記）を優先採用
+- content-generation-pipeline（AISaaS）のバックグラウンド生成パターン・ステータス遷移を §5 に統合
+- add-email-template / KOKOKARA skills（選択UI・ダークテーマ・ブランチ運用・deferred tool）は
+  ai-llm-integration カテゴリと無関係のため棄却。参照先: add-email-template, skills-KOKOKARA
+-->
 
 # AI / LLM Integration — Claude API & Anthropic SDK
 
 ## 1. セットアップ
 
-### 1-1. インストール
+### 依存関係
 
 ```bash
-pnpm add @anthropic-ai/sdk ai
+npm install @anthropic-ai/sdk
+# ストリーミング用（Next.js App Router）
+npm install ai
+# マルチプロバイダー対応（任意）
+npm install @ai-sdk/anthropic @ai-sdk/openai
 ```
 
-### 1-2. 環境変数
+### 環境変数
 
-```env
+```bash
 # .env.local
 ANTHROPIC_API_KEY=sk-ant-...
-# マルチプロバイダー使用時
-OPENAI_API_KEY=sk-...
-GOOGLE_GENERATIVE_AI_API_KEY=...
+OPENAI_API_KEY=sk-...          # マルチプロバイダー時
+AI_DEFAULT_PROVIDER=anthropic  # 切り替え制御
 ```
 
-### 1-3. シングルトンクライアント
+### クライアント初期化（シングルトン）
 
 ```typescript
 // lib/ai/client.ts
@@ -63,12 +61,9 @@ let _client: Anthropic | null = null;
 
 export function getAnthropicClient(): Anthropic {
   if (!_client) {
-    if (!process.env.ANTHROPIC_API_KEY) {
-      throw new Error("ANTHROPIC_API_KEY is not set");
-    }
-    _client = new Anthropic({
-      apiKey: process.env.ANTHROPIC_API_KEY,
-    });
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
+    _client = new Anthropic({ apiKey });
   }
   return _client;
 }
@@ -76,9 +71,9 @@ export function getAnthropicClient(): Anthropic {
 
 ---
 
-## 2. 基本パターン
+## 2. 基本テキスト生成
 
-### 2-1. 非ストリーミング（Server Action）
+### Server Action（非ストリーミング）
 
 ```typescript
 // app/actions/generate.ts
@@ -90,18 +85,18 @@ export async function generateText(prompt: string): Promise<string> {
   const client = getAnthropicClient();
 
   const message = await client.messages.create({
-    model: "claude-opus-4-5",
+    model: "claude-opus-4-5",      // 最新モデルを常に確認
     max_tokens: 1024,
     messages: [{ role: "user", content: prompt }],
   });
 
   const block = message.content[0];
-  if (block.type !== "text") throw new Error("Unexpected response type");
+  if (block.type !== "text") throw new Error("Unexpected content type");
   return block.text;
 }
 ```
 
-### 2-2. 非ストリーミング（Route Handler）
+### Route Handler（非ストリーミング）
 
 ```typescript
 // app/api/generate/route.ts
@@ -118,12 +113,9 @@ export async function POST(req: NextRequest) {
     messages: [{ role: "user", content: prompt }],
   });
 
-  const block = message.content[0];
-  if (block.type !== "text") {
-    return NextResponse.json({ error: "Unexpected type" }, { status: 500 });
-  }
-
-  return NextResponse.json({ text: block.text });
+  const text =
+    message.content[0].type === "text" ? message.content[0].text : "";
+  return NextResponse.json({ text });
 }
 ```
 
@@ -131,151 +123,115 @@ export async function POST(req: NextRequest) {
 
 ## 3. ストリーミング
 
-### 3-1. Route Handler でストリーミング
+### Route Handler + Vercel AI SDK
 
 ```typescript
 // app/api/stream/route.ts
-import { NextRequest } from "next/server";
-import { getAnthropicClient } from "@/lib/ai/client";
-
-export async function POST(req: NextRequest) {
-  const { prompt, systemPrompt } = await req.json();
-  const client = getAnthropicClient();
-
-  const encoder = new TextEncoder();
-
-  const stream = new ReadableStream({
-    async start(controller) {
-      const anthropicStream = await client.messages.create({
-        model: "claude-opus-4-5",
-        max_tokens: 2048,
-        system: systemPrompt,
-        messages: [{ role: "user", content: prompt }],
-        stream: true,
-      });
-
-      try {
-        for await (const event of anthropicStream) {
-          if (
-            event.type === "content_block_delta" &&
-            event.delta.type === "text_delta"
-          ) {
-            controller.enqueue(encoder.encode(event.delta.text));
-          }
-          if (event.type === "message_stop") break;
-        }
-      } finally {
-        controller.close();
-      }
-    },
-  });
-
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/plain; charset=utf-8",
-      "Transfer-Encoding": "chunked",
-      "X-Content-Type-Options": "nosniff",
-    },
-  });
-}
-```
-
-### 3-2. Vercel AI SDK を使ったストリーミング（推奨）
-
-```typescript
-// app/api/chat/route.ts
 import { anthropic } from "@ai-sdk/anthropic";
 import { streamText } from "ai";
 
-export const maxDuration = 60;
+export const maxDuration = 60; // Vercel Functions タイムアウト
 
 export async function POST(req: Request) {
-  const { messages, system } = await req.json();
+  const { messages } = await req.json();
 
-  const result = streamText({
+  const result = await streamText({
     model: anthropic("claude-opus-4-5"),
-    system,
     messages,
-    maxTokens: 2048,
+    system: "You are a helpful assistant.",
   });
 
   return result.toDataStreamResponse();
 }
 ```
 
-### 3-3. クライアントサイド（useChat フック）
+### クライアント側（`useChat` フック）
 
 ```typescript
-// components/ChatInterface.tsx
+// app/components/ChatInterface.tsx
 "use client";
-
 import { useChat } from "ai/react";
 
-export function ChatInterface({ systemPrompt }: { systemPrompt?: string }) {
-  const { messages, input, handleInputChange, handleSubmit, isLoading, error } =
-    useChat({
-      api: "/api/chat",
-      body: { system: systemPrompt },
-    });
+export function ChatInterface() {
+  const { messages, input, handleInputChange, handleSubmit, isLoading } =
+    useChat({ api: "/api/stream" });
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex-1 overflow-y-auto space-y-4 p-4">
-        {messages.map((m) => (
-          <div
-            key={m.id}
-            className={m.role === "user" ? "text-right" : "text-left"}
-          >
-            <span className="inline-block px-3 py-2 rounded-lg bg-muted">
-              {m.content}
-            </span>
-          </div>
-        ))}
-        {isLoading && (
-          <div className="text-muted-foreground text-sm animate-pulse">
-            生成中...
-          </div>
-        )}
-      </div>
-
-      <form onSubmit={handleSubmit} className="p-4 border-t flex gap-2">
-        <input
-          value={input}
-          onChange={handleInputChange}
-          placeholder="メッセージを入力..."
-          disabled={isLoading}
-          className="flex-1 px-3 py-2 border rounded-lg"
-        />
-        <button
-          type="submit"
-          disabled={isLoading || !input.trim()}
-          className="px-4 py-2 bg-primary text-primary-foreground rounded-lg disabled:opacity-50"
-        >
-          送信
-        </button>
+    <div>
+      {messages.map((m) => (
+        <div key={m.id}>
+          <strong>{m.role}:</strong> {m.content}
+        </div>
+      ))}
+      <form onSubmit={handleSubmit}>
+        <input value={input} onChange={handleInputChange} disabled={isLoading} />
+        <button type="submit" disabled={isLoading}>送信</button>
       </form>
     </div>
   );
 }
 ```
 
-### 3-4. 手動ストリーミング（fetch + ReadableStream）
+### 生 Anthropic SDK でストリーミング（Vercel AI SDK を使わない場合）
 
 ```typescript
-// hooks/useStreamingGeneration.ts
-"use client";
+// app/api/stream-raw/route.ts
+import Anthropic from "@anthropic-ai/sdk";
 
-import { useState, useCallback } from "react";
+export async function POST(req: Request) {
+  const { prompt } = await req.json();
+  const client = new Anthropic();
 
-export function useStreamingGeneration() {
-  const [output, setOutput] = useState("");
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const stream = await client.messages.stream({
+    model: "claude-opus-4-5",
+    max_tokens: 1024,
+    messages: [{ role: "user", content: prompt }],
+  });
 
-  const generate = useCallback(async (prompt: string) => {
-    setOutput("");
-    setError(null);
-    setIsStreaming(true);
+  const encoder = new TextEncoder();
+  const readable = new ReadableStream({
+    async start(controller) {
+      for await (const chunk of stream) {
+        if (
+          chunk.type === "content_block_delta" &&
+          chunk.delta.type === "text_delta"
+        ) {
+          controller.enqueue(encoder.encode(chunk.delta.text));
+        }
+      }
+      controller.close();
+    },
+  });
 
-    try {
-      
+  return new Response(readable, {
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+  });
+}
+```
+
+---
+
+## 4. システムプロンプトとコンテキスト設計
+
+```typescript
+// lib/ai/prompts.ts
+
+export const SYSTEM_PROMPTS = {
+  analyst: `You are an expert analyst. Respond in JSON only.
+Rules:
+- Be concise and factual
+- Include confidence scores (0-1)
+- Flag uncertainty explicitly`,
+
+  assistant: `You are a helpful assistant for {appName}.
+- Answer in the user's language
+- Cite sources when available`,
+} as const;
+
+// 変数展開ユーティリティ
+export function buildSystemPrompt(
+  key: keyof typeof SYSTEM_PROMPTS,
+  vars: Record<string, string> = {}
+): string {
+  let prompt = SYSTEM_PROMPTS[key] as string;
+  for (const [k, v] of Object.

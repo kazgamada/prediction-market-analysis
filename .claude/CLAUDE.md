@@ -6,6 +6,42 @@
 
 ---
 
+## 0. 蟻地獄回避ルール（最優先 / 他のルールに優先する）
+
+エラー対応で同じ罠にハマり続ける「蟻地獄」を絶対に避ける。詰まりかけたら以下を機械的に守る。
+
+### 0.1 ターミナルを使わない
+- 修正・確認・デプロイはすべて **ブラウザ / GitHub Web UI / Vercel / Supabase Dashboard** で完結させる。
+- ローカル CLI / shell / npm コマンドは原則使わない。やむを得ない最小コマンドのみ許容。
+- ユーザーに「ターミナルでこれを実行してください」と要求するのは最後の手段。先に Web から実行できる経路を提示する。
+
+### 0.2 修正は直接 main にプッシュ
+- feature ブランチ / PR を経由せず、最短でデプロイされる経路を取る（Vercel が main から自動デプロイされる前提）。
+- §8.1 の「feature ブランチ原則」より、**本ルールが優先**。
+- 例外: 大規模リファクタや破壊的変更（DB drop、API 削除）は事前承認 + ブランチで進める。
+
+### 0.3 原因究明を先、修正は後
+- エラーが出たら **直そうとする前に原因を可視化する**。
+- 第一手は `/api/health` などの診断エンドポイントで状況を表示させること（無ければ作る）。
+- ログ・スタック・実データ（DB の Table Editor / Vercel Logs / ブラウザ DevTools）を **必ず実物で確認** してから仮説を立てる。
+- **原因が明らかでないまま修正を試さない**。「とりあえず直してみる」は蟻地獄の入口。
+
+### 0.4 既存知見を最初に読む
+- 修正に着手する **前に必ず** `skills/troubleshoot-checklist/SKILL.md` を開いて該当セクションのチェックリストをなぞる。
+- 加えて `archive/` 配下の関連 skill（`incident-response.md`, `debug.md`, `general-best-practices.md`, `devops-deploy-checklist.md`, `account-system-fixes.md` 等）を `grep -ri` で検索し、他ツール開発の知見を拾ってから実装する。
+- 「該当 skill がないから新規」と早合点しない（§7.1 と整合）。
+
+### 0.5 同じ修正を 3 回以上試したらリセット
+- 同じ箇所で 3 回以上修正してダメなら、**仮説が間違っている**。
+- すべての修正をリバートして「素のエラー」を再確認し、`troubleshoot-checklist` §9（メタ手順）に従って最小再現を作り直す。
+
+### 0.6 Fly.io を使う場合
+- ホスティングに Fly.io を採用するツールでは、デプロイ・環境変数・スケーリング・ロールバックの手順を `docs/setup/auto-deploy-flyio.md` に集約する。
+- Fly.io 関連の作業に着手する前に **必ず `docs/setup/auto-deploy-flyio.md` を参照** し、その手順に従う。記載が無い項目は同ファイルに追記してから作業する。
+- Vercel と Fly.io が混在するツールでは、本ファイル（CLAUDE.md）の §2 共通技術スタックよりも、ツールリポ側の `CLAUDE.md` および `docs/setup/auto-deploy-flyio.md` の指示を優先。
+
+---
+
 ## 1. コミュニケーション方針
 
 ### 1.1 言語
@@ -157,14 +193,25 @@ fix(api): handle empty webhook payload from Make.com
 
 「既存 Skill が無いから新規実装」と早合点せず、`archive/` を必ず一通り見てから判断すること。
 
+### 7.2 ツール側で Skill を進化させるときのルール
+
+`.claude/skills/<slug>.md`（フラット形式）または `.claude/skills/<slug>/SKILL.md`（ディレクトリ形式）をツール側で改良した場合は、以下を **必ず** 守る。`kaz-claude-config` の collect ワークフローが日付ベースで「マスターより新しい改良」として検出し、Builder の Ideal 統合で漏れなく取り込めるようになる。
+
+1. **frontmatter の `version` を +1** する（例: `version: 2` → `version: 3`）
+2. **`changedAt`** を ISO 8601（例: `'2026-05-11T07:00:00.000Z'`）で更新
+3. 必要に応じて `changeType: fix | derive` と `changeReason: "<1行で意図>"` を付与
+4. コミットメッセージは `fix(skill: <slug>): <reason>` 形式
+
+これらを忘れても `git log` の commit time から救済されるが、frontmatter を正しく更新するのが第一原則。マスター（`skills/<slug>/SKILL.md`）を直接編集してはならない（マスター更新は kaz-claude-config 側で行う）。
+
 ---
 
 ## 8. 作業フロー
 
 ### 8.1 ブランチ
-- 原則として feature ブランチを切って作業する。
+- **§0.2 蟻地獄回避ルールが優先**。日常の修正は main に直接 push して Vercel の自動デプロイで反映する。
+- 大規模リファクタや破壊的変更（DB drop、既存 API 削除、ロールバック困難な変更）のときのみ feature ブランチを切る。
 - ブランチ名: `feat/<概要>`, `fix/<概要>`, `chore/<概要>` 等。
-- ユーザーが明示的に指示した場合は `main` への直接 push も可。
 
 ### 8.2 PR
 - PR 作成は **ユーザーが明示的に指示した場合のみ** 行う。
@@ -199,12 +246,13 @@ fix(api): handle empty webhook payload from Make.com
 
 以下の統合Skillsが利用可能です。Claude Codeは各Skillの内容を自動参照します。
 
+@.claude/skills/general-best-practices.md
+@.claude/skills/ui-component-patterns.md
+@.claude/skills/security-best-practices.md
+@.claude/skills/devops-deploy-checklist.md
 @.claude/skills/ai-llm-integration.md
 @.claude/skills/api-route-patterns.md
+@.claude/skills/database-migration-pattern.md
 @.claude/skills/auth-complete-flow.md
 @.claude/skills/billing-stripe-integration.md
-@.claude/skills/general-best-practices.md
-@.claude/skills/database-migration-pattern.md
-@.claude/skills/devops-deploy-checklist.md
-@.claude/skills/security-best-practices.md
-@.claude/skills/ui-component-patterns.md
+@.claude/skills/performance.md
