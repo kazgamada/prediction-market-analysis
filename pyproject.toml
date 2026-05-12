@@ -1,12 +1,13 @@
 [project]
 name = "polymarket-copytrader"
 version = "0.0.0"
-description = "Polymarket smart-money copy-trading bot"
+description = "Polymarket smart-money copy-trading bot (Phase 0 rebuild)"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 dependencies = [
     "web3>=7.0",
+    "eth-utils>=4.0",
     "sqlalchemy>=2.0",
     "alembic>=1.13",
     "psycopg[binary]>=3.2",
@@ -20,17 +21,19 @@ dependencies = [
     "click>=8.1",
     "rich>=13.7",
     "streamlit>=1.36",
+    "aiohttp>=3.10",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "pytest-mock>=3.12",
     "ruff>=0.5",
 ]
 
 [project.scripts]
-copytrader = "copytrader.cli.main:main"
+copytrader = "copytrader.cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -43,6 +46,12 @@ packages = ["src/copytrader"]
 line-length = 100
 target-version = "py312"
 
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+ignore = ["E501"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]

@@ -13,7 +13,7 @@ services:
       test: ["CMD-SHELL", "pg_isready -U copytrader"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   web:
     build: .
@@ -23,16 +23,12 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg://copytrader:copytrader@postgres:5432/copytrader
-      STREAMLIT_SERVER_PORT: "8501"
-      STREAMLIT_SERVER_ADDRESS: "0.0.0.0"
-      STREAMLIT_SERVER_HEADLESS: "true"
-      STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
     ports:
       - "8501:8501"
-    command: >
-      sh -c "alembic upgrade head && streamlit run src/copytrader/web/app.py"
+      - "8080:8080"
+    command: python -m copytrader.runtime.web_main
 
-  monitor:
+  indexer:
     build: .
     depends_on:
       postgres:
@@ -40,8 +36,17 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg://copytrader:copytrader@postgres:5432/copytrader
-    command: >
-      sh -c "alembic upgrade head && copytrader monitor"
+    command: python -m copytrader.runtime.indexer_main
+
+  worker:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://copytrader:copytrader@postgres:5432/copytrader
+    command: python -m copytrader.runtime.worker_main
 
 volumes:
   pgdata:

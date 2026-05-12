@@ -1,4 +1,4 @@
-.PHONY: install test lint fmt up down migrate backfill rank replay monitor paper
+.PHONY: install test lint fmt up down migrate web indexer worker
 
 install:
 	pip install -e ".[dev]"
@@ -13,8 +13,7 @@ fmt:
 	ruff check --fix src tests
 
 up:
-	docker compose up -d postgres
-	@echo "postgres up; run \`make migrate\` next"
+	docker compose up -d
 
 down:
 	docker compose down
@@ -22,17 +21,11 @@ down:
 migrate:
 	alembic upgrade head
 
-backfill:
-	copytrader backfill
+web:
+	python -m copytrader.runtime.web_main
 
-rank:
-	copytrader rank --window 30 --watchlist-top 10
+indexer:
+	python -m copytrader.runtime.indexer_main
 
-replay:
-	copytrader replay --window 30 --delays 30,60,120
-
-monitor:
-	copytrader monitor
-
-paper:
-	copytrader paper --copy-usd 5
+worker:
+	python -m copytrader.runtime.worker_main

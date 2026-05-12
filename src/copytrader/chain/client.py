@@ -1,126 +1,214 @@
-"""Polygon RPC client wrapper."""
+"""HTTP JSON-RPC client built around httpx.
 
+Design rules (preventing T1, T3, T4, T8):
+  * Per-chunk failures are returned as `ChunkResult(status=FAILED)`, never raised
+    past the iterator boundary. The upstream backfill decides whether to retry
+    inline or push to the dead-letter table.
+  * `redact_url` is applied to every URL appearing in errors.
+  * JSON-RPC error bodies are preserved verbatim on the exception.
+  * Block ranges are split into chunks and chunks are executed in parallel,
+    capped by a semaphore.
+"""
 from __future__ import annotations
 
-import concurrent.futures
+import asyncio
 import logging
-from collections.abc import Generator
-from typing import Optional
+import time
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
+from typing import Any
 
-from web3 import Web3
-from web3.middleware import ExtraDataToPOAMiddleware
+import httpx
 
-from copytrader.chain.contracts import (
-    EXCHANGES,
-    ORDER_FILLED_ABI,
-    ORDER_FILLED_TOPIC,
+from copytrader.chain.errors import (
+    RpcAuthError,
+    RpcChunkTooLargeError,
+    RpcError,
+    RpcRateLimitError,
+    redact_url,
 )
-from copytrader.chain.errors import wrap_rpc_errors
-from copytrader.config import get_settings
 
 log = logging.getLogger(__name__)
 
 
-class PolygonClient:
-    def __init__(self, rpc_url: Optional[str] = None):
-        self.rpc_url = rpc_url or get_settings().polygon_rpc_http
-        if not self.rpc_url:
-            raise RuntimeError("POLYGON_RPC_HTTP is required")
-        self.w3 = Web3(Web3.HTTPProvider(self.rpc_url, request_kwargs={"timeout": 15}))
-        self.w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
-        self._contracts = {
-            name: self.w3.eth.contract(
-                address=Web3.to_checksum_address(addr),
-                abi=[ORDER_FILLED_ABI],
-            )
-            for name, addr in EXCHANGES.items()
-        }
+@dataclass
+class ChunkResult:
+    from_block: int
+    to_block: int
+    status: str  # 'OK' | 'EMPTY' | 'FAILED'
+    logs: list[dict] = field(default_factory=list)
+    error: str | None = None
+    error_body: Any = None
 
-    @wrap_rpc_errors
-    def block_number(self) -> int:
-        return self.w3.eth.block_number
 
-    @wrap_rpc_errors
-    def block_timestamp(self, block_number: int) -> int:
-        return self.w3.eth.get_block(block_number)["timestamp"]
+def _split(from_block: int, to_block: int, size: int) -> list[tuple[int, int]]:
+    out: list[tuple[int, int]] = []
+    cur = from_block
+    while cur <= to_block:
+        end = min(cur + size - 1, to_block)
+        out.append((cur, end))
+        cur = end + 1
+    return out
 
-    @wrap_rpc_errors
-    def get_order_filled_logs(
+
+def _classify(status: int, payload: Any, url: str) -> RpcError:
+    body = payload
+    code = None
+    if isinstance(payload, dict) and "error" in payload:
+        code = payload["error"].get("code")
+    if status in (401, 403):
+        return RpcAuthError("RPC auth failed", url=url, status=status, code=code, body=body)
+    if status == 429:
+        return RpcRateLimitError("RPC rate-limited", url=url, status=status, code=code, body=body)
+    msg = "RPC error"
+    if isinstance(payload, dict) and "error" in payload:
+        em = (payload["error"] or {}).get("message", "")
+        if any(s in em.lower() for s in ("more than", "exceeds", "range", "limit exceeded")):
+            return RpcChunkTooLargeError(em, url=url, status=status, code=code, body=body)
+        msg = em or msg
+    return RpcError(msg, url=url, status=status, code=code, body=body)
+
+
+class JsonRpcClient:
+    def __init__(
+        self,
+        http_url: str,
+        *,
+        max_parallel: int = 4,
+        max_retries: int = 3,
+        timeout_s: float = 30.0,
+    ):
+        self.http_url = http_url
+        self.max_parallel = max_parallel
+        self.max_retries = max_retries
+        self._client = httpx.AsyncClient(timeout=timeout_s)
+        self._sem = asyncio.Semaphore(max_parallel)
+        self._id = 0
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+    def _next_id(self) -> int:
+        self._id += 1
+        return self._id
+
+    async def _call(self, method: str, params: list[Any]) -> Any:
+        """Single JSON-RPC call with retries on 429/5xx."""
+        payload = {"jsonrpc": "2.0", "id": self._next_id(), "method": method, "params": params}
+        last: RpcError | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                resp = await self._client.post(self.http_url, json=payload)
+            except httpx.HTTPError as e:
+                last = RpcError(
+                    f"HTTP transport: {type(e).__name__}: {e}", url=self.http_url
+                )
+                if attempt >= self.max_retries:
+                    raise last from e
+                await asyncio.sleep(2 ** attempt)
+                continue
+            try:
+                data = resp.json()
+            except Exception:
+                data = {"raw": resp.text[:1000]}
+            if resp.status_code >= 400 or (isinstance(data, dict) and "error" in data):
+                err = _classify(resp.status_code, data, self.http_url)
+                if isinstance(err, RpcRateLimitError) and attempt < self.max_retries:
+                    await asyncio.sleep(2 ** attempt)
+                    last = err
+                    continue
+                raise err
+            return data.get("result")
+        # unreachable
+        if last:
+            raise last
+        raise RpcError("exhausted retries", url=self.http_url)
+
+    async def get_block_number(self) -> int:
+        result = await self._call("eth_blockNumber", [])
+        return int(result, 16)
+
+    async def get_block_timestamp(self, block_number: int) -> int:
+        result = await self._call(
+            "eth_getBlockByNumber", [hex(block_number), False]
+        )
+        if not result:
+            raise RpcError(f"block {block_number} not found", url=self.http_url)
+        return int(result["timestamp"], 16)
+
+    async def _logs_range(
         self,
         from_block: int,
         to_block: int,
-        exchange: str,
+        topics: list[str | None],
+        addresses: list[str],
     ) -> list[dict]:
-        addr = EXCHANGES[exchange]
-        return list(
-            self.w3.eth.get_logs(
-                {
-                    "address": Web3.to_checksum_address(addr),
-                    "topics": [ORDER_FILLED_TOPIC],
-                    "fromBlock": from_block,
-                    "toBlock": to_block,
-                }
-            )
+        params = [{
+            "fromBlock": hex(from_block),
+            "toBlock": hex(to_block),
+            "address": addresses,
+            "topics": topics,
+        }]
+        return await self._call("eth_getLogs", params) or []
+
+    async def iter_logs(
+        self,
+        *,
+        from_block: int,
+        to_block: int,
+        topics: list[str | None],
+        addresses: list[str],
+        chunk_size: int = 1000,
+    ) -> AsyncIterator[ChunkResult]:
+        """Yield one ChunkResult per chunk. Failures yielded as FAILED, never raised.
+
+        T1 prevention: a single chunk failure does not stop the iterator.
+        """
+        chunks = _split(from_block, to_block, chunk_size)
+        log.info(
+            "iter_logs: %d chunks across [%d, %d] (chunk_size=%d, parallel=%d)",
+            len(chunks), from_block, to_block, chunk_size, self.max_parallel,
         )
 
-    def decode_log(self, log: dict, exchange: str) -> dict:
-        contract = self._contracts[exchange]
-        decoded = contract.events.OrderFilled().process_log(log)
-        return dict(decoded["args"])
+        results_q: asyncio.Queue[ChunkResult] = asyncio.Queue()
 
-    def iter_logs(
-        self,
-        from_block: int,
-        to_block: int,
-        exchange: str,
-        chunk_size: int = 2000,
-        max_workers: int = 10,
-    ) -> Generator[tuple[list[dict], int, int], None, None]:
-        """Yield (logs, start, end) per chunk. **個別 chunk の失敗は呑む**:
-
-        - "too large" は半分に分割して再試行
-        - その他の例外は logging.warning だけして空 list を yield
-        - これで 1 チャンクの RPC ハング/エラーで backfill 全体が止まらない
-        """
-        ranges: list[tuple[int, int]] = []
-        cur = from_block
-        while cur <= to_block:
-            end = min(cur + chunk_size - 1, to_block)
-            ranges.append((cur, end))
-            cur = end + 1
-
-        def _fetch(start: int, end: int) -> tuple[list[dict], int, int]:
-            try:
-                return self.get_order_filled_logs(start, end, exchange), start, end
-            except Exception as e:
-                msg = str(e).lower()
-                if "too large" in msg and end > start:
-                    mid = (start + end) // 2
-                    a, _, _ = _fetch(start, mid)
-                    b, _, _ = _fetch(mid + 1, end)
-                    return a + b, start, end
-                log.warning(
-                    "iter_logs: chunk failed exchange=%s start=%s end=%s err=%s",
-                    exchange, start, end, str(e)[:200],
-                )
-                # 失敗チャンクは空として継続。次の catchup iteration で再取得される。
-                return [], start, end
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
-            for batch_idx in range(0, len(ranges), max_workers):
-                batch = ranges[batch_idx : batch_idx + max_workers]
-                futs = {ex.submit(_fetch, s, e): (s, e) for s, e in batch}
-                results: dict[tuple[int, int], list[dict]] = {}
-                for fut in concurrent.futures.as_completed(futs):
-                    try:
-                        logs, s, e = fut.result()
-                        results[(s, e)] = logs
-                    except Exception as e:
-                        s, ee = futs[fut]
-                        log.warning(
-                            "iter_logs: future raised exchange=%s start=%s end=%s err=%s",
-                            exchange, s, ee, str(e)[:200],
+        async def worker(lo: int, hi: int) -> None:
+            async with self._sem:
+                started = time.time()
+                try:
+                    logs = await self._logs_range(lo, hi, topics, addresses)
+                    if logs:
+                        await results_q.put(
+                            ChunkResult(lo, hi, status="OK", logs=logs)
                         )
-                        results[(s, ee)] = []
-                for s, e in batch:
-                    yield results.get((s, e), []), s, e
+                    else:
+                        await results_q.put(ChunkResult(lo, hi, status="EMPTY"))
+                except RpcError as e:
+                    await results_q.put(
+                        ChunkResult(
+                            lo, hi,
+                            status="FAILED",
+                            error=str(e),
+                            error_body=e.body if isinstance(e.body, (dict, str)) else None,
+                        )
+                    )
+                except Exception as e:  # noqa: BLE001
+                    await results_q.put(
+                        ChunkResult(lo, hi, status="FAILED", error=f"{type(e).__name__}: {e}")
+                    )
+                finally:
+                    elapsed = time.time() - started
+                    if elapsed > 5:
+                        log.warning(
+                            "slow chunk [%d, %d]: %.1fs (url=%s)",
+                            lo, hi, elapsed, redact_url(self.http_url),
+                        )
+
+        tasks = [asyncio.create_task(worker(lo, hi)) for lo, hi in chunks]
+        try:
+            for _ in chunks:
+                yield await results_q.get()
+        finally:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
