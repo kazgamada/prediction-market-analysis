@@ -3,7 +3,7 @@ from __future__ import annotations
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool, text
+from sqlalchemy import engine_from_config, pool
 
 from copytrader.config import settings
 from copytrader.db.engine import normalize_db_url
@@ -38,19 +38,18 @@ def run_migrations_online() -> None:
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
+    # The advisory lock is acquired by copytrader.db.engine.run_migrations()
+    # *before* invoking alembic, so the lock and the migration share a single
+    # transaction lifetime that alembic owns. Keeping env.py itself simple
+    # avoids T12 reappearing via nested-transaction rollback.
     with connectable.connect() as connection:
-        # Advisory lock prevents races when multiple processes boot at once (T12 prevention).
-        connection.execute(text("SELECT pg_advisory_lock(8675309)"))
-        try:
-            context.configure(
-                connection=connection,
-                target_metadata=target_metadata,
-                compare_type=True,
-            )
-            with context.begin_transaction():
-                context.run_migrations()
-        finally:
-            connection.execute(text("SELECT pg_advisory_unlock(8675309)"))
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            compare_type=True,
+        )
+        with context.begin_transaction():
+            context.run_migrations()
 
 
 if context.is_offline_mode():

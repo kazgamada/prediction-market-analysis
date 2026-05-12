@@ -76,15 +76,29 @@ def ping() -> bool:
 def run_migrations() -> None:
     """Run alembic upgrade head with a postgres advisory lock.
 
-    Called from each runtime process at boot. The lock prevents multiple
-    processes from migrating concurrently (T12 prevention).
+    Called from each runtime process at boot. The lock prevents races when
+    multiple processes boot simultaneously (T12 prevention). Held on a
+    separate connection so it doesn't interfere with alembic's own
+    transaction lifetime.
     """
     from alembic.config import Config
 
     from alembic import command
 
+    url = normalize_db_url(settings.database_url)
     cfg = Config("alembic.ini")
-    cfg.set_main_option("sqlalchemy.url", normalize_db_url(settings.database_url))
-    log.info("alembic upgrade head: starting")
-    command.upgrade(cfg, "head")
-    log.info("alembic upgrade head: ok")
+    cfg.set_main_option("sqlalchemy.url", url)
+
+    # Use a dedicated short-lived engine so we don't hold a pool slot.
+    lock_engine = create_engine(url, poolclass=__import__("sqlalchemy.pool", fromlist=["NullPool"]).NullPool)
+    with lock_engine.connect() as lock_conn:
+        lock_conn = lock_conn.execution_options(isolation_level="AUTOCOMMIT")
+        log.info("alembic upgrade head: acquiring advisory lock")
+        lock_conn.execute(text("SELECT pg_advisory_lock(8675309)"))
+        try:
+            log.info("alembic upgrade head: starting")
+            command.upgrade(cfg, "head")
+            log.info("alembic upgrade head: ok")
+        finally:
+            lock_conn.execute(text("SELECT pg_advisory_unlock(8675309)"))
+    lock_engine.dispose()
