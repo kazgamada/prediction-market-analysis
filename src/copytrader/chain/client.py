@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import logging
 from collections.abc import Generator
 from typing import Optional
 
@@ -17,13 +18,15 @@ from copytrader.chain.contracts import (
 from copytrader.chain.errors import wrap_rpc_errors
 from copytrader.config import get_settings
 
+log = logging.getLogger(__name__)
+
 
 class PolygonClient:
     def __init__(self, rpc_url: Optional[str] = None):
         self.rpc_url = rpc_url or get_settings().polygon_rpc_http
         if not self.rpc_url:
             raise RuntimeError("POLYGON_RPC_HTTP is required")
-        self.w3 = Web3(Web3.HTTPProvider(self.rpc_url, request_kwargs={"timeout": 30}))
+        self.w3 = Web3(Web3.HTTPProvider(self.rpc_url, request_kwargs={"timeout": 15}))
         self.w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
         self._contracts = {
             name: self.w3.eth.contract(
@@ -73,6 +76,12 @@ class PolygonClient:
         chunk_size: int = 2000,
         max_workers: int = 10,
     ) -> Generator[tuple[list[dict], int, int], None, None]:
+        """Yield (logs, start, end) per chunk. **個別 chunk の失敗は呑む**:
+
+        - "too large" は半分に分割して再試行
+        - その他の例外は logging.warning だけして空 list を yield
+        - これで 1 チャンクの RPC ハング/エラーで backfill 全体が止まらない
+        """
         ranges: list[tuple[int, int]] = []
         cur = from_block
         while cur <= to_block:
@@ -84,12 +93,18 @@ class PolygonClient:
             try:
                 return self.get_order_filled_logs(start, end, exchange), start, end
             except Exception as e:
-                if "too large" in str(e).lower() and end > start:
+                msg = str(e).lower()
+                if "too large" in msg and end > start:
                     mid = (start + end) // 2
                     a, _, _ = _fetch(start, mid)
                     b, _, _ = _fetch(mid + 1, end)
                     return a + b, start, end
-                raise
+                log.warning(
+                    "iter_logs: chunk failed exchange=%s start=%s end=%s err=%s",
+                    exchange, start, end, str(e)[:200],
+                )
+                # 失敗チャンクは空として継続。次の catchup iteration で再取得される。
+                return [], start, end
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
             for batch_idx in range(0, len(ranges), max_workers):
@@ -97,7 +112,15 @@ class PolygonClient:
                 futs = {ex.submit(_fetch, s, e): (s, e) for s, e in batch}
                 results: dict[tuple[int, int], list[dict]] = {}
                 for fut in concurrent.futures.as_completed(futs):
-                    logs, s, e = fut.result()
-                    results[(s, e)] = logs
+                    try:
+                        logs, s, e = fut.result()
+                        results[(s, e)] = logs
+                    except Exception as e:
+                        s, ee = futs[fut]
+                        log.warning(
+                            "iter_logs: future raised exchange=%s start=%s end=%s err=%s",
+                            exchange, s, ee, str(e)[:200],
+                        )
+                        results[(s, ee)] = []
                 for s, e in batch:
-                    yield results[(s, e)], s, e
+                    yield results.get((s, e), []), s, e
