@@ -23,11 +23,43 @@ jobs:
       - name: Setup flyctl
         uses: superfly/flyctl-actions/setup-flyctl@master
 
+      # Show current state for forensic visibility.
+      - name: Show app status before deploy
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          flyctl status -a prediction-market-analysis || true
+          flyctl machine list -a prediction-market-analysis || true
+          flyctl scale show -a prediction-market-analysis || true
+
+      # Ensure every process group has at least one machine. The old app had
+      # only `web` + `monitor`; new fly.toml has `web` + `indexer` + `worker`.
+      # Without this, deploy hangs waiting on machines for the new groups.
+      - name: Scale process groups
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          flyctl scale count web=1 indexer=1 worker=1 \
+            -a prediction-market-analysis --yes \
+          || echo "scale-count returned non-zero (may be fine if app doesn't exist yet)"
+
       - name: Deploy
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: |
+          # `immediate` avoids rolling-update timeouts when old machines run a
+          # different process layout. After a successful first deploy we can
+          # switch this back to `rolling`.
           flyctl deploy --remote-only \
             --build-arg GIT_SHA=${GIT_SHA} \
             --build-arg BUILD_TIME=${BUILD_TIME} \
-            --strategy=rolling
+            --strategy=immediate \
+            --wait-timeout=300
+
+      - name: Show app status after deploy
+        if: always()
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          flyctl status -a prediction-market-analysis || true
+          flyctl machine list -a prediction-market-analysis || true

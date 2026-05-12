@@ -11,7 +11,8 @@ ENV PYTHONUNBUFFERED=1 \
     BUILD_TIME=${BUILD_TIME}
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates \
+ && apt-get install -y --no-install-recommends \
+      curl ca-certificates build-essential gcc \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
