@@ -8,6 +8,25 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: copytrader_test
+          POSTGRES_USER: copytrader
+          POSTGRES_PASSWORD: copytrader
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U copytrader"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+psycopg://copytrader:copytrader@localhost:5432/copytrader_test
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -15,4 +34,6 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
       - run: ruff check src tests
+      - name: alembic migrate
+        run: alembic upgrade head
       - run: pytest -q

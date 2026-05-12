@@ -1,8 +1,3 @@
-# fly.toml app configuration file generated for prediction-market-analysis on 2026-05-08T03:29:42Z
-#
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
-#
-
 app = 'prediction-market-analysis'
 primary_region = 'nrt'
 
@@ -16,14 +11,13 @@ primary_region = 'nrt'
   STREAMLIT_SERVER_PORT = '8501'
 
 [processes]
-  monitor = "sh -c 'alembic upgrade head && copytrader monitor'"
-  web = "sh -c 'alembic upgrade head && streamlit run src/copytrader/web/app.py'"
+  web     = "python -m copytrader.runtime.web_main"
+  indexer = "python -m copytrader.runtime.indexer_main"
+  worker  = "python -m copytrader.runtime.worker_main"
 
 [http_service]
   internal_port = 8501
   force_https = true
-  # 無人時にマシンを停止すると catchup スレッドや手動 backfill が殺されるので、
-  # 最低 1 台は常時起動させ続ける。手動 backfill / live 取り込みが止まらない前提条件。
   auto_stop_machines = 'off'
   auto_start_machines = true
   min_machines_running = 1
@@ -34,6 +28,15 @@ primary_region = 'nrt'
     hard_limit = 50
     soft_limit = 25
 
+[[services]]
+  protocol = "tcp"
+  internal_port = 8080
+  processes = ["web"]
+
+  [[services.ports]]
+    port = 8080
+    handlers = ["http"]
+
 [[vm]]
   size = 'shared-cpu-1x'
   memory = '1gb'
@@ -42,9 +45,9 @@ primary_region = 'nrt'
 [[vm]]
   size = 'shared-cpu-1x'
   memory = '512mb'
-  processes = ['monitor']
+  processes = ['indexer']
 
-# Note: alembic migrations run at machine boot via the [processes] commands
-# (web / monitor / paper / live) so the deploy completes even before Postgres
-# is attached. Once you `fly postgres attach`, the next machine restart picks
-# up DATABASE_URL and the migration runs cleanly.
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '512mb'
+  processes = ['worker']

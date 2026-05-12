@@ -1,23 +1,28 @@
+from __future__ import annotations
+
 from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from copytrader.config import get_settings
-from copytrader.models import Base
+from copytrader.config import settings
+from copytrader.db.engine import normalize_db_url
+from copytrader.db.models import Base
 
 config = context.config
+
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+config.set_main_option("sqlalchemy.url", normalize_db_url(settings.database_url))
 
 target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
+    url = config.get_main_option("sqlalchemy.url")
     context.configure(
-        url=config.get_main_option("sqlalchemy.url"),
+        url=url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -33,6 +38,10 @@ def run_migrations_online() -> None:
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
+    # The advisory lock is acquired by copytrader.db.engine.run_migrations()
+    # *before* invoking alembic, so the lock and the migration share a single
+    # transaction lifetime that alembic owns. Keeping env.py itself simple
+    # avoids T12 reappearing via nested-transaction rollback.
     with connectable.connect() as connection:
         context.configure(
             connection=connection,

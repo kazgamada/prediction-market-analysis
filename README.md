@@ -1,161 +1,68 @@
 # polymarket-copytrader
 
 Polymarket の高勝率ウォレットを発見し、その約定を遅延付きで模倣するコピートレードボット。
+Phase 0 — オフラインの edge 検証 — に絞った再構築版。
 
-CLI + Streamlit 管理 UI 同梱。Phase 0（オフラインの edge 検証）から Phase 4（微小ライブ）まで一貫したワークフローで進められる。
+過去の実装で繰り返し発生した 22 件のトラブル（`docs/requirements/REBUILD.md` §1.2）を構造的に潰した上で、**ブラウザだけで運用できる** ことを設計目標にしている。
 
-## ステータス
+## 設計
 
-**Phase 0 — 戦略の edge 検証**
+- **3 プロセス分離**: `web` (Streamlit) / `indexer` (Polygon RPC backfill + WS) / `worker` (job queue)
+- **状態は Postgres に一元化**: cursors / jobs / job_logs / rpc_dead_letters / settings
+- **失敗の粒度を分ける**: RPC chunk 単位の失敗は dead-letter に逃がし、プロセス全体は止めない
+- **長時間ジョブは worker 側**: Streamlit にはボタン 1 つでジョブを enqueue させるだけ
 
-過去 90 日の OrderFilled イベントを index し、上位ウォレットを 30〜60 秒遅延で模倣した場合に
-プラス期待値が残るかをバックテストで確認する段階。ここで edge が確認できなければ撤退する。
+詳細は:
+- `docs/requirements/REBUILD.md` — 要件定義
+- `docs/plans/IMPLEMENTATION_PLAN.md` — 実装計画
+- `docs/ops/{deploy,troubleshoot,disaster-recovery}.md` — 運用手順
 
-## ロードマップ
-
-| Phase | 内容 | 期間 | 資金 |
-|---|---|---|---|
-| 0 | Replay backtest で edge 検証 | 1〜2 週 | $0 |
-| 1 | ウォレットランキング MVP | 1〜2 週 | $0 |
-| 2 | ライブ監視（read-only） | 1 週 | $0〜$5 |
-| 3 | ペーパートレード | 2 週 | $0 |
-| 4 | 微小ライブ（上限 $50） | 2 週 | $50〜$100 |
-| 5 | 段階的スケール | — | $300+ |
-
-各フェーズで明示した成功条件をクリアしないと次に進まない。
-
-## アーキテクチャ
-
-```
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│  Polygon RPC │ ←── │   indexer    │ ──→ │  Postgres    │
-│  (HTTP/WS)   │     │ (backfill +  │     │  (trade,     │
-│              │     │   stream)    │     │   wallet,    │
-└──────────────┘     └──────────────┘     │   signal,    │
-                                          │   order, …)  │
-┌──────────────┐     ┌──────────────┐     │              │
-│  Polymarket  │ ←── │   executor   │ ←── │              │
-│  CLOB API    │     │ (paper/live) │     │              │
-└──────────────┘     └──────────────┘     └──────────────┘
-                            ↑                    ↑
-                            │                    │
-                     ┌──────┴──────┐      ┌──────┴──────┐
-                     │   monitor   │      │   web UI    │
-                     │ (watchlist  │      │ (Streamlit) │
-                     │  detector)  │      │             │
-                     └─────────────┘      └─────────────┘
-```
-
-## クイックスタート（ローカル）
+## ローカル開発
 
 ```sh
-# 1. 依存をインストール
-uv sync --extra dev
+# 依存と venv
+python3.12 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
 
-# 2. .env を作成
-cp .env.example .env
-# 必須: POLYGON_RPC_HTTP, POLYGON_RPC_WS（Alchemy / QuickNode 等の URL）
-# Phase 4 で必要: POLYMARKET_API_*, WALLET_PRIVATE_KEY
+# 3 プロセスを compose で起動
+cp .env.example .env  # POLYGON_RPC_HTTP / WS / WEB_PASSWORD を埋める
+docker compose up -d
 
-# 3. Postgres を起動 + マイグレーション
-docker compose up -d postgres
-alembic upgrade head
-
-# 4. 過去データを取得（数時間）
-copytrader backfill
-copytrader sync-markets
-
-# 5. Phase 0: ランキング + リプレイ
-copytrader rank --window 30 --watchlist-top 10
-copytrader replay --window 30 --delays 30,60,120
+# UI
+open http://localhost:8501       # Streamlit
+curl http://localhost:8080/readyz  # health
 ```
 
-### 管理 UI（Streamlit）
+3 プロセスのログを個別に見るには `docker compose logs -f web|indexer|worker`。
+
+## Phase 0 を 1 回まわす
+
+UI で:
+1. ブラウザで `http://localhost:8501` を開く
+2. `WEB_PASSWORD` を入力
+3. サイドバーから `Phase0` ページ → 「Run Phase 0」
+4. `Jobs` ページで進捗を見る（live log が 2 秒間隔で流れる）
+5. 終了したら同ページで result JSON を確認
+
+## 本番デプロイ（Fly.io）
+
+`docs/ops/deploy.md` 参照。main へ push すれば GitHub Actions が `flyctl deploy` を走らせる。
+
+## テスト
 
 ```sh
-streamlit run src/copytrader/web/app.py
-# → http://localhost:8501
+# Postgres を立ち上げてから
+DATABASE_URL=postgresql+psycopg://copytrader:copytrader@localhost:5432/copytrader_test \
+  alembic upgrade head
+DATABASE_URL=postgresql+psycopg://copytrader:copytrader@localhost:5432/copytrader_test \
+  pytest -q
 ```
 
-UI からできる操作：
-- **Status**: 最新の signal / position / order / risk_event を表示
-- **Watchlist**: ウォレットアドレスを入力して追加・削除
-- **Rank**: window / 最低取引数 / 最低 volume を入力 → ランキング実行 → 上位 N を watchlist 化
-- **Replay**: delay / コピーサイズ / slippage を入力 → wallet を選択して replay
-- **Inspect**: 任意のアドレスを入力 → トークン別 PnL を表示
-- **Actions**: backfill / sync-markets / reconcile / poll をボタン一発で
+unit のみなら `pytest tests/unit -q` で OK（DB 不要）。
 
-`WEB_PASSWORD` を環境変数で設定すると簡易パスワードゲートが有効になる。
+## 撤退判定（Phase 0）
 
-## CLI コマンド
-
-```sh
-# データ取得
-copytrader backfill [--from-block N] [--to-block M] [--chunk-size 1000]
-copytrader sync-markets
-
-# 分析
-copytrader rank --window 30 --min-trades 30 --min-volume 5000 --watchlist-top 10
-copytrader replay --window 30 --delays 30,60,120 --copy-usd 50
-copytrader inspect <address> --window 30
-
-# Watchlist
-copytrader watch add <address> [--note "memo"]
-copytrader watch list
-copytrader watch remove <address>
-
-# 監視 / 取引
-copytrader monitor                                   # read-only WS subscription
-copytrader paper --copy-usd 5                        # ペーパートレード
-copytrader live  --copy-usd 5 --i-understand-the-risk  # 実発注（caps 厳しめ）
-
-# 運用
-copytrader status                                    # 直近の signal / position / risk
-copytrader reconcile [--no-trip]                     # オンチェーン残高と DB の照合
-copytrader poll                                      # CLOB の order status を反映
-copytrader balance                                   # 自ウォレットの USDC / アローワンス
-```
-
-## Fly.io デプロイ
-
-事前に [flyctl](https://fly.io/docs/hands-on/install-flyctl/) をインストールし `fly auth login` 済みであること。
-
-```sh
-# .env に POLYGON_RPC_HTTP / POLYGON_RPC_WS を入れた状態で：
-./scripts/deploy-fly.sh
-```
-
-スクリプトがやること:
-1. `fly apps create polymarket-copytrader`
-2. `fly pg create polymarket-copytrader-db` + `fly pg attach`
-3. `fly secrets set` で env を全部送り込む（.env から読み取り）
-4. `fly deploy` — `web`（Streamlit）と `monitor`（WS subscriber）を同時起動
-
-完了後:
-- `fly logs` でログ
-- `fly open` で UI を開く
-- `fly ssh console -C 'copytrader rank --watchlist-top 10'` のように任意の CLI を実行
-- `paper` / `live` を起動するときは `fly.toml` の processes セクションでコメントを外して `fly deploy`
-
-## リスク制御
-
-Live モードは下記が **すべて** 入っている：
-
-| 制御 | デフォルト |
-|---|---|
-| `max_order_usd` | $5 |
-| `max_position_usd_per_token` | $20 |
-| `max_total_exposure_usd` | $50 |
-| `max_daily_loss_usd` | $20 |
-| `max_concurrent_orders` | 5 |
-| 起動ガード | `--i-understand-the-risk` フラグ必須 |
-| Killswitch | 日次損失到達 / オンチェーン残高乖離 / 連続発注エラー |
-| Reconciler | 5 分おきに CTF 残高と DB の position を突合 |
-| Order poller | 30 秒おきに CLOB の order status を実値に更新 |
-
-## 履歴
-
-このリポジトリは元々 `prediction-market-analysis`（Polymarket / Kalshi のオフラインアナリシス集）として存在していた。git 履歴に残っているため、必要があれば旧 indexer / 分析コードは `git show 0accd98:src/...` で取り出せる。
+`docs/requirements/REBUILD.md` §12 Q1 で事前に決めた数値基準を満たさなければ撤退。Phase 1 以降には進まない。
 
 ## License
 
