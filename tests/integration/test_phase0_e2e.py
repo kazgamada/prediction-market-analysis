@@ -131,8 +131,8 @@ def test_phase0_handler_end_to_end(fresh_db, monkeypatch) -> None:
     })
     with claim("test-worker") as job:
         assert job is not None
-        from copytrader.jobs.queue import JobHandle
         from copytrader.jobs.handlers import HANDLERS
+        from copytrader.jobs.queue import JobHandle
         HANDLERS["phase0"](JobHandle(job))
 
     from copytrader.jobs.queue import get_job
