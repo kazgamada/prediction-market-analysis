@@ -105,9 +105,17 @@ def upgrade() -> None:
     )
     op.create_index("risk_events_ts_idx", "risk_events", [sa.text("ts DESC")])
 
-    # job_status enum
+    # job_status enum (IF NOT EXISTS-style guard so re-runs after a partial
+    # crash, or coexistence with a stale type from a prior repo incarnation,
+    # don't fail. Postgres has no "CREATE TYPE IF NOT EXISTS"; use DO block.)
     op.execute(
-        "CREATE TYPE job_status AS ENUM ('PENDING','RUNNING','SUCCEEDED','FAILED','CANCELLED')"
+        """
+        DO $$ BEGIN
+          CREATE TYPE job_status AS ENUM ('PENDING','RUNNING','SUCCEEDED','FAILED','CANCELLED');
+        EXCEPTION WHEN duplicate_object THEN
+          NULL;
+        END $$;
+        """
     )
 
     op.create_table(
