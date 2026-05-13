@@ -56,6 +56,28 @@ jobs:
             --strategy=immediate \
             --wait-timeout=300
 
+      # Non-HTTP process groups (indexer, worker) can be left in `stopped`
+      # state by Fly's default policy when they exit between deploys. Force-
+      # start anything still stopped after the deploy so background workers
+      # actually run.
+      - name: Start any stopped machines
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          set -eu
+          flyctl machine list -a prediction-market-analysis --json \
+            > /tmp/machines.json
+          stopped_ids=$(jq -r '.[] | select(.state != "started") | .id' /tmp/machines.json)
+          if [ -z "$stopped_ids" ]; then
+            echo "all machines already started"
+            exit 0
+          fi
+          for id in $stopped_ids; do
+            grp=$(jq -r --arg id "$id" '.[] | select(.id==$id) | .config.metadata.fly_process_group // "?"' /tmp/machines.json)
+            echo "starting machine $id (process_group=$grp)"
+            flyctl machine start "$id" -a prediction-market-analysis || true
+          done
+
       - name: Show app status after deploy
         if: always()
         env:
