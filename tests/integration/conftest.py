@@ -50,4 +50,11 @@ def fresh_db():  # noqa: ANN201
             "wallet_stats_daily, watchlist, signals, risk_events, "
             "rpc_dead_letters, settings RESTART IDENTITY CASCADE"
         ))
+        # Drop any legacy-schema artifacts from prior tests to avoid
+        # cross-test pollution. (Tests that need a fresh legacy schema
+        # recreate it explicitly.)
+        for tbl in ("trade", "wallet", "market", "token_index",
+                    "ingest_cursor", "signal", '"order"', "position",
+                    "risk_event"):
+            c.execute(text(f"DROP TABLE IF EXISTS {tbl} CASCADE"))
     yield
