@@ -114,7 +114,23 @@ def claim(worker_id: str) -> Iterator[Job | None]:
 
 
 def _claim_one(s: Session, worker_id: str) -> Job | None:
-    """SELECT FOR UPDATE SKIP LOCKED a pending job and flip it to RUNNING."""
+    """SELECT FOR UPDATE SKIP LOCKED a pending job and flip it to RUNNING.
+
+    Before picking a new job, expire any RUNNING jobs whose lease has gone
+    stale (worker SIGKILL'd by Fly OOM, container restart, etc.). Without
+    this, jobs claimed by a now-dead worker sit at RUNNING forever and
+    block the operator's understanding of queue state.
+    """
+    s.execute(text(
+        "UPDATE jobs SET status='FAILED', "
+        "  error_text=COALESCE(error_text,'') || ' [lease expired: worker died]', "
+        "  finished_at=NOW() "
+        "WHERE status='RUNNING' "
+        "  AND started_at IS NOT NULL "
+        "  AND started_at < NOW() - INTERVAL '30 minutes'"
+    ))
+    s.flush()
+
     row = s.execute(
         text(
             "SELECT id FROM jobs WHERE status = 'PENDING' "

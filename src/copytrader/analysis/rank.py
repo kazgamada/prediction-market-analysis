@@ -1,10 +1,11 @@
 """Wallet ranking by realized PnL within the window."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 
-from copytrader.analysis.pnl import compute_wallet_pnl, load_trades
+from copytrader.analysis.pnl import stream_wallet_pnl
 
 
 @dataclass
@@ -22,9 +23,15 @@ def rank_wallets(
     min_trades: int = 30,
     min_volume_usdc: float = 5_000.0,
     top_n: int = 50,
+    progress_cb: Callable[[int], None] | None = None,
 ) -> list[RankedWallet]:
-    trades = load_trades(window_days)
-    wallets = compute_wallet_pnl(trades)
+    """Return top-N wallets by realized PnL within the window.
+
+    Streams trades via `stream_wallet_pnl` so memory stays bounded even on
+    1M+ row datasets — the previous load-all-into-Python path was OOMing
+    the 512MB worker.
+    """
+    wallets = stream_wallet_pnl(window_days, progress_cb=progress_cb)
     out: list[RankedWallet] = []
     for addr, wp in wallets.items():
         if wp.trades < min_trades:
