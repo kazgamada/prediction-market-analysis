@@ -75,7 +75,22 @@ async def amain() -> None:
         await health.run_forever()
         return
 
-    await asyncio.gather(health.run_forever(), run_worker())
+    # Seed and start the cron scheduler alongside the job runner.
+    try:
+        from copytrader.jobs.scheduler import run_scheduler, seed_default_schedule
+        seed_default_schedule()
+        scheduler_coro = run_scheduler(interval_seconds=60)
+    except Exception as e:  # noqa: BLE001
+        log.warning("scheduler init failed (%s); running without cron", e)
+
+        async def scheduler_coro() -> None:  # type: ignore[no-redef]
+            await asyncio.Event().wait()
+
+    await asyncio.gather(
+        health.run_forever(),
+        run_worker(),
+        scheduler_coro,
+    )
 
 
 def main() -> None:
