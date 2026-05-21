@@ -187,7 +187,7 @@ def downgrade() -> None:
     op.drop_table("job_logs")
     op.drop_index("jobs_status_idx", table_name="jobs")
     op.drop_table("jobs")
-    op.execute("DROP TYPE job_status")
+    op.execute("DROP TYPE IF EXISTS job_status CASCADE")
     op.drop_index("risk_events_ts_idx", table_name="risk_events")
     op.drop_table("risk_events")
     op.drop_index("signals_ts_idx", table_name="signals")

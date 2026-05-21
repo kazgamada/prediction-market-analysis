@@ -321,7 +321,7 @@ with r2[1], st.container(border=True):
     else:
         cdf["_s"] = cdf["ROI %"] * cdf["Sharpe"].clip(lower=0)
     top10 = cdf.sort_values("_s", ascending=False).head(10).reset_index(drop=True)
-    dates60 = pd.date_range(end=pd.Timestamp.utcnow(), periods=60, freq="D")
+    dates60 = pd.date_range(end=pd.Timestamp.now(tz="UTC"), periods=60, freq="D")
     palette = px.colors.qualitative.Bold + px.colors.qualitative.Set2
     eq = go.Figure()
     for i, row in top10.iterrows():

@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from copytrader.db.engine import get_session
 from copytrader.db.models import RpcDeadLetter
@@ -72,7 +72,7 @@ def count_unresolved() -> int:
     with get_session() as s:
         return int(
             s.execute(
-                select(__import__("sqlalchemy").func.count())
+                select(func.count())
                 .select_from(RpcDeadLetter)
                 .where(RpcDeadLetter.resolved_at.is_(None))
             ).scalar_one()

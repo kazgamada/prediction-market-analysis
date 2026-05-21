@@ -12,7 +12,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from copytrader.db.engine import get_session
-from copytrader.db.models import Job, Watchlist
+from copytrader.db.models import Job, JobLog, Watchlist
 from copytrader.web.auth import require_password
 from copytrader.web.format import fmt_ago, short_addr
 
@@ -59,6 +59,26 @@ def help_icon(html_text: str) -> str:
         'style="cursor:help;color:#2c7fb8;font-weight:bold;font-size:0.85rem">'
         'ⓘ</span>'
     )
+
+
+@st.cache_data(ttl=2)
+def _exec_job_logs(jid: int) -> tuple[dict | None, list[str]]:
+    try:
+        with get_session() as s:
+            j = s.get(Job, jid)
+            if not j:
+                return None, []
+            logs = s.execute(
+                select(JobLog).where(JobLog.job_id == jid)
+                .order_by(JobLog.ts).limit(300)
+            ).scalars().all()
+            return (
+                {"status": j.status, "progress": j.progress,
+                 "result": j.result, "error": j.error_text},
+                [f"[{lg.ts.strftime('%H:%M:%S')}] {lg.message}" for lg in logs],
+            )
+    except Exception as e:  # noqa: BLE001
+        return None, [str(e)]
 
 
 HELP = {
@@ -373,7 +393,6 @@ with r1[2], st.container(border=True):
         st.dataframe(jdata, use_container_width=True, hide_index=True, height=140)
 
         # Job live log (F17)
-        from copytrader.db.models import JobLog
         jc1, jc2 = st.columns([2, 1])
         selected_jid = jc1.number_input(
             "Job ID でログを表示",
@@ -383,25 +402,6 @@ with r1[2], st.container(border=True):
             label_visibility="collapsed",
         )
         auto_ref = jc2.checkbox("自動更新 (2s)", key="exec_auto_ref")
-
-        @st.cache_data(ttl=2)
-        def _exec_job_logs(jid: int) -> tuple[dict | None, list[str]]:
-            try:
-                with get_session() as s:
-                    j = s.get(Job, jid)
-                    if not j:
-                        return None, []
-                    logs = s.execute(
-                        select(JobLog).where(JobLog.job_id == jid)
-                        .order_by(JobLog.ts).limit(300)
-                    ).scalars().all()
-                    return (
-                        {"status": j.status, "progress": j.progress,
-                         "result": j.result, "error": j.error_text},
-                        [f"[{lg.ts.strftime('%H:%M:%S')}] {lg.message}" for lg in logs],
-                    )
-            except Exception as e:  # noqa: BLE001
-                return None, [str(e)]
 
         jmeta, jlogs = _exec_job_logs(int(selected_jid))
         if jmeta:

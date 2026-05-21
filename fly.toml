@@ -23,6 +23,13 @@ primary_region = 'nrt'
   min_machines_running = 1
   processes = ['web']
 
+  [[http_service.checks]]
+    grace_period = "30s"
+    interval = "15s"
+    method = "GET"
+    path = "/_stcore/health"
+    timeout = "10s"
+
   [http_service.concurrency]
     type = 'connections'
     hard_limit = 50

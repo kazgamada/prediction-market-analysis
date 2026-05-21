@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from copytrader.db.engine import get_session
@@ -27,7 +27,7 @@ def set_(key: str, value: Any) -> None:
         stmt = pg_insert(Setting).values(key=key, value=value)
         stmt = stmt.on_conflict_do_update(
             index_elements=[Setting.key],
-            set_={"value": stmt.excluded.value, "updated_at": stmt.excluded.updated_at},
+            set_={"value": stmt.excluded.value, "updated_at": func.now()},
         )
         s.execute(stmt)
 

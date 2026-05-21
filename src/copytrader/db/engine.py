@@ -5,6 +5,7 @@ import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import lru_cache
+from pathlib import Path
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
@@ -100,7 +101,8 @@ def run_migrations() -> None:
     from alembic import command
 
     url = normalize_db_url(settings.database_url)
-    cfg = Config("alembic.ini")
+    _repo_root = Path(__file__).parents[3]
+    cfg = Config(str(_repo_root / "alembic.ini"))
     cfg.set_main_option("sqlalchemy.url", url)
 
     lock_engine = create_engine(url, poolclass=NullPool)
@@ -113,7 +115,7 @@ def run_migrations() -> None:
             log.info("alembic upgrade head: starting")
             command.upgrade(cfg, "head")
             log.info("alembic upgrade head: ok")
-            _copy_legacy_data(lock_conn)
+            _copy_legacy_data(lock_conn, lock_engine)
         finally:
             lock_conn.execute(text("SELECT pg_advisory_unlock(8675309)"))
     lock_engine.dispose()
@@ -157,7 +159,7 @@ def _clear_stale_alembic_state(conn) -> None:
     conn.execute(text("DROP TYPE IF EXISTS job_status"))
 
 
-def _copy_legacy_data(conn) -> None:
+def _copy_legacy_data(conn, engine: Engine) -> None:
     """Carry rows from legacy `trade` → new `trades` with type conversion.
 
     Old columns were strings (`tx_hash VARCHAR(66)`, `side VARCHAR(4)`,
@@ -183,34 +185,37 @@ def _copy_legacy_data(conn) -> None:
         return
 
     log.info("carry-over: copying %d rows from legacy 'trade' -> 'trades'", legacy_n)
-    conn.execute(text("""
-        INSERT INTO trades (
-            tx_hash, log_index, block_number, ts, exchange, order_hash,
-            maker, taker, side,
-            maker_asset_id, taker_asset_id,
-            maker_amount_filled, taker_amount_filled,
-            token_id, price, size_shares, size_usdc
-        )
-        SELECT
-            decode(REPLACE(tx_hash, '0x', ''), 'hex'),
-            log_index,
-            block_number,
-            COALESCE(block_timestamp, NOW()),
-            COALESCE(exchange, 'ctf'),
-            decode(REPLACE(order_hash, '0x', ''), 'hex'),
-            decode(REPLACE(maker, '0x', ''), 'hex'),
-            decode(REPLACE(taker, '0x', ''), 'hex'),
-            CASE WHEN LOWER(side) = 'buy' THEN 0 ELSE 1 END,
-            COALESCE(maker_asset_id::numeric, 0),
-            COALESCE(taker_asset_id::numeric, 0),
-            maker_amount,
-            taker_amount,
-            COALESCE(token_id::numeric, 0),
-            price,
-            size,
-            notional_usd
-        FROM trade
-        ON CONFLICT (tx_hash, log_index) DO NOTHING
-    """))
-    final_n = conn.execute(text("SELECT count(*) FROM trades")).scalar() or 0
+    # Run the INSERT in its own transactional connection so a failure is fully
+    # rolled back (the autocommit conn used for the advisory lock cannot roll back).
+    with engine.begin() as txn:
+        txn.execute(text("""
+            INSERT INTO trades (
+                tx_hash, log_index, block_number, ts, exchange, order_hash,
+                maker, taker, side,
+                maker_asset_id, taker_asset_id,
+                maker_amount_filled, taker_amount_filled,
+                token_id, price, size_shares, size_usdc
+            )
+            SELECT
+                decode(REPLACE(tx_hash, '0x', ''), 'hex'),
+                log_index,
+                block_number,
+                COALESCE(block_timestamp, NOW()),
+                COALESCE(exchange, 'ctf'),
+                decode(REPLACE(order_hash, '0x', ''), 'hex'),
+                decode(REPLACE(maker, '0x', ''), 'hex'),
+                decode(REPLACE(taker, '0x', ''), 'hex'),
+                CASE WHEN LOWER(side) = 'buy' THEN 0 ELSE 1 END,
+                COALESCE(maker_asset_id::numeric, 0),
+                COALESCE(taker_asset_id::numeric, 0),
+                maker_amount,
+                taker_amount,
+                COALESCE(token_id::numeric, 0),
+                price,
+                size,
+                notional_usd
+            FROM trade
+            ON CONFLICT (tx_hash, log_index) DO NOTHING
+        """))
+        final_n = txn.execute(text("SELECT count(*) FROM trades")).scalar() or 0
     log.info("carry-over complete: %d rows now in 'trades'", final_n)

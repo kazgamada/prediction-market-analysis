@@ -41,7 +41,11 @@ async def _retry_one(client: JsonRpcClient, dl_id: int, request: dict) -> bool:
             bn = int(raw["blockNumber"], 16) if isinstance(raw["blockNumber"], str) else raw["blockNumber"]
             if bn not in ts_cache:
                 ts_cache[bn] = await client.get_block_timestamp(bn)
-            decoded.append(decode_order_filled(raw, ts_cache[bn]))
+            try:
+                decoded.append(decode_order_filled(raw, ts_cache[bn]))
+            except Exception as e:  # noqa: BLE001
+                log.warning("dl id=%d decode failed for log %s: %s; skipping", dl_id, raw.get("transactionHash"), e)
+                continue
             blocks[bn] = blocks.get(bn, 0) + 1
         if decoded:
             persist_trades(decoded)
