@@ -1,4 +1,4 @@
-"""Execute — Execution console + Watchlist + Jobs + Rollout phase on single viewport."""
+"""Execute — Execution + Watchlist + Jobs + Rollout with hover help."""
 from __future__ import annotations
 
 import re
@@ -37,22 +37,151 @@ hr { margin: 0.3rem 0 !important; }
 .stButton button { padding: 0.2rem 0.5rem !important; font-size: 0.78rem !important; }
 input, .stNumberInput input { font-size: 0.78rem !important; }
 .stTabs [data-baseweb="tab"] { padding: 0.2rem 0.5rem !important; font-size: 0.78rem !important; }
+.help-tip { position: relative; cursor: help; font-size: 0.85rem;
+  display: inline-block; margin-left: 0.2rem; opacity: 0.55;
+  color: #2c7fb8; font-weight: bold; }
+.help-tip:hover { opacity: 1; }
+.help-tip .help-popup { visibility: hidden; position: absolute; z-index: 9999;
+  width: 340px; background: #1f2933; color: #f7fafc;
+  padding: 10px 14px; border-radius: 6px;
+  font-size: 0.75rem; line-height: 1.55; font-weight: normal;
+  left: 0; top: 1.4rem; white-space: normal; text-align: left;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.35); pointer-events: none; }
+.help-tip:hover .help-popup { visibility: visible; }
+.help-tip .help-popup b { color: #ffd166; }
+.help-tip .help-popup hr { border: 0; border-top: 1px solid #4a5568; margin: 6px 0; }
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown("# Execute　<small style='font-size:0.7rem;color:#888;'>Phase B Micro — 18/28日 / $10 per trade</small>",
-            unsafe_allow_html=True)
+
+def help_icon(text: str) -> str:
+    return f'<span class="help-tip">ⓘ<span class="help-popup">{text}</span></span>'
+
+
+HELP = {
+    "page": (
+        "<b>このページの目的</b><hr>"
+        "「ロボットが今、何をしているか」を見て、必要なら介入する画面。"
+        "毎日 / 何かおかしいと感じたら開く。"
+        "<hr><b>主な確認順</b><br>"
+        "1. ステータスバー: 残高・PnL・kill switch が緑か<br>"
+        "2. リスク列: gauge と progress bar が許容内か<br>"
+        "3. ポジション / シグナル / fills: 異常な動きが無いか<br>"
+        "4. Rollout: 現在の phase と昇格 / 停止条件"
+    ),
+    "killswitch": (
+        "<b>Kill Switch</b><hr>"
+        "全自動発注を即停止するマスタースイッチ。"
+        "<hr><b>使い方</b><br>"
+        "・障害検知時、不在時、相場急変時の安全策<br>"
+        "・ON 中: 新規 signal が来ても発注されない<br>"
+        "・既存ポジションは維持される (清算は手動 order タブから)"
+        "<hr><b>解除</b><br>"
+        "原因を Ops で確認してから解除。"
+        "解除直後は溜まった signal が一気に発注されないか注意。"
+    ),
+    "risk": (
+        "<b>4 種のリスク監視</b><hr>"
+        "上: 今日の DD gauge / 下: 4 件の上限プログレス。"
+        "<hr><b>各 progress の意味</b><br>"
+        "・<b>exposure</b>: 全 market への総エクスポージャ / 上限 70%。超過で新規禁止<br>"
+        "・<b>単一 token</b>: 1 市場への偏り / 上限 25%。⚠ なら分散見直し<br>"
+        "・<b>trades</b>: 当日の取引件数 / 上限 100<br>"
+        "・<b>連敗</b>: 連続損失数 / 上限 5。3 連敗で size 自動半減"
+        "<hr><b>判断</b><br>"
+        "全部緑なら継続。1 件でも ⚠ なら停止条件タブで詳細確認。"
+    ),
+    "exec_tabs": (
+        "<b>3 タブで実行レイヤ全体を把握</b><hr>"
+        "・<b>ポジション</b>: 保有中のポジ一覧。PnL マイナスの長期保有は塩漬けリスク<br>"
+        "・<b>シグナル</b>: 受信した signal と処理状態。⏭が多い→リスク厳しすぎ、❌が多い→CLOB 接続不調<br>"
+        "・<b>fills</b>: 直近約定の latency / slippage / PnL。ms > 3000 や slip% > 1 は要対処"
+        "<hr><b>異常検知</b><br>"
+        "・ポジションが突然増えた → 設定ミスで全 signal を copy<br>"
+        "・シグナルが止まった → indexer 停止<br>"
+        "・fills の slippage が高い → RPC ノード不調"
+    ),
+    "mgmt_tabs": (
+        "<b>3 タブの使い分け</b><hr>"
+        "・<b>Watchlist</b>: copy 対象 wallet の追加 / 削除。"
+        "Strategy で発掘した上位 wallet をここに登録<br>"
+        "・<b>Jobs</b>: backend job の実行履歴。phase0 / backfill / rank などの確認<br>"
+        "・<b>手動 order</b>: 緊急時の手動発注。通常は使わない"
+        "<hr><b>運用</b><br>"
+        "週次で Watchlist を update、月次で Jobs の FAILED を Ops で深掘り。"
+    ),
+    "rollout": (
+        "<b>段階的ロールアウト</b><hr>"
+        "4 段階で資金規模を徐々に拡大する仕組み。"
+        "<hr><b>各 phase の意味</b><br>"
+        "・<b>A Paper</b>: 実発注なし、シミュのみ (4 週)<br>"
+        "・<b>B Micro</b>: $10/trade、検証スタート (4 週)<br>"
+        "・<b>C Small</b>: $50/trade、本格運用準備 (8 週)<br>"
+        "・<b>D Scale</b>: 拡大運用、月次レビュー必須"
+        "<hr><b>進行</b><br>"
+        "緑 ✓ = 完了、青 ● = 現在、灰 = 未到達。"
+        "オレンジバー = 現フェーズ内の経過日数。"
+        "<hr><b>判断</b><br>"
+        "昇格条件 7/7 + 停止条件 0 ヒット で「昇格」ボタンが活性化。"
+    ),
+    "promo": (
+        "<b>次フェーズへの 7 条件</b><hr>"
+        "全て ✅ になると「昇格」ボタンが活性化。"
+        "<hr><b>各条件</b><br>"
+        "・<b>経過 ≥ 28d</b>: 最低検証期間 (短いと偶然のリスク)<br>"
+        "・<b>ROI ≥ +3%</b>: 累積利益が一定以上<br>"
+        "・<b>DD ≤ 8%</b>: 最大下落幅が許容内<br>"
+        "・<b>勝率 ≥ 52%</b>: コイントス以上の勝率<br>"
+        "・<b>乖離 ≤ 20%</b>: backtest 予測 vs 実績の差<br>"
+        "・<b>Latency ≤ 3000ms</b>: 執行速度<br>"
+        "・<b>kill switch test</b>: 停止機能の動作確認"
+        "<hr><b>判断</b><br>"
+        "⏳ が残ってる項目は時間 / 改善で達成。達成不能なら戦略再検討。"
+    ),
+    "halt": (
+        "<b>即停止すべき 7 条件</b><hr>"
+        "いずれか 1 件でも 🛑 になったら kill switch を ON。"
+        "<hr><b>各条件</b><br>"
+        "・<b>日次 PnL &lt; -5%</b>: 当日の急落<br>"
+        "・<b>7d PnL &lt; -8%</b>: 週次の継続損失<br>"
+        "・<b>連敗 ≥ 5</b>: 戦略の機能不全<br>"
+        "・<b>単一 market &gt; 25%</b>: 集中投資、相場急変で大損<br>"
+        "・<b>indexer lag &gt; 120s</b>: データが古い、判断不能<br>"
+        "・<b>USDC &lt; $500</b>: 残高不足、新規発注不可<br>"
+        "・<b>MATIC &lt; 1.0</b>: ガス枯渇"
+        "<hr><b>対処</b><br>"
+        "🛑 が出たら原因を Ops で確認、解決してから手動で kill switch 解除。"
+    ),
+}
+
+st.markdown(
+    f"# Execute {help_icon(HELP['page'])}　"
+    "<small style='font-size:0.7rem;color:#888;'>Phase B Micro — 18/28日 / $10 per trade</small>",
+    unsafe_allow_html=True,
+)
 
 rng = np.random.default_rng(7)
 
 sb = st.columns([1, 1, 1, 1, 1, 1, 1.2])
-sb[0].metric("USDC", "$8,432", "-$120")
-sb[1].metric("MATIC", "12.4", "OK")
-sb[2].metric("オープン", "7", "$3,210")
-sb[3].metric("今日 PnL", "+$184", "+2.2%")
-sb[4].metric("Sharpe 30d", "1.42", "+0.08")
-sb[5].metric("phase 累計", "+$72", "+$8 (24h)")
+sb[0].metric("USDC", "$8,432", "-$120",
+             help="Polygon 上の USDC 残高。発注の元手。"
+                  "$500 以下で停止条件にヒット、自動発注停止。")
+sb[1].metric("MATIC", "12.4", "OK",
+             help="Polygon ガス用の MATIC。1.0 未満で発注不能。")
+sb[2].metric("オープン", "7", "$3,210",
+             help="保有ポジション数 / 総額。"
+                  "多すぎ (>15) は管理不能、少なすぎ (<3) は分散効果薄い。")
+sb[3].metric("今日 PnL", "+$184", "+2.2%",
+             help="本日 0:00 UTC 起算の実現 PnL。"
+                  "-5% で日次停止条件ヒット、-3% で警戒モード。")
+sb[4].metric("Sharpe 30d", "1.42", "+0.08",
+             help="直近 30 日の Sharpe ratio。"
+                  "> 1.0 良好、< 0.5 劣化、< 0 戦略破綻。週次レビューの主指標。")
+sb[5].metric("phase 累計", "+$72", "+$8 (24h)",
+             help="現 rollout phase 開始からの累計 PnL。"
+                  "phase 完了時の昇格判断に使う。")
 with sb[6]:
+    st.markdown(help_icon(HELP["killswitch"]), unsafe_allow_html=True)
     kill = st.toggle("Kill Switch", value=False, key="kill_mock")
     if kill:
         st.error("🛑 HALTED")
@@ -62,7 +191,8 @@ with sb[6]:
 r1 = st.columns([1, 1.3, 1.4])
 
 with r1[0], st.container(border=True):
-    st.markdown("##### リスク")
+    st.markdown(f"##### リスク {help_icon(HELP['risk'])}",
+                unsafe_allow_html=True)
     g = go.Figure(go.Indicator(
         mode="gauge+number", value=3.2,
         number={"suffix": "%", "valueformat": ".1f", "font": {"size": 20}},
@@ -82,6 +212,11 @@ with r1[0], st.container(border=True):
     st.progress(0.38, text="連敗 2/5")
 
 with r1[1], st.container(border=True):
+    hc1, hc2 = st.columns([5, 1])
+    with hc1:
+        st.markdown("##### 実行レイヤ")
+    with hc2:
+        st.markdown(help_icon(HELP["exec_tabs"]), unsafe_allow_html=True)
     tab_pos, tab_sig, tab_fill = st.tabs(["ポジション", "シグナル", "fills"])
     with tab_pos:
         pos = pd.DataFrame({
@@ -92,7 +227,7 @@ with r1[1], st.container(border=True):
             "PnL": [22.8, 13.6, 80.0, 12.0, -2.8, -30.0, 90.2],
             "保有": ["2h", "5h", "1d", "3d", "12h", "8h", "30m"],
         })
-        st.dataframe(pos, use_container_width=True, hide_index=True, height=235,
+        st.dataframe(pos, use_container_width=True, hide_index=True, height=220,
                      column_config={
                          "size": st.column_config.NumberColumn(format="$%d"),
                          "PnL": st.column_config.NumberColumn(format="$%+.1f"),
@@ -108,7 +243,7 @@ with r1[1], st.container(border=True):
             "price": [round(float(rng.uniform(0.1, 0.9)), 3) for _ in range(8)],
             "状態": rng.choice(["✅", "⏳", "❌", "⏭"], 8, p=[0.5, 0.2, 0.1, 0.2]).tolist(),
         })
-        st.dataframe(sig, use_container_width=True, hide_index=True, height=235)
+        st.dataframe(sig, use_container_width=True, hide_index=True, height=220)
     with tab_fill:
         fills = pd.DataFrame({
             "時刻": [(datetime.now(UTC) - timedelta(seconds=int(s))).strftime("%H:%M:%S")
@@ -120,7 +255,7 @@ with r1[1], st.container(border=True):
             "slip%": [round(float(rng.normal(0.4, 0.6)), 2) for _ in range(8)],
             "PnL": [round(float(rng.normal(2, 12)), 2) for _ in range(8)],
         })
-        st.dataframe(fills, use_container_width=True, hide_index=True, height=235,
+        st.dataframe(fills, use_container_width=True, hide_index=True, height=220,
                      column_config={
                          "size": st.column_config.NumberColumn(format="$%d"),
                          "ms": st.column_config.NumberColumn(format="%d"),
@@ -129,6 +264,11 @@ with r1[1], st.container(border=True):
                      })
 
 with r1[2], st.container(border=True):
+    hc1, hc2 = st.columns([5, 1])
+    with hc1:
+        st.markdown("##### 管理オペレーション")
+    with hc2:
+        st.markdown(help_icon(HELP["mgmt_tabs"]), unsafe_allow_html=True)
     tab_wl, tab_jobs, tab_manual = st.tabs(["Watchlist", "Jobs", "手動 order"])
     ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 
@@ -182,7 +322,7 @@ with r1[2], st.container(border=True):
         except Exception as e:  # noqa: BLE001
             wdata = []
             st.caption(f"db: {e}")
-        st.dataframe(wdata, use_container_width=True, hide_index=True, height=180)
+        st.dataframe(wdata, use_container_width=True, hide_index=True, height=160)
     with tab_jobs:
         try:
             with get_session() as s:
@@ -200,7 +340,7 @@ with r1[2], st.container(border=True):
         except Exception as e:  # noqa: BLE001
             jdata = []
             st.caption(f"db: {e}")
-        st.dataframe(jdata, use_container_width=True, hide_index=True, height=235)
+        st.dataframe(jdata, use_container_width=True, hide_index=True, height=220)
     with tab_manual:
         with st.form("manual"):
             mc1, mc2 = st.columns(2)
@@ -218,7 +358,8 @@ with r1[2], st.container(border=True):
 r2 = st.columns([1.5, 1, 1])
 
 with r2[0], st.container(border=True):
-    st.markdown("##### Rollout 進行 (A→B→C→D)")
+    st.markdown(f"##### Rollout 進行 (A→B→C→D) {help_icon(HELP['rollout'])}",
+                unsafe_allow_html=True)
     PHASES = [
         ("A", "Paper", 28, 0, "#9aa0a6"),
         ("B", "Micro", 28, 10, "#5b9bd5"),
@@ -254,14 +395,21 @@ with r2[0], st.container(border=True):
     st.plotly_chart(stp, use_container_width=True, key="stepper")
     ac = st.columns(4)
     ac[0].button("→ C 昇格", type="primary", use_container_width=True,
-                 disabled=True)
-    ac[1].button("継続", use_container_width=True)
-    ac[2].button("← A 降格", use_container_width=True)
-    confirm_h = ac[3].checkbox("HALT")
-    st.button("🛑 全停止", use_container_width=True, disabled=not confirm_h)
+                 disabled=True,
+                 help="昇格条件 7/7 + 停止条件 0 のときだけ活性化。"
+                      "現在: 5/7 + 1 ヒットなので不可。")
+    ac[1].button("継続", use_container_width=True,
+                 help="何もせず現フェーズを継続。デフォルト動作。")
+    ac[2].button("← A 降格", use_container_width=True,
+                 help="1 つ前の phase に戻す。重大な問題発生時に使う。")
+    confirm_h = ac[3].checkbox(
+        "HALT", help="緊急停止の確認。ON にしてから次のボタンで全自動発注停止。")
+    st.button("🛑 全停止", use_container_width=True, disabled=not confirm_h,
+              help="全自動発注を即停止 (Kill Switch ON と同等)。")
 
 with r2[1], st.container(border=True):
-    st.markdown("##### 昇格条件 (5/7)")
+    st.markdown(f"##### 昇格条件 (5/7) {help_icon(HELP['promo'])}",
+                unsafe_allow_html=True)
     promo = [
         ("経過 ≥ 28d", False, "18日"),
         ("ROI ≥ +3%", True, "+4.2%"),
@@ -278,7 +426,8 @@ with r2[1], st.container(border=True):
     st.dataframe(pdf, use_container_width=True, hide_index=True, height=185)
 
 with r2[2], st.container(border=True):
-    st.markdown("##### 停止条件 (1 ヒット ⚠)")
+    st.markdown(f"##### 停止条件 (1 ヒット ⚠) {help_icon(HELP['halt'])}",
+                unsafe_allow_html=True)
     halt = [
         ("日次 PnL < -5%", False, "+0.9%"),
         ("7d PnL < -8%", False, "+2.1%"),

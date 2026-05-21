@@ -1,4 +1,4 @@
-"""Strategy — Phase0 (real) + Strategy Lab (mockup) on single viewport."""
+"""Strategy — Phase0 (real) + Strategy Lab (mockup) with hover help."""
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -37,11 +37,113 @@ hr { margin: 0.3rem 0 !important; }
 .stRadio label { font-size: 0.75rem !important; }
 .stButton button { padding: 0.2rem 0.5rem !important; font-size: 0.78rem !important; }
 input, select, .stNumberInput input { font-size: 0.78rem !important; }
+.help-tip { position: relative; cursor: help; font-size: 0.85rem;
+  display: inline-block; margin-left: 0.2rem; opacity: 0.55;
+  color: #2c7fb8; font-weight: bold; }
+.help-tip:hover { opacity: 1; }
+.help-tip .help-popup { visibility: hidden; position: absolute; z-index: 9999;
+  width: 340px; background: #1f2933; color: #f7fafc;
+  padding: 10px 14px; border-radius: 6px;
+  font-size: 0.75rem; line-height: 1.55; font-weight: normal;
+  left: 0; top: 1.4rem; white-space: normal; text-align: left;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.35); pointer-events: none; }
+.help-tip:hover .help-popup { visibility: visible; }
+.help-tip .help-popup b { color: #ffd166; }
+.help-tip .help-popup hr { border: 0; border-top: 1px solid #4a5568; margin: 6px 0; }
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown("# Strategy　<small style='font-size:0.7rem;color:#888;'>backtest + market×strategy 一覧</small>",
-            unsafe_allow_html=True)
+
+def help_icon(text: str) -> str:
+    return f'<span class="help-tip">ⓘ<span class="help-popup">{text}</span></span>'
+
+
+HELP = {
+    "page": (
+        "<b>このページの目的</b><hr>"
+        "edge があるかを backtest で検証する画面。"
+        "Phase 0 (上部) でバックテストを回し、結果を市場×戦略マトリクスで俯瞰、"
+        "上位 10 戦略の equity を比較。週次レビューで「今月もこの戦略で稼げるか」を判断。"
+    ),
+    "phase0_form": (
+        "<b>このフォーム</b><hr>"
+        "ウォレットランキング + 遅延コピー replay を grid 実行する backend job を投入。"
+        "結果はマトリクス・heatmap・Top10 equity に反映される。"
+        "<hr><b>パラメータ</b><br>"
+        "・<b>window 日</b>: 何日分の trade を対象にするか (30 推奨、少ないと過学習)<br>"
+        "・<b>top N</b>: 上位ウォレットを何件採用するか<br>"
+        "・<b>copy $</b>: 1 trade あたりのシミュ金額<br>"
+        "・<b>delays 秒</b>: シミュレートする遅延秒 (カンマ区切り)"
+        "<hr><b>運用</b><br>"
+        "週次で 1 回実行し edge の継続性を確認。結果は右下「Recent runs」に蓄積。"
+    ),
+    "market_list": (
+        "<b>マーケット一覧</b><hr>"
+        "対象市場の流動性スナップショット。24h vol 降順。"
+        "<hr><b>列の見方</b><br>"
+        "・<b>24h vol</b>: 過去 24h の出来高。$50k 未満は流動性低 (copy 不可)<br>"
+        "・<b>price</b>: 現在のミッド価格 (0〜1)<br>"
+        "・<b>resolve</b>: 解決まで残り日数。&lt; 7日は急変リスク<br>"
+        "・<b>best ROI</b>: その市場での最良戦略 ROI%<br>"
+        "・<b>trend</b>: 過去 30 日の価格 sparkline"
+        "<hr><b>判断</b><br>"
+        "vol が大きく、resolve が遠く、trend が安定してる市場が copy trade 向き。"
+    ),
+    "heatmap": (
+        "<b>マトリクス: 市場 × 戦略</b><hr>"
+        "各セル = その組合せの backtest 結果。"
+        "<hr><b>色付け指標</b><br>"
+        "・<b>ROI %</b>: 単純な収益率 (緑+ 赤−)。楽観的<br>"
+        "・<b>Sharpe</b>: リスク調整後リターン。推奨指標<br>"
+        "・<b>trades</b>: サンプル数。少ないと信頼性低"
+        "<hr><b>判断</b><br>"
+        "横一列が全部緑な市場は「どんな戦略でも勝てる」= 良市場。"
+        "縦一列が全部緑な戦略は「どの市場でも効く」万能戦略 (滅多にない)。"
+    ),
+    "scatter": (
+        "<b>ROI × Sharpe × trades</b><hr>"
+        "全シナリオを 3 次元バブルプロット: x=ROI%、y=Sharpe、バブル size=trades 数。"
+        "色はストラテジー別。"
+        "<hr><b>象限の見方</b><br>"
+        "・<b>右上 (ROI+ Sharpe+)</b>: 理想ゾーン、採用候補<br>"
+        "・<b>右下 (ROI+ Sharpe−)</b>: 高 ROI だがばらつき大 = 偶然の可能性<br>"
+        "・<b>左上 (ROI− Sharpe+)</b>: 安定して負け = 戦略が逆<br>"
+        "・<b>左下</b>: 戦略破綻"
+        "<hr><b>判断</b><br>大きいバブル ほどデータ信頼性高。"
+        "小さいバブルの右上は採用前に再検証。"
+    ),
+    "top10": (
+        "<b>Top 10 equity overlay</b><hr>"
+        "並び替え指標の上位 10 シナリオの equity curve を重ね描き。"
+        "<hr><b>並び替え指標</b><br>"
+        "・<b>ROI %</b>: 最終収益率順<br>"
+        "・<b>Sharpe</b>: リスク調整後リターン順 (推奨)<br>"
+        "・<b>ROI×Sharpe</b>: 両方を満たす複合指標"
+        "<hr><b>判断</b><br>"
+        "・全 10 本がジリ上げ → 本物の edge<br>"
+        "・1〜2 本だけ突出 → 過学習リスク<br>"
+        "・全体的に水平 → edge 喪失、戦略見直し<br>"
+        "・終盤で全部下げ → 直近で劣化、緊急アラート"
+    ),
+    "recent_runs": (
+        "<b>Recent Phase 0 runs</b><hr>"
+        "直近 8 件の Phase 0 job 履歴。"
+        "<hr><b>列の見方</b><br>"
+        "・<b>id</b>: job 番号<br>"
+        "・<b>status</b>: QUEUED 待機 / RUNNING 実行中 / COMPLETED 完了 / FAILED 失敗<br>"
+        "・<b>created</b>: enqueue されてからの経過<br>"
+        "・<b>window</b>: 当時のパラメータ"
+        "<hr><b>判断</b><br>"
+        "FAILED 連発 → Ops で DB/RPC エラー確認。"
+        "週次で COMPLETED が安定 → 正常運用。"
+    ),
+}
+
+st.markdown(
+    f"# Strategy {help_icon(HELP['page'])}　"
+    "<small style='font-size:0.7rem;color:#888;'>backtest + market×strategy 一覧</small>",
+    unsafe_allow_html=True,
+)
 
 rng = np.random.default_rng(2026)
 
@@ -70,17 +172,14 @@ pos_sims = int((roi > 0).sum())
 
 top_row = st.columns([2.4, 1, 1, 1, 1, 1])
 with top_row[0], st.container(border=True):
-    st.markdown("##### Phase 0 を実行")
+    st.markdown(f"##### Phase 0 を実行 {help_icon(HELP['phase0_form'])}",
+                unsafe_allow_html=True)
     with st.form("phase0"):
         c1, c2, c3, c4, c5 = st.columns([1, 1, 1, 1.4, 0.8])
-        w = c1.number_input("window 日", min_value=1, max_value=90, value=30,
-                            label_visibility="visible")
-        tn = c2.number_input("top N", min_value=1, max_value=200, value=10,
-                             label_visibility="visible")
-        cu = c3.number_input("copy $", min_value=1, max_value=10000, value=50,
-                             label_visibility="visible")
-        ds = c4.text_input("delays 秒", "30,60,120",
-                           label_visibility="visible")
+        w = c1.number_input("window 日", min_value=1, max_value=90, value=30)
+        tn = c2.number_input("top N", min_value=1, max_value=200, value=10)
+        cu = c3.number_input("copy $", min_value=1, max_value=10000, value=50)
+        ds = c4.text_input("delays 秒", "30,60,120")
         sub = c5.form_submit_button("Run", type="primary",
                                     use_container_width=True)
         if sub:
@@ -94,17 +193,37 @@ with top_row[0], st.container(border=True):
                 st.success(f"enqueued #{jid}")
             except Exception as e:  # noqa: BLE001
                 st.error(f"enqueue failed: {e}")
-top_row[1].metric("sim 総数", f"{n_m * n_s}", f"{n_m}×{n_s}")
-top_row[2].metric("黒字", f"{pos_sims}", f"{pos_sims / (n_m * n_s) * 100:.0f}%")
-top_row[3].metric("ベスト", f"{roi[best]:+.1f}%", MARKETS[best[0]][:8])
-top_row[4].metric("ワースト", f"{roi[worst]:+.1f}%", MARKETS[worst[0]][:8],
-                  delta_color="inverse")
-top_row[5].metric("中央値", f"{np.median(roi):+.1f}%")
+top_row[1].metric(
+    "sim 総数", f"{n_m * n_s}", f"{n_m}×{n_s}",
+    help="マーケット数 × ストラテジー数 = 全 backtest 件数。"
+         "多いほど信頼性高いが計算時間も増える。70〜200 件が現実的。",
+)
+top_row[2].metric(
+    "黒字", f"{pos_sims}", f"{pos_sims / (n_m * n_s) * 100:.0f}%",
+    help="ROI > 0 のシナリオ数 / 全シナリオの比率。50% 未満は edge が薄い。"
+         "本物の edge があれば 60〜70% の市場で黒字。",
+)
+top_row[3].metric(
+    "ベスト", f"{roi[best]:+.1f}%", MARKETS[best[0]][:8],
+    help="全シナリオ中の最高 ROI とそのマーケット。"
+         "1 件だけ突出して他が赤なら過学習 / 偶然のリスクあり。",
+)
+top_row[4].metric(
+    "ワースト", f"{roi[worst]:+.1f}%", MARKETS[worst[0]][:8],
+    delta_color="inverse",
+    help="全シナリオ中の最悪 ROI。-20% 超があれば戦略を絞り込み必要。",
+)
+top_row[5].metric(
+    "中央値", f"{np.median(roi):+.1f}%",
+    help="全シナリオ ROI の中央値。「典型的なシナリオで儲かるか」の指標。"
+         "ベスト/ワーストより信頼できる。+3% 以上で edge ありと判断。",
+)
 
 r1 = st.columns([1, 1.2])
 
 with r1[0], st.container(border=True):
-    st.markdown("##### マーケット一覧")
+    st.markdown(f"##### マーケット一覧 {help_icon(HELP['market_list'])}",
+                unsafe_allow_html=True)
     mkt = pd.DataFrame({
         "market": MARKETS,
         "24h vol": rng.integers(10_000, 800_000, n_m).tolist(),
@@ -126,9 +245,14 @@ with r1[0], st.container(border=True):
                  })
 
 with r1[1], st.container(border=True):
-    metric_pick = st.radio("色付け", ["ROI %", "Sharpe", "trades"],
-                           horizontal=True, label_visibility="collapsed",
-                           key="metric_pick")
+    hc1, hc2 = st.columns([5, 1])
+    with hc1:
+        metric_pick = st.radio(
+            "色付け", ["ROI %", "Sharpe", "trades"],
+            horizontal=True, label_visibility="collapsed", key="metric_pick",
+        )
+    with hc2:
+        st.markdown(help_icon(HELP["heatmap"]), unsafe_allow_html=True)
     if metric_pick == "ROI %":
         z, cs, zm, fmt = roi, "RdYlGn", 0, "{:+.1f}"
     elif metric_pick == "Sharpe":
@@ -150,7 +274,8 @@ with r1[1], st.container(border=True):
 r2 = st.columns([1, 1, 1])
 
 with r2[0], st.container(border=True):
-    st.markdown("##### ROI × Sharpe × trades")
+    st.markdown(f"##### ROI × Sharpe × trades {help_icon(HELP['scatter'])}",
+                unsafe_allow_html=True)
     rows = []
     for mi, m in enumerate(MARKETS):
         for si, s in enumerate(STRATEGIES):
@@ -167,10 +292,14 @@ with r2[0], st.container(border=True):
     st.plotly_chart(sc, use_container_width=True, key="t_sc")
 
 with r2[1], st.container(border=True):
-    sort_pick = st.radio("Top10 並び替え",
-                         ["ROI %", "Sharpe", "ROI×Sharpe"],
-                         horizontal=True, label_visibility="collapsed",
-                         key="sort_pick")
+    hc1, hc2 = st.columns([5, 1])
+    with hc1:
+        sort_pick = st.radio(
+            "Top10 並び替え", ["ROI %", "Sharpe", "ROI×Sharpe"],
+            horizontal=True, label_visibility="collapsed", key="sort_pick",
+        )
+    with hc2:
+        st.markdown(help_icon(HELP["top10"]), unsafe_allow_html=True)
     combos = []
     for mi, m in enumerate(MARKETS):
         for si, s in enumerate(STRATEGIES):
@@ -200,13 +329,14 @@ with r2[1], st.container(border=True):
                                 name=f"#{int(i + 1)}",
                                 hovertemplate=f"{row['market']}<br>{row['strategy']}<br>$%{{y:.0f}}<extra></extra>"))
     eq.add_hline(y=1000, line_dash="dot", line_color="gray")
-    eq.update_layout(height=190, margin=dict(t=5, b=5, l=5, r=5),
+    eq.update_layout(height=180, margin=dict(t=5, b=5, l=5, r=5),
                      font=dict(size=8),
                      legend=dict(font=dict(size=7), x=1.01, y=1))
     st.plotly_chart(eq, use_container_width=True, key="t_eq")
 
 with r2[2], st.container(border=True):
-    st.markdown("##### Recent Phase 0 runs")
+    st.markdown(f"##### Recent Phase 0 runs {help_icon(HELP['recent_runs'])}",
+                unsafe_allow_html=True)
     try:
         with get_session() as s:
             rows = (
