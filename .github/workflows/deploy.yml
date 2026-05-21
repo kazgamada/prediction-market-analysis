@@ -54,6 +54,7 @@ jobs:
             --build-arg GIT_SHA=${GIT_SHA} \
             --build-arg BUILD_TIME=${BUILD_TIME} \
             --strategy=immediate \
+            --no-cache \
             --wait-timeout=300
 
       # Non-HTTP process groups (indexer, worker) can be left in `stopped`
