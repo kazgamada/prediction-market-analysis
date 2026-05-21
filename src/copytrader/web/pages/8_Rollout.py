@@ -158,9 +158,9 @@ with r1[2], st.container(border=True):
         height=260, margin=dict(t=5, b=5, l=5, r=5),
         font=dict(size=8),
         legend=dict(font=dict(size=8), x=0.01, y=0.99, bgcolor="rgba(255,255,255,0.7)"),
-        yaxis=dict(title="累積", titlefont=dict(size=8)),
+        yaxis=dict(title=dict(text="累積", font=dict(size=8))),
         yaxis2=dict(overlaying="y", side="right", showgrid=False,
-                    title="日次", titlefont=dict(size=8)),
+                    title=dict(text="日次", font=dict(size=8))),
     )
     st.plotly_chart(f, use_container_width=True, key="daily")
 
