@@ -80,26 +80,135 @@ def tile_header(title: str, page_path: str, icon: str, help_text: str) -> None:
         st.markdown(help_icon(help_text), unsafe_allow_html=True)
 
 
+# Real-data accessors (cached 5s). Fall back to mock when DB has no rows.
+@st.cache_data(ttl=5)
+def _real_home_metrics() -> dict:
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import func, select
+
+    from copytrader.db import settings_table as _st
+    from copytrader.db.engine import get_session
+    from copytrader.db.models import (
+        Cursor,
+        Execution,
+        Position,
+        RiskEvaluation,
+        Signal,
+        TradePnl,
+        Watchlist,
+    )
+    from copytrader.indexer.backfill import CURSOR_NAME
+
+    out: dict = {"db_ok": True}
+    midnight = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    month_ago = datetime.now(UTC) - timedelta(days=30)
+    try:
+        with get_session() as s:
+            out["today_pnl"] = float(s.execute(
+                select(func.coalesce(func.sum(TradePnl.realized_usdc), 0))
+                .where(TradePnl.ts >= midnight)
+            ).scalar_one())
+            out["month_pnl"] = float(s.execute(
+                select(func.coalesce(func.sum(TradePnl.realized_usdc), 0))
+                .where(TradePnl.ts >= month_ago)
+            ).scalar_one())
+            out["watchlist_active"] = int(s.execute(
+                select(func.count()).select_from(Watchlist)
+                .where(Watchlist.active.is_(True))
+            ).scalar_one())
+            out["positions_count"] = int(s.execute(
+                select(func.count()).select_from(Position)
+                .where(Position.open_size_shares > 0)
+            ).scalar_one())
+            cur = s.get(Cursor, CURSOR_NAME)
+            out["cursor_age_seconds"] = (
+                (datetime.now(UTC) - cur.updated_at).total_seconds()
+                if cur and cur.updated_at else None
+            )
+            latest_risk = s.execute(
+                select(RiskEvaluation).order_by(RiskEvaluation.ts.desc()).limit(1)
+            ).scalar_one_or_none()
+            out["risk_metrics"] = (
+                dict(latest_risk.metrics_snapshot or {}) if latest_risk else {}
+            )
+            # Latency p50 from recent executions
+            lat_rows = s.execute(
+                select(Execution.signal_to_place_ms)
+                .where(Execution.signal_to_place_ms.is_not(None))
+                .order_by(Execution.placed_at.desc()).limit(100)
+            ).scalars().all()
+            out["latencies"] = [int(x) for x in lat_rows if x]
+            # Recent signals
+            sig_rows = s.execute(
+                select(Signal).order_by(Signal.id.desc()).limit(5)
+            ).scalars().all()
+            out["recent_signals"] = [
+                {
+                    "time": (r.detected_at or r.ts).strftime("%H:%M:%S"),
+                    "side": "B" if int(r.side) == 0 else "S",
+                    "status": r.status,
+                }
+                for r in sig_rows
+            ]
+            # Position breakdown
+            pos_rows = s.execute(
+                select(Position).where(Position.open_size_shares > 0)
+                .order_by(Position.open_size_usdc.desc()).limit(7)
+            ).scalars().all()
+            out["positions"] = [
+                {
+                    "label": p.market_label or str(p.token_id)[:8] + "…",
+                    "size": float(p.open_size_usdc),
+                }
+                for p in pos_rows
+            ]
+    except Exception as e:  # noqa: BLE001
+        out["db_ok"] = False
+        out["error"] = str(e)
+    out["usdc"] = float(_st.get("usdc_balance_cache") or 0.0)
+    return out
+
+
+_M = _real_home_metrics()
+
+
 k = st.columns(6)
-k[0].metric("累積 PnL", "+$12,847", "+$523",
-            help="シミュレーションでの 30 日累積 PnL (USDC)。実発注ではなく Phase 0 の replay 値。"
-                 "目安: +10%/月 以上で edge あり、横ばいは劣化、マイナスは戦略破綻。")
-k[1].metric("勝率", "58.3%", "+1.2pp",
-            help="クローズした全 trade の勝率。Polymarket では 55% 以上が目安。"
-                 "ただし勝率高くても 1 件あたり PnL が小さければ最終損益はマイナスになるので "
-                 "Sharpe や ROI と併読する。")
-k[2].metric("Watchlist", "12 / 50", "+2",
-            help="active=true の watch wallet 数 / 上限。多すぎるとシグナル過多、少なすぎると edge 細る。"
-                 "5〜15 件が運用しやすい範囲。Execute ページの Watchlist タブで管理。")
-k[3].metric("最大 DD", "-8.4%", "-1.1pp", delta_color="inverse",
-            help="30 日内の最大ドローダウン (過去ピークからの落ち込み)。"
-                 "許容ライン -15% を超えたら kill switch 候補。実運用では -10% で警戒モード推奨。")
-k[4].metric("USDC", "$8,432", "-$120",
-            help="Polygon 上の USDC 残高。発注の燃料。$500 を切ると自動発注停止 (Execute の停止条件参照)。"
-                 "毎朝確認し、必要なら入金。")
-k[5].metric("今日 PnL", "+$184", "+2.2%",
-            help="本日 0:00 UTC からの実現 PnL。括弧は資金比 %。"
-                 "-5% を切ると日次停止条件にヒット。Execute の DD gauge と連動。")
+k[0].metric(
+    "累積 PnL (30d)", f"${_M.get('month_pnl', 0):+,.2f}",
+    help="trade_pnl テーブルから集計した過去 30 日の実現 PnL。"
+         "目安: +10%/月 以上で edge あり、横ばいは劣化、マイナスは戦略破綻。",
+)
+risk_m = _M.get("risk_metrics", {})
+today_pnl = _M.get("today_pnl", 0.0)
+k[1].metric(
+    "今日 PnL", f"${today_pnl:+,.2f}",
+    delta_color="normal" if today_pnl >= 0 else "inverse",
+    help="本日 0:00 UTC からの実現 PnL。-5% で日次停止条件ヒット。",
+)
+k[2].metric(
+    "Watchlist", str(_M.get("watchlist_active", 0)),
+    help="active=true の watch wallet 数。"
+         "5〜15 件が運用しやすい範囲。Execute ページの Watchlist タブで管理。",
+)
+k[3].metric(
+    "オープン", str(_M.get("positions_count", 0)),
+    help="保有ポジション数 (positions テーブル)。",
+)
+k[4].metric(
+    "USDC", f"${_M.get('usdc', 0):,.0f}" if _M.get("usdc") else "—",
+    help="Polygon 上の USDC 残高 (settings.usdc_balance_cache)。"
+         "$500 を切ると自動発注停止。",
+)
+cursor_age = _M.get("cursor_age_seconds")
+k[5].metric(
+    "Indexer lag",
+    f"{int(cursor_age)}s" if cursor_age is not None else "—",
+    delta_color="inverse" if cursor_age and cursor_age > 60 else "normal",
+    help="cursor の最終更新からの経過秒数。120 秒超で停止条件ヒット。",
+)
+if not _M.get("db_ok"):
+    st.caption(f"⚠️ DB アクセス失敗: {_M.get('error', '')[:80]}")
 
 r1 = st.columns(4)
 

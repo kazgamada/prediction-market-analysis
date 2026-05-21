@@ -165,54 +165,181 @@ st.markdown(
 
 rng = np.random.default_rng(7)
 
+
+# ---------------------------------------------------------------------------
+# Real-data accessors (graceful fall-through to mocks if DB is empty/down)
+# ---------------------------------------------------------------------------
+
+from copytrader.db import settings_table as _st  # noqa: E402
+from copytrader.db.models import (  # noqa: E402
+    Execution as ExecModel,
+)
+from copytrader.db.models import (
+    Position as PosModel,
+)
+from copytrader.db.models import (
+    RiskEvaluation,
+)
+from copytrader.db.models import (
+    Signal as SigModel,
+)
+from copytrader.db.models import (
+    TradePnl as TPModel,
+)
+
+
+@st.cache_data(ttl=5)
+def _real_metrics() -> dict:
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import func, select
+
+    out: dict = {"db_ok": True, "error": None}
+    midnight = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    week_ago = datetime.now(UTC) - timedelta(days=7)
+    month_ago = datetime.now(UTC) - timedelta(days=30)
+    try:
+        with get_session() as s:
+            out["today_pnl"] = float(s.execute(
+                select(func.coalesce(func.sum(TPModel.realized_usdc), 0))
+                .where(TPModel.ts >= midnight)
+            ).scalar_one())
+            out["week_pnl"] = float(s.execute(
+                select(func.coalesce(func.sum(TPModel.realized_usdc), 0))
+                .where(TPModel.ts >= week_ago)
+            ).scalar_one())
+            out["month_pnl"] = float(s.execute(
+                select(func.coalesce(func.sum(TPModel.realized_usdc), 0))
+                .where(TPModel.ts >= month_ago)
+            ).scalar_one())
+            open_count, open_total = s.execute(
+                select(
+                    func.count().filter(PosModel.open_size_shares > 0),
+                    func.coalesce(func.sum(PosModel.open_size_usdc), 0),
+                ).select_from(PosModel)
+            ).first() or (0, 0)
+            out["open_count"] = int(open_count or 0)
+            out["open_total_usdc"] = float(open_total or 0)
+            # latest risk metrics
+            latest_risk = s.execute(
+                select(RiskEvaluation).order_by(RiskEvaluation.ts.desc()).limit(1)
+            ).scalar_one_or_none()
+            out["risk"] = {
+                "allow": bool(latest_risk.allow_new) if latest_risk else True,
+                "halted": list(latest_risk.halted_reasons or [])
+                if latest_risk else [],
+                "metrics": dict(latest_risk.metrics_snapshot or {})
+                if latest_risk else {},
+            }
+    except Exception as e:  # noqa: BLE001
+        out["db_ok"] = False
+        out["error"] = str(e)
+    out["usdc"] = float(_st.get("usdc_balance_cache") or 0.0)
+    out["matic"] = float(_st.get("matic_balance_cache") or 0.0)
+    out["kill_switch_on"] = bool(_st.get("kill_switch_on") or False)
+    out["phase"] = str(_st.get("rollout_phase") or "A")
+    return out
+
+
+_M = _real_metrics()
+
 sb = st.columns([1, 1, 1, 1, 1, 1, 1.2])
-sb[0].metric("USDC", "$8,432", "-$120",
-             help="Polygon 上の USDC 残高。発注の元手。"
-                  "$500 以下で停止条件にヒット、自動発注停止。")
-sb[1].metric("MATIC", "12.4", "OK",
-             help="Polygon ガス用の MATIC。1.0 未満で発注不能。")
-sb[2].metric("オープン", "7", "$3,210",
-             help="保有ポジション数 / 総額。"
-                  "多すぎ (>15) は管理不能、少なすぎ (<3) は分散効果薄い。")
-sb[3].metric("今日 PnL", "+$184", "+2.2%",
-             help="本日 0:00 UTC 起算の実現 PnL。"
-                  "-5% で日次停止条件ヒット、-3% で警戒モード。")
-sb[4].metric("Sharpe 30d", "1.42", "+0.08",
-             help="直近 30 日の Sharpe ratio。"
-                  "> 1.0 良好、< 0.5 劣化、< 0 戦略破綻。週次レビューの主指標。")
-sb[5].metric("phase 累計", "+$72", "+$8 (24h)",
-             help="現 rollout phase 開始からの累計 PnL。"
-                  "phase 完了時の昇格判断に使う。")
+sb[0].metric(
+    "USDC", f"${_M['usdc']:,.0f}" if _M["usdc"] else "—",
+    help="Polygon 上の USDC 残高 (settings.usdc_balance_cache、execution layer 更新)。"
+         "$500 以下で停止条件にヒット、自動発注停止。",
+)
+sb[1].metric(
+    "MATIC", f"{_M['matic']:.1f}" if _M["matic"] else "—",
+    help="Polygon ガス用の MATIC。1.0 未満で発注不能。",
+)
+sb[2].metric(
+    "オープン", str(_M.get("open_count", 0)),
+    f"${_M.get('open_total_usdc', 0):,.0f}",
+    help="保有ポジション数 / 総額 (positions テーブル)。"
+         "多すぎ (>15) は管理不能、少なすぎ (<3) は分散効果薄い。",
+)
+today_pnl = _M.get("today_pnl", 0.0)
+sb[3].metric(
+    "今日 PnL", f"${today_pnl:+,.2f}",
+    delta_color="normal" if today_pnl >= 0 else "inverse",
+    help="本日 0:00 UTC 起算の実現 PnL (trade_pnl テーブル)。"
+         "-5% で日次停止条件ヒット、-3% で警戒モード。",
+)
+week_pnl = _M.get("week_pnl", 0.0)
+sb[4].metric(
+    "7d PnL", f"${week_pnl:+,.2f}",
+    delta_color="normal" if week_pnl >= 0 else "inverse",
+    help="過去 7 日の実現 PnL。週次トレンド指標。"
+         "-8% で週次停止条件ヒット。",
+)
+month_pnl = _M.get("month_pnl", 0.0)
+sb[5].metric(
+    "30d PnL", f"${month_pnl:+,.2f}",
+    help="過去 30 日の実現 PnL。月次レビューの主指標。",
+)
 with sb[6]:
     st.markdown(help_icon(HELP["killswitch"]), unsafe_allow_html=True)
-    kill = st.toggle("Kill Switch", value=False, key="kill_mock")
+    kill_default = _M.get("kill_switch_on", False)
+    kill = st.toggle("Kill Switch", value=kill_default, key="kill_switch_live")
+    if kill != kill_default:
+        # User toggled — persist to settings
+        try:
+            from copytrader.db.models import AuditLog
+            _st.set_("kill_switch_on", kill)
+            with get_session() as _s:
+                _s.add(AuditLog(actor="web", action=(
+                    "kill_switch_on" if kill else "kill_switch_off"),
+                    details={"via": "web_ui"}))
+            st.toast(f"Kill switch → {'ON' if kill else 'OFF'}")
+        except Exception as e:  # noqa: BLE001
+            st.error(f"persist failed: {e}")
     if kill:
         st.error("🛑 HALTED")
     else:
         st.success("🟢 LIVE")
+if not _M.get("db_ok"):
+    st.caption(f"⚠️ DB アクセス失敗: {_M.get('error', '')[:80]}")
 
 r1 = st.columns([1, 1.3, 1.4])
 
 with r1[0], st.container(border=True):
     st.markdown(f"##### リスク {help_icon(HELP['risk'])}",
                 unsafe_allow_html=True)
+    rmet = _M.get("risk", {}).get("metrics", {})
+    today_dd_pct = abs(float(rmet.get("today_pnl_pct", 0.0)))
+    halt_limit = abs(float(_st.get("halt_daily_pnl_pct") or -5.0))
     g = go.Figure(go.Indicator(
-        mode="gauge+number", value=3.2,
+        mode="gauge+number", value=today_dd_pct,
         number={"suffix": "%", "valueformat": ".1f", "font": {"size": 20}},
         title={"text": "今日 DD", "font": {"size": 10}},
-        gauge={"axis": {"range": [0, 8], "tickfont": {"size": 8}},
+        gauge={"axis": {"range": [0, halt_limit], "tickfont": {"size": 8}},
                "bar": {"color": "#d9534f"},
-               "steps": [{"range": [0, 4], "color": "#e7f6e7"},
-                         {"range": [4, 6.4], "color": "#fff3cd"},
-                         {"range": [6.4, 8], "color": "#f8d7da"}],
+               "steps": [{"range": [0, halt_limit * 0.5], "color": "#e7f6e7"},
+                         {"range": [halt_limit * 0.5, halt_limit * 0.8], "color": "#fff3cd"},
+                         {"range": [halt_limit * 0.8, halt_limit], "color": "#f8d7da"}],
                "threshold": {"line": {"color": "red", "width": 3},
-                             "thickness": 0.75, "value": 8}}))
+                             "thickness": 0.75, "value": halt_limit}}))
     g.update_layout(height=140, margin=dict(t=20, b=0, l=10, r=10))
     st.plotly_chart(g, use_container_width=True)
-    st.progress(0.43, text="exposure 43/70%")
-    st.progress(1.0, text="単一 token 27/25% ⚠")
-    st.progress(0.62, text="trades 62/100")
-    st.progress(0.38, text="連敗 2/5")
+    # Live progress bars from risk_evaluations.metrics_snapshot
+    exp_pct = float(rmet.get("total_exposure_pct", 0.0))
+    exp_lim = float(_st.get("limit_total_exposure_pct") or 70.0)
+    st.progress(min(exp_pct / max(exp_lim, 1), 1.0),
+                text=f"exposure {exp_pct:.0f}/{exp_lim:.0f}%")
+    single_pct = float(rmet.get("max_single_market_pct", 0.0))
+    single_lim = float(_st.get("limit_single_token_pct") or 25.0)
+    over = " ⚠" if single_pct > single_lim else ""
+    st.progress(min(single_pct / max(single_lim, 1), 1.0),
+                text=f"単一 token {single_pct:.0f}/{single_lim:.0f}%{over}")
+    daily_trades = int(rmet.get("daily_trades", 0))
+    trades_lim = int(_st.get("limit_daily_trades") or 100)
+    st.progress(min(daily_trades / max(trades_lim, 1), 1.0),
+                text=f"trades {daily_trades}/{trades_lim}")
+    cl = int(rmet.get("consecutive_losses", 0))
+    cl_lim = int(_st.get("halt_consecutive_losses") or 5)
+    st.progress(min(cl / max(cl_lim, 1), 1.0),
+                text=f"連敗 {cl}/{cl_lim}")
 
 with r1[1], st.container(border=True):
     hc1, hc2 = st.columns([5, 1])
@@ -222,49 +349,103 @@ with r1[1], st.container(border=True):
         st.markdown(help_icon(HELP["exec_tabs"]), unsafe_allow_html=True)
     tab_pos, tab_sig, tab_fill = st.tabs(["ポジション", "シグナル", "fills"])
     with tab_pos:
-        pos = pd.DataFrame({
-            "market": ["米大統領 — Dem", "FRB 6月 — Yes", "BTC>$150k — Yes",
-                       "AI — No", "G7 — Yes", "WC — Brazil", "投票率 — Yes"],
-            "side": ["B", "B", "B", "S", "B", "B", "B"],
-            "size": [320, 250, 480, 410, 200, 180, 1370],
-            "PnL": [22.8, 13.6, 80.0, 12.0, -2.8, -30.0, 90.2],
-            "保有": ["2h", "5h", "1d", "3d", "12h", "8h", "30m"],
-        })
-        st.dataframe(pos, use_container_width=True, hide_index=True, height=220,
-                     column_config={
-                         "size": st.column_config.NumberColumn(format="$%d"),
-                         "PnL": st.column_config.NumberColumn(format="$%+.1f"),
-                     })
+        try:
+            with get_session() as s:
+                rows = s.execute(
+                    select(PosModel).where(PosModel.open_size_shares > 0)
+                    .order_by(PosModel.open_size_usdc.desc()).limit(15)
+                ).scalars().all()
+                pos_data = [
+                    {
+                        "market": r.market_label or str(r.token_id)[:14] + "…",
+                        "side": "B" if int(r.side) == 0 else "S",
+                        "size": float(r.open_size_usdc),
+                        "entry": float(r.avg_price),
+                        "保有": fmt_ago(r.opened_at),
+                    }
+                    for r in rows
+                ]
+        except Exception as e:  # noqa: BLE001
+            pos_data = []
+            st.caption(f"db: {e}")
+        if not pos_data:
+            st.caption("(オープンポジションなし)")
+        st.dataframe(
+            pos_data, use_container_width=True, hide_index=True, height=220,
+            column_config={
+                "size": st.column_config.NumberColumn(format="$%.0f"),
+                "entry": st.column_config.NumberColumn(format="%.3f"),
+            },
+        )
     with tab_sig:
-        now = datetime.now(UTC)
-        sig = pd.DataFrame({
-            "時刻": [(now - timedelta(seconds=int(s))).strftime("%H:%M:%S")
-                     for s in sorted(rng.integers(5, 900, 8))],
-            "wallet": [f"0x{rng.integers(0, 16**8):08x}" for _ in range(8)],
-            "market": rng.choice(["米大統領", "FRB", "BTC", "AI"], 8),
-            "side": rng.choice(["B", "S"], 8).tolist(),
-            "price": [round(float(rng.uniform(0.1, 0.9)), 3) for _ in range(8)],
-            "状態": rng.choice(["✅", "⏳", "❌", "⏭"], 8, p=[0.5, 0.2, 0.1, 0.2]).tolist(),
-        })
-        st.dataframe(sig, use_container_width=True, hide_index=True, height=220)
+        try:
+            with get_session() as s:
+                rows = s.execute(
+                    select(SigModel)
+                    .order_by(SigModel.id.desc()).limit(15)
+                ).scalars().all()
+                status_icon = {
+                    "PENDING": "⏳", "EXECUTING": "⏳", "EXECUTED": "✅",
+                    "SKIPPED": "⏭", "REJECTED": "❌", "LEGACY": "·",
+                }
+                sig_data = [
+                    {
+                        "時刻": r.detected_at.strftime("%H:%M:%S")
+                        if r.detected_at else r.ts.strftime("%H:%M:%S"),
+                        "wallet": "0x" + r.address.hex()[:8],
+                        "side": "B" if int(r.side) == 0 else "S",
+                        "price": float(r.price),
+                        "size": float(r.size_usdc),
+                        " ": status_icon.get(r.status, r.status[:2]),
+                        "reason": r.skip_reason or "",
+                    }
+                    for r in rows
+                ]
+        except Exception as e:  # noqa: BLE001
+            sig_data = []
+            st.caption(f"db: {e}")
+        if not sig_data:
+            st.caption("(シグナル受信なし — Watchlist の wallet が発注すると現れる)")
+        st.dataframe(
+            sig_data, use_container_width=True, hide_index=True, height=220,
+            column_config={
+                "price": st.column_config.NumberColumn(format="%.3f"),
+                "size": st.column_config.NumberColumn(format="$%.0f"),
+            },
+        )
     with tab_fill:
-        fills = pd.DataFrame({
-            "時刻": [(datetime.now(UTC) - timedelta(seconds=int(s))).strftime("%H:%M:%S")
-                     for s in sorted(rng.integers(30, 7200, 8))],
-            "market": rng.choice(["米大統領", "FRB", "BTC", "AI", "WC"], 8),
-            "side": rng.choice(["B", "S"], 8).tolist(),
-            "size": [int(rng.choice([50, 100, 150, 200])) for _ in range(8)],
-            "ms": [int(rng.normal(850, 280)) for _ in range(8)],
-            "slip%": [round(float(rng.normal(0.4, 0.6)), 2) for _ in range(8)],
-            "PnL": [round(float(rng.normal(2, 12)), 2) for _ in range(8)],
-        })
-        st.dataframe(fills, use_container_width=True, hide_index=True, height=220,
-                     column_config={
-                         "size": st.column_config.NumberColumn(format="$%d"),
-                         "ms": st.column_config.NumberColumn(format="%d"),
-                         "slip%": st.column_config.NumberColumn(format="%+.2f"),
-                         "PnL": st.column_config.NumberColumn(format="$%+.1f"),
-                     })
+        try:
+            with get_session() as s:
+                rows = s.execute(
+                    select(ExecModel)
+                    .where(ExecModel.status.in_(["FILLED", "PARTIAL"]))
+                    .order_by(ExecModel.placed_at.desc()).limit(15)
+                ).scalars().all()
+                fills_data = [
+                    {
+                        "時刻": r.fill_time.strftime("%H:%M:%S")
+                        if r.fill_time else r.placed_at.strftime("%H:%M:%S"),
+                        "token": str(r.token_id)[:8] + "…",
+                        "side": "B" if int(r.side) == 0 else "S",
+                        "size": float(r.size_usdc),
+                        "price": float(r.filled_price or r.limit_price),
+                        "ms": r.signal_to_place_ms or 0,
+                    }
+                    for r in rows
+                ]
+        except Exception as e:  # noqa: BLE001
+            fills_data = []
+            st.caption(f"db: {e}")
+        if not fills_data:
+            st.caption("(約定なし — execution_enabled=true で動き始める)")
+        st.dataframe(
+            fills_data, use_container_width=True, hide_index=True, height=220,
+            column_config={
+                "size": st.column_config.NumberColumn(format="$%.0f"),
+                "price": st.column_config.NumberColumn(format="%.3f"),
+                "ms": st.column_config.NumberColumn(format="%d ms"),
+            },
+        )
 
 with r1[2], st.container(border=True):
     hc1, hc2 = st.columns([5, 1])
