@@ -41,10 +41,14 @@ code { font-size: 0.7rem !important; }
 
 
 def help_icon(html_text: str) -> str:
-    """Inline ⓘ icon with browser-native title tooltip (hover-only)."""
+    """Inline ⓘ icon with browser-native title tooltip (hover-only).
+
+    Uses &#10; (HTML numeric char ref for LF) instead of real newlines so the
+    markdown parser doesn't split the attribute across lines.
+    """
     text = html_text
-    text = text.replace("<hr>", chr(10) + "────────" + chr(10))
-    text = text.replace("<br>", chr(10))
+    text = text.replace("<hr>", "&#10;────────&#10;")
+    text = text.replace("<br>", "&#10;")
     text = text.replace("<b>", "").replace("</b>", "")
     text = text.replace("&lt;", "<").replace("&gt;", ">")
     text = text.replace("&amp;", "&").replace("&quot;", "'")
