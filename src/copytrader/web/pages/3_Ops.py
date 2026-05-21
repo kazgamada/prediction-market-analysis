@@ -14,38 +14,22 @@ from copytrader.db.engine import get_session
 from copytrader.db.models import Cursor, Job, RiskEvent, RpcDeadLetter, Trade
 from copytrader.indexer.backfill import CURSOR_NAME
 from copytrader.web.auth import require_password
+from copytrader.web.theme import (
+    ACCENT_CYAN, ACCENT_GREEN, ACCENT_RED, ACCENT_YELLOW,
+    LIVE_LAYOUT, LIVE_PALETTE, STATIC_LAYOUT, STATIC_PALETTE,
+    TILE_BG, inject_theme,
+)
 from copytrader.web.format import fmt_ago
 
 st.set_page_config(page_title="Ops", layout="wide",
                    initial_sidebar_state="collapsed")
 require_password()
 
-st.markdown("""
-<style>
-.block-container { padding-top: 0.6rem !important; padding-bottom: 0.4rem !important; max-width: 100% !important; }
-[data-testid="stMetric"] { padding: 0.1rem !important; }
-[data-testid="stMetricLabel"] { font-size: 0.7rem !important; }
-[data-testid="stMetricValue"] { font-size: 1.0rem !important; }
-h1, h3, h4, h5 { padding: 0 !important; margin: 0.2rem 0 !important; }
-h1 { font-size: 1.2rem !important; }
-h5 { font-size: 0.85rem !important; }
-hr { margin: 0.3rem 0 !important; }
-.stDataFrame { font-size: 0.72rem !important; }
-[data-testid="stVerticalBlockBorderWrapper"] { padding: 0.3rem 0.5rem !important; }
-.stButton button { padding: 0.2rem 0.5rem !important; font-size: 0.78rem !important; }
-input, textarea, .stNumberInput input, .stSelectbox div { font-size: 0.78rem !important; }
-.stTabs [data-baseweb="tab"] { padding: 0.2rem 0.5rem !important; font-size: 0.78rem !important; }
-code { font-size: 0.7rem !important; }
-</style>
-""", unsafe_allow_html=True)
+inject_theme()
 
 
 def help_icon(html_text: str) -> str:
-    """Inline ⓘ icon with browser-native title tooltip (hover-only).
-
-    Uses &#10; (HTML numeric char ref for LF) instead of real newlines so the
-    markdown parser doesn't split the attribute across lines.
-    """
+    """Inline ⓘ icon with browser-native title tooltip (hover-only)."""
     text = html_text
     text = text.replace("<hr>", "&#10;────────&#10;")
     text = text.replace("<br>", "&#10;")
@@ -54,9 +38,7 @@ def help_icon(html_text: str) -> str:
     text = text.replace("&amp;", "&").replace("&quot;", "'")
     text = text.replace('"', "'")
     return (
-        '<span title="' + text + '" '
-        'style="cursor:help;color:#2c7fb8;font-weight:bold;font-size:0.85rem">'
-        'ⓘ</span>'
+        '<span class="help-tip-icon" title="' + text + '">ⓘ</span>'
     )
 
 

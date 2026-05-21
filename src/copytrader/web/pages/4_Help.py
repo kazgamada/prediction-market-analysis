@@ -9,23 +9,17 @@ import pandas as pd
 import streamlit as st
 
 from copytrader.web.auth import require_password
+from copytrader.web.theme import (
+    ACCENT_CYAN, ACCENT_GREEN, ACCENT_RED, ACCENT_YELLOW,
+    LIVE_LAYOUT, LIVE_PALETTE, STATIC_LAYOUT, STATIC_PALETTE,
+    TILE_BG, inject_theme,
+)
 
 st.set_page_config(page_title="Help", layout="wide",
                    initial_sidebar_state="collapsed")
 require_password()
 
-st.markdown("""
-<style>
-.block-container { padding-top: 0.6rem !important; padding-bottom: 0.4rem !important; max-width: 100% !important; }
-h1 { font-size: 1.2rem !important; padding: 0 !important; margin: 0 0 0.3rem 0 !important; }
-h2, h3 { padding: 0 !important; margin: 0.3rem 0 !important; }
-h3 { font-size: 0.95rem !important; }
-hr { margin: 0.3rem 0 !important; }
-.stDataFrame { font-size: 0.78rem !important; }
-[data-testid="stVerticalBlockBorderWrapper"] { padding: 0.3rem 0.5rem !important; }
-.stTabs [data-baseweb="tab"] { padding: 0.3rem 0.8rem !important; font-size: 0.85rem !important; }
-</style>
-""", unsafe_allow_html=True)
+inject_theme()
 
 st.markdown(
     "# Help — 略号・専門用語一覧　"

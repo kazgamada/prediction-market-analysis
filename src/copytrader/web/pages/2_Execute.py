@@ -14,39 +14,22 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from copytrader.db.engine import get_session
 from copytrader.db.models import Job, Watchlist
 from copytrader.web.auth import require_password
+from copytrader.web.theme import (
+    ACCENT_CYAN, ACCENT_GREEN, ACCENT_RED, ACCENT_YELLOW,
+    LIVE_LAYOUT, LIVE_PALETTE, STATIC_LAYOUT, STATIC_PALETTE,
+    TILE_BG, inject_theme,
+)
 from copytrader.web.format import fmt_ago, short_addr
 
 st.set_page_config(page_title="Execute", layout="wide",
                    initial_sidebar_state="collapsed")
 require_password()
 
-st.markdown("""
-<style>
-.block-container { padding-top: 0.6rem !important; padding-bottom: 0.4rem !important; max-width: 100% !important; }
-[data-testid="stMetric"] { padding: 0.1rem !important; }
-[data-testid="stMetricLabel"] { font-size: 0.7rem !important; }
-[data-testid="stMetricValue"] { font-size: 1.0rem !important; }
-[data-testid="stMetricDelta"] { font-size: 0.65rem !important; }
-h1, h3, h4, h5 { padding: 0 !important; margin: 0.2rem 0 !important; }
-h1 { font-size: 1.2rem !important; }
-h5 { font-size: 0.85rem !important; }
-hr { margin: 0.3rem 0 !important; }
-.stDataFrame { font-size: 0.72rem !important; }
-[data-testid="stVerticalBlockBorderWrapper"] { padding: 0.3rem 0.5rem !important; }
-.stProgress > div > div > div { height: 6px !important; }
-.stButton button { padding: 0.2rem 0.5rem !important; font-size: 0.78rem !important; }
-input, .stNumberInput input { font-size: 0.78rem !important; }
-.stTabs [data-baseweb="tab"] { padding: 0.2rem 0.5rem !important; font-size: 0.78rem !important; }
-</style>
-""", unsafe_allow_html=True)
+inject_theme()
 
 
 def help_icon(html_text: str) -> str:
-    """Inline ⓘ icon with browser-native title tooltip (hover-only).
-
-    Uses &#10; (HTML numeric char ref for LF) instead of real newlines so the
-    markdown parser doesn't split the attribute across lines.
-    """
+    """Inline ⓘ icon with browser-native title tooltip (hover-only)."""
     text = html_text
     text = text.replace("<hr>", "&#10;────────&#10;")
     text = text.replace("<br>", "&#10;")
@@ -55,9 +38,7 @@ def help_icon(html_text: str) -> str:
     text = text.replace("&amp;", "&").replace("&quot;", "'")
     text = text.replace('"', "'")
     return (
-        '<span title="' + text + '" '
-        'style="cursor:help;color:#2c7fb8;font-weight:bold;font-size:0.85rem">'
-        'ⓘ</span>'
+        '<span class="help-tip-icon" title="' + text + '">ⓘ</span>'
     )
 
 
@@ -311,16 +292,26 @@ with r1[0], st.container(border=True):
     halt_limit = abs(float(_st.get("halt_daily_pnl_pct") or -5.0))
     g = go.Figure(go.Indicator(
         mode="gauge+number", value=today_dd_pct,
-        number={"suffix": "%", "valueformat": ".1f", "font": {"size": 20}},
-        title={"text": "今日 DD", "font": {"size": 10}},
-        gauge={"axis": {"range": [0, halt_limit], "tickfont": {"size": 8}},
-               "bar": {"color": "#d9534f"},
-               "steps": [{"range": [0, halt_limit * 0.5], "color": "#e7f6e7"},
-                         {"range": [halt_limit * 0.5, halt_limit * 0.8], "color": "#fff3cd"},
-                         {"range": [halt_limit * 0.8, halt_limit], "color": "#f8d7da"}],
-               "threshold": {"line": {"color": "red", "width": 3},
-                             "thickness": 0.75, "value": halt_limit}}))
-    g.update_layout(height=140, margin=dict(t=20, b=0, l=10, r=10))
+        number={"suffix": "%", "valueformat": ".1f",
+                "font": {"size": 22, "color": "#fafafa"}},
+        title={"text": "今日 DD", "font": {"size": 10, "color": "#7a8499"}},
+        gauge={
+            "axis": {"range": [0, halt_limit],
+                     "tickfont": {"size": 8, "color": "#7a8499"}},
+            "bar": {"color": ACCENT_RED},
+            "bgcolor": TILE_BG,
+            "bordercolor": "#1a2230",
+            "steps": [{"range": [0, halt_limit * 0.5], "color": "#0d3320"},
+                      {"range": [halt_limit * 0.5, halt_limit * 0.8],
+                       "color": "#3d2f0a"},
+                      {"range": [halt_limit * 0.8, halt_limit],
+                       "color": "#3d0d12"}],
+            "threshold": {"line": {"color": ACCENT_RED, "width": 3},
+                          "thickness": 0.75, "value": halt_limit}}))
+    g.update_layout(
+        **{**LIVE_LAYOUT, "height": 140,
+           "margin": dict(t=20, b=0, l=10, r=10)},
+    )
     st.plotly_chart(g, use_container_width=True)
     # Live progress bars from risk_evaluations.metrics_snapshot
     exp_pct = float(rmet.get("total_exposure_pct", 0.0))
@@ -545,37 +536,42 @@ with r2[0], st.container(border=True):
     st.markdown(f"##### Rollout 進行 (A→B→C→D) {help_icon(HELP['rollout'])}",
                 unsafe_allow_html=True)
     PHASES = [
-        ("A", "Paper", 28, 0, "#9aa0a6"),
-        ("B", "Micro", 28, 10, "#5b9bd5"),
-        ("C", "Small", 56, 50, "#2c7fb8"),
-        ("D", "Scale", 9999, 250, "#1a5490"),
+        ("A", "Paper", 28, 0, "#475569"),
+        ("B", "Micro", 28, 10, "#3aa3ff"),
+        ("C", "Small", 56, 50, "#1d4ed8"),
+        ("D", "Scale", 9999, 250, "#7c3aed"),
     ]
     CUR, DAY = 1, 18
     stp = go.Figure()
     for i, (pid, name, dur, sz, col) in enumerate(PHASES):
         if i < CUR:
-            color, op, suf = "#2ca02c", 1.0, " ✓"
+            color, op, suf = ACCENT_GREEN, 1.0, " ✓"
         elif i == CUR:
             color, op, suf = col, 1.0, " ●"
         else:
-            color, op, suf = "#cccccc", 0.5, ""
+            color, op, suf = "#1f2937", 1.0, ""
         stp.add_shape(type="rect", x0=i + 0.05, x1=i + 0.95, y0=0.35, y1=0.85,
-                      fillcolor=color, opacity=op, line=dict(width=0))
+                      fillcolor=color, opacity=op,
+                      line=dict(width=1, color="#1a2230"))
+        text_color = "#fafafa" if i <= CUR else "#7a8499"
         stp.add_annotation(
             x=i + 0.5, y=0.6, showarrow=False,
-            text=f"<b>{pid}{suf}</b> {name}　<span style='font-size:8px;color:#eee'>{dur}d/${sz}</span>",
-            font=dict(size=10, color="white" if op > 0.7 else "#666"))
+            text=f"<b>{pid}{suf}</b> {name}　<span style='font-size:8px'>{dur}d/${sz}</span>",
+            font=dict(size=10, color=text_color))
         if i < len(PHASES) - 1:
             stp.add_annotation(x=i + 1, y=0.6, showarrow=False, text="→",
-                               font=dict(size=14, color="#888"))
+                               font=dict(size=14, color="#475569"))
     prog = DAY / max(1, PHASES[CUR][2])
     stp.add_shape(type="rect", x0=CUR + 0.05,
                   x1=CUR + 0.05 + 0.9 * min(prog, 1.0),
-                  y0=0.27, y1=0.32, fillcolor="#ff8c00", line=dict(width=0))
-    stp.update_layout(height=70, margin=dict(t=0, b=0, l=5, r=5),
-                      xaxis=dict(visible=False, range=[0, len(PHASES)]),
-                      yaxis=dict(visible=False, range=[0, 1]),
-                      plot_bgcolor="white")
+                  y0=0.27, y1=0.32, fillcolor=ACCENT_YELLOW, line=dict(width=0))
+    stp.update_layout(
+        **{**LIVE_LAYOUT, "height": 70,
+           "margin": dict(t=0, b=0, l=5, r=5),
+           "xaxis": dict(visible=False, range=[0, len(PHASES)]),
+           "yaxis": dict(visible=False, range=[0, 1]),
+           "plot_bgcolor": "rgba(0,0,0,0)"},
+    )
     st.plotly_chart(stp, use_container_width=True, key="stepper")
     ac = st.columns(4)
     ac[0].button("→ C 昇格", type="primary", use_container_width=True,

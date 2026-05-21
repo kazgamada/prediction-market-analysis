@@ -14,39 +14,22 @@ from copytrader.db.engine import get_session
 from copytrader.db.models import Job
 from copytrader.jobs.queue import enqueue
 from copytrader.web.auth import require_password
+from copytrader.web.theme import (
+    ACCENT_CYAN, ACCENT_GREEN, ACCENT_RED, ACCENT_YELLOW,
+    LIVE_LAYOUT, LIVE_PALETTE, STATIC_LAYOUT, STATIC_PALETTE,
+    TILE_BG, inject_theme,
+)
 from copytrader.web.format import fmt_ago
 
 st.set_page_config(page_title="Strategy", layout="wide",
                    initial_sidebar_state="collapsed")
 require_password()
 
-st.markdown("""
-<style>
-.block-container { padding-top: 0.6rem !important; padding-bottom: 0.4rem !important; max-width: 100% !important; }
-[data-testid="stMetric"] { padding: 0.1rem !important; }
-[data-testid="stMetricLabel"] { font-size: 0.7rem !important; }
-[data-testid="stMetricValue"] { font-size: 1.0rem !important; }
-[data-testid="stMetricDelta"] { font-size: 0.65rem !important; }
-h1, h3, h4, h5 { padding: 0 !important; margin: 0.2rem 0 !important; }
-h1 { font-size: 1.2rem !important; }
-h5 { font-size: 0.85rem !important; }
-hr { margin: 0.3rem 0 !important; }
-.stDataFrame { font-size: 0.72rem !important; }
-[data-testid="stVerticalBlockBorderWrapper"] { padding: 0.3rem 0.5rem !important; }
-.stRadio > div { gap: 0.5rem !important; }
-.stRadio label { font-size: 0.75rem !important; }
-.stButton button { padding: 0.2rem 0.5rem !important; font-size: 0.78rem !important; }
-input, select, .stNumberInput input { font-size: 0.78rem !important; }
-</style>
-""", unsafe_allow_html=True)
+inject_theme()
 
 
 def help_icon(html_text: str) -> str:
-    """Inline ⓘ icon with browser-native title tooltip (hover-only).
-
-    Uses &#10; (HTML numeric char ref for LF) instead of real newlines so the
-    markdown parser doesn't split the attribute across lines.
-    """
+    """Inline ⓘ icon with browser-native title tooltip (hover-only)."""
     text = html_text
     text = text.replace("<hr>", "&#10;────────&#10;")
     text = text.replace("<br>", "&#10;")
@@ -55,9 +38,7 @@ def help_icon(html_text: str) -> str:
     text = text.replace("&amp;", "&").replace("&quot;", "'")
     text = text.replace('"', "'")
     return (
-        '<span title="' + text + '" '
-        'style="cursor:help;color:#2c7fb8;font-weight:bold;font-size:0.85rem">'
-        'ⓘ</span>'
+        '<span class="help-tip-icon" title="' + text + '">ⓘ</span>'
     )
 
 
@@ -268,10 +249,13 @@ with r1[1], st.container(border=True):
         text=[[fmt.format(v) for v in r] for r in z], texttemplate="%{text}",
         hovertemplate="%{y} × %{x}<br>%{z}<extra></extra>",
     ))
-    hm.update_layout(height=220, margin=dict(t=5, b=5, l=5, r=5),
-                     xaxis=dict(tickangle=-30, tickfont=dict(size=9)),
-                     yaxis=dict(tickfont=dict(size=9)),
-                     font=dict(size=8))
+    hm.update_layout(
+        **{**STATIC_LAYOUT, "height": 220,
+           "xaxis": {**STATIC_LAYOUT["xaxis"],
+                     "tickangle": -30, "tickfont": dict(size=9, color="#1a1a1a")},
+           "yaxis": {**STATIC_LAYOUT["yaxis"],
+                     "tickfont": dict(size=9, color="#1a1a1a")}},
+    )
     st.plotly_chart(hm, use_container_width=True, key="t_hm")
 
 r2 = st.columns([1, 1, 1])
@@ -287,11 +271,11 @@ with r2[0], st.container(border=True):
                          "trades": int(trades[mi, si])})
     sdf = pd.DataFrame(rows)
     sc = px.scatter(sdf, x="ROI %", y="Sharpe", size="trades", color="strategy",
-                    hover_data=["market"], size_max=16)
-    sc.add_hline(y=0, line_dash="dot", line_color="gray")
-    sc.add_vline(x=0, line_dash="dot", line_color="gray")
-    sc.update_layout(height=220, margin=dict(t=5, b=5, l=5, r=5),
-                     showlegend=False, font=dict(size=8))
+                    hover_data=["market"], size_max=16,
+                    color_discrete_sequence=STATIC_PALETTE)
+    sc.add_hline(y=0, line_dash="dot", line_color="#999")
+    sc.add_vline(x=0, line_dash="dot", line_color="#999")
+    sc.update_layout(**{**STATIC_LAYOUT, "height": 220})
     st.plotly_chart(sc, use_container_width=True, key="t_sc")
 
 with r2[1], st.container(border=True):
@@ -319,7 +303,7 @@ with r2[1], st.container(border=True):
         cdf["_s"] = cdf["ROI %"] * cdf["Sharpe"].clip(lower=0)
     top10 = cdf.sort_values("_s", ascending=False).head(10).reset_index(drop=True)
     dates60 = pd.date_range(end=pd.Timestamp.utcnow(), periods=60, freq="D")
-    palette = px.colors.qualitative.Bold + px.colors.qualitative.Set2
+    palette = STATIC_PALETTE * 2
     eq = go.Figure()
     for i, row in top10.iterrows():
         mi_, si_ = int(row["market_idx"]), int(row["strat_idx"])
@@ -331,10 +315,12 @@ with r2[1], st.container(border=True):
                                 line=dict(color=palette[i % len(palette)], width=1.5),
                                 name=f"#{int(i + 1)}",
                                 hovertemplate=f"{row['market']}<br>{row['strategy']}<br>$%{{y:.0f}}<extra></extra>"))
-    eq.add_hline(y=1000, line_dash="dot", line_color="gray")
-    eq.update_layout(height=180, margin=dict(t=5, b=5, l=5, r=5),
-                     font=dict(size=8),
-                     legend=dict(font=dict(size=7), x=1.01, y=1))
+    eq.add_hline(y=1000, line_dash="dot", line_color="#999")
+    eq.update_layout(
+        **{**STATIC_LAYOUT, "height": 180,
+           "showlegend": True,
+           "legend": dict(font=dict(size=7, color="#1a1a1a"), x=1.01, y=1)},
+    )
     st.plotly_chart(eq, use_container_width=True, key="t_eq")
 
 with r2[2], st.container(border=True):

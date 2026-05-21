@@ -1,4 +1,4 @@
-"""Home (Dashboard) — single viewport, tiles with hover help."""
+"""Home (Dashboard) — single viewport, tiles with hover help. Dark theme."""
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
@@ -10,34 +10,27 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from copytrader.web.auth import require_password
+from copytrader.web.theme import (
+    ACCENT_CYAN,
+    ACCENT_GREEN,
+    ACCENT_RED,
+    ACCENT_YELLOW,
+    LIVE_LAYOUT,
+    LIVE_PALETTE,
+    STATIC_LAYOUT,
+    STATIC_PALETTE,
+    TILE_BG,
+    inject_theme,
+)
 
 st.set_page_config(page_title="Home", layout="wide",
                    initial_sidebar_state="collapsed")
 require_password()
-
-st.markdown("""
-<style>
-.block-container { padding-top: 0.6rem !important; padding-bottom: 0.4rem !important; max-width: 100% !important; }
-[data-testid="stMetric"] { padding: 0.1rem !important; }
-[data-testid="stMetricLabel"] { font-size: 0.7rem !important; }
-[data-testid="stMetricValue"] { font-size: 1.0rem !important; }
-[data-testid="stMetricDelta"] { font-size: 0.65rem !important; }
-[data-testid="stMetricDelta"] svg { width: 0.6rem !important; }
-h1 { font-size: 1.2rem !important; padding: 0 !important; margin: 0 0 0.3rem 0 !important; }
-hr { margin: 0.3rem 0 !important; }
-[data-testid="stVerticalBlockBorderWrapper"] { padding: 0.3rem 0.5rem !important; border-radius: 6px !important; }
-.stPageLink a { padding: 0 !important; font-size: 0.78rem !important; }
-.stDataFrame { font-size: 0.72rem !important; }
-</style>
-""", unsafe_allow_html=True)
+inject_theme()
 
 
 def help_icon(html_text: str) -> str:
-    """Inline ⓘ icon with browser-native title tooltip (hover-only).
-
-    Uses &#10; (HTML numeric char ref for LF) instead of real newlines so the
-    markdown parser doesn't split the attribute across lines.
-    """
+    """Inline ⓘ icon with browser-native title tooltip (hover-only)."""
     text = html_text
     text = text.replace("<hr>", "&#10;────────&#10;")
     text = text.replace("<br>", "&#10;")
@@ -46,9 +39,7 @@ def help_icon(html_text: str) -> str:
     text = text.replace("&amp;", "&").replace("&quot;", "'")
     text = text.replace('"', "'")
     return (
-        '<span title="' + text + '" '
-        'style="cursor:help;color:#2c7fb8;font-weight:bold;font-size:0.85rem">'
-        'ⓘ</span>'
+        '<span class="help-tip-icon" title="' + text + '">ⓘ</span>'
     )
 
 
@@ -68,8 +59,9 @@ st.markdown(
 rng = np.random.default_rng(42)
 
 TILE_H = 130
-LAY = dict(height=TILE_H, margin=dict(t=4, b=4, l=4, r=4),
-           showlegend=False, font=dict(size=9))
+# All Home tiles are LIVE data (real-time updating from indexer / executor).
+LAY = {**LIVE_LAYOUT, "height": TILE_H}
+_PALETTE = LIVE_PALETTE
 
 
 def tile_header(title: str, page_path: str, icon: str, help_text: str) -> None:
@@ -228,7 +220,8 @@ with r1[0], st.container(border=True):
             np.cumsum(rng.normal(loc=b, scale=80, size=30)) for b in [25, 18, 12, 8, -3]
         ]),
     })
-    fig = px.line(eq_df, x="date", y="pnl", color="wallet")
+    fig = px.line(eq_df, x="date", y="pnl", color="wallet",
+                  color_discrete_sequence=_PALETTE)
     fig.update_layout(**LAY, xaxis_title="", yaxis_title="")
     st.plotly_chart(fig, use_container_width=True, key="t1")
 
@@ -247,8 +240,9 @@ with r1[1], st.container(border=True):
     f = go.Figure()
     f.add_trace(go.Scatter(x=pd.date_range(end=datetime.now(UTC), periods=90, freq="D"),
                            y=dd, fill="tozeroy", mode="lines",
-                           line=dict(color="#d9534f", width=1)))
-    f.add_hline(y=-15, line_dash="dash", line_color="orange")
+                           line=dict(color=ACCENT_RED, width=1),
+                           fillcolor="rgba(239,68,68,0.2)"))
+    f.add_hline(y=-15, line_dash="dash", line_color=ACCENT_YELLOW)
     f.update_layout(**LAY, xaxis_title="", yaxis_title="")
     st.plotly_chart(f, use_container_width=True, key="t2")
 
@@ -280,14 +274,13 @@ with r1[3], st.container(border=True):
         "詳細は Strategy ページの Top 10 並び替えで確認。"
     )
     dates60 = pd.date_range(end=datetime.now(UTC), periods=60, freq="D")
-    palette = px.colors.qualitative.Bold
     f = go.Figure()
     for i in range(6):
         sub = np.random.default_rng(100 + i)
         eq = np.cumsum(sub.normal(loc=(6 - i) * 6 / 60 * 10, scale=40, size=60)) + 1000
         f.add_trace(go.Scatter(x=dates60, y=eq, mode="lines",
-                               line=dict(color=palette[i], width=1)))
-    f.add_hline(y=1000, line_dash="dot", line_color="gray")
+                               line=dict(color=_PALETTE[i % len(_PALETTE)], width=1.5)))
+    f.add_hline(y=1000, line_dash="dot", line_color="#444")
     f.update_layout(**LAY, xaxis_title="", yaxis_title="")
     st.plotly_chart(f, use_container_width=True, key="t4")
 
@@ -334,13 +327,15 @@ with r2[2], st.container(border=True):
     )
     g = go.Figure(go.Indicator(
         mode="gauge+number", value=3.2,
-        number={"suffix": "%", "valueformat": ".1f", "font": {"size": 18}},
-        gauge={"axis": {"range": [0, 8], "tickfont": {"size": 7}},
-               "bar": {"color": "#d9534f"},
-               "steps": [{"range": [0, 4], "color": "#e7f6e7"},
-                         {"range": [4, 6.4], "color": "#fff3cd"},
-                         {"range": [6.4, 8], "color": "#f8d7da"}],
-               "threshold": {"line": {"color": "red", "width": 2},
+        number={"suffix": "%", "valueformat": ".1f", "font": {"size": 18, "color": "#fafafa"}},
+        gauge={"axis": {"range": [0, 8], "tickfont": {"size": 7, "color": "#7a8499"}},
+               "bar": {"color": ACCENT_RED},
+               "bgcolor": TILE_BG,
+               "bordercolor": "#1a2230",
+               "steps": [{"range": [0, 4], "color": "#0d3320"},
+                         {"range": [4, 6.4], "color": "#3d2f0a"},
+                         {"range": [6.4, 8], "color": "#3d0d12"}],
+               "threshold": {"line": {"color": ACCENT_RED, "width": 3},
                              "thickness": 0.75, "value": 8}}))
     g.update_layout(**LAY)
     st.plotly_chart(g, use_container_width=True, key="t7")
@@ -355,8 +350,8 @@ with r2[3], st.container(border=True):
         "山が右に動いてるなら劣化中。"
     )
     lat = rng.normal(850, 280, 200).clip(min=100)
-    f = go.Figure(data=go.Histogram(x=lat, nbinsx=20, marker_color="#2c7fb8"))
-    f.add_vline(x=np.median(lat), line_dash="dash", line_color="orange")
+    f = go.Figure(data=go.Histogram(x=lat, nbinsx=20, marker_color=ACCENT_CYAN))
+    f.add_vline(x=np.median(lat), line_dash="dash", line_color=ACCENT_YELLOW)
     f.update_layout(**LAY, xaxis_title="", yaxis_title="")
     st.plotly_chart(f, use_container_width=True, key="t8")
 
@@ -374,7 +369,7 @@ with r3[0], st.container(border=True):
     labels = ["米大統領", "FRB", "BTC", "AI", "G7", "WC", "投票率"]
     sizes_ = [320, 250, 480, 410, 200, 180, 1370]
     pnls = [22.8, 13.6, 80, 12, -2.8, -30, 90.2]
-    colors = ["#2ca02c" if p >= 0 else "#d62728" for p in pnls]
+    colors = [ACCENT_GREEN if p >= 0 else ACCENT_RED for p in pnls]
     f = go.Figure(go.Bar(x=sizes_, y=labels, orientation="h", marker_color=colors))
     f.update_layout(**LAY, xaxis=dict(visible=False),
                     yaxis=dict(tickfont=dict(size=8)))
@@ -434,7 +429,8 @@ with r3[3], st.container(border=True):
     f.add_trace(go.Scatter(
         x=pd.date_range(end=datetime.now(UTC), periods=24, freq="h"),
         y=lag, mode="lines+markers",
-        line=dict(color="#5b9bd5", width=1), marker=dict(size=3)))
-    f.add_hline(y=120, line_dash="dash", line_color="red")
+        line=dict(color=ACCENT_CYAN, width=1.5),
+        marker=dict(size=4, color=ACCENT_CYAN)))
+    f.add_hline(y=120, line_dash="dash", line_color=ACCENT_RED)
     f.update_layout(**LAY, xaxis_title="", yaxis_title="")
     st.plotly_chart(f, use_container_width=True, key="t12")
