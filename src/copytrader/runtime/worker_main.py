@@ -1,13 +1,16 @@
 """`worker` process entrypoint.
 
-Mirrors web_main.py / indexer_main.py boot order: health server first,
-migrate best-effort, then the job runner.
+Boot order (mirrors web_main.py):
+  1. Health server in a background thread (FIRST)
+  2. alembic migration (best-effort)
+  3. Job runner
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
+import threading
 
 from copytrader.config import settings
 from copytrader.health.server import HealthServer
@@ -45,37 +48,50 @@ async def _rpc_check() -> tuple[bool, str]:
 
 
 async def amain() -> None:
-    health = HealthServer(settings.health_port + 2, _rpc_check)
-
-    original_readyz = health.readyz
-
-    async def readyz(request):  # type: ignore[no-untyped-def]
-        resp = await original_readyz(request)
-        try:
-            import json
-            body = json.loads(resp.body.decode())
-        except Exception:  # noqa: BLE001
-            body = {}
-        body["migration"] = _MIGRATION_STATE
-        body["role"] = "worker"
-        from aiohttp import web as _w
-        return _w.json_response(body, status=resp.status)
-
-    health.readyz = readyz  # type: ignore[assignment]
+    # ヘルスサーバーはスレッドで先行起動済み (main() -> _start_health_in_thread)。
+    # amain では worker 本体の起動だけ担う。
 
     if _MIGRATION_STATE["status"] != "ok":
-        log.error("worker parked: migration not ok")
-        await health.run_forever()
+        log.error("worker parked: migration not ok; health server still running on port %d",
+                  settings.health_port + 2)
+        await asyncio.Event().wait()
         return
 
     try:
         from copytrader.jobs.runner import run as run_worker
     except ImportError as e:
-        log.warning("worker modules not yet implemented (%s); running health-only", e)
-        await health.run_forever()
+        log.warning("worker modules not yet implemented (%s); health-only mode", e)
+        await asyncio.Event().wait()
         return
 
-    await asyncio.gather(health.run_forever(), run_worker())
+    await run_worker()
+
+
+def _start_health_in_thread() -> None:
+    """Health server in background thread — starts BEFORE migrations (T21)."""
+
+    async def readyz_with_state(request):  # type: ignore[no-untyped-def]
+        from aiohttp import web as _w
+
+        from copytrader.db.engine import ping as db_ping
+        db_ok = db_ping()
+        body = {
+            "status": "ok" if db_ok else "degraded",
+            "db": "ok" if db_ok else "down",
+            "migration": _MIGRATION_STATE,
+            "role": "worker",
+        }
+        return _w.json_response(body, status=200 if db_ok else 503)
+
+    health = HealthServer(settings.health_port + 2, None)
+    health.readyz = readyz_with_state  # type: ignore[assignment]
+
+    def runner() -> None:
+        asyncio.run(health.run_forever())
+
+    t = threading.Thread(target=runner, name="health-worker", daemon=True)
+    t.start()
+    log.info("health server started on port %d", settings.health_port + 2)
 
 
 def main() -> None:
@@ -83,8 +99,9 @@ def main() -> None:
     log.info("worker_main: boot start (git_sha=%s build_time=%s)",
              settings.git_sha, settings.build_time)
     _dump_boot_env()
-    _run_migrations_safely()
-    asyncio.run(amain())
+    _start_health_in_thread()  # step 1: health server first
+    _run_migrations_safely()   # step 2: migrate
+    asyncio.run(amain())       # step 3: job runner
 
 
 if __name__ == "__main__":

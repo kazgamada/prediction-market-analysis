@@ -1,15 +1,16 @@
 """`indexer` process entrypoint.
 
-Mirrors web_main.py boot order: health server FIRST, then migrate (best-
-effort), then the actual indexer supervisor. This way crash-on-boot is
-observable via /readyz rather than just a generic Fly "appears to be
-crashing" message.
+Boot order (mirrors web_main.py):
+  1. Health server in a background thread (FIRST — so /readyz responds even if migrate crashes)
+  2. alembic migration (best-effort; failure is logged and parks the indexer)
+  3. Indexer supervisor
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
+import threading
 
 from copytrader.chain.errors import redact_url
 from copytrader.config import settings
@@ -60,41 +61,51 @@ async def _rpc_check() -> tuple[bool, str]:
 
 
 async def amain() -> None:
-    health = HealthServer(settings.health_port + 1, _rpc_check)
-
-    # Augment readyz with migration + role info.
-    original_readyz = health.readyz
-
-    async def readyz(request):  # type: ignore[no-untyped-def]
-        resp = await original_readyz(request)
-        try:
-            import json
-            body = json.loads(resp.body.decode())
-        except Exception:  # noqa: BLE001
-            body = {}
-        body["migration"] = _MIGRATION_STATE
-        body["role"] = "indexer"
-        from aiohttp import web as _w
-        return _w.json_response(body, status=resp.status)
-
-    health.readyz = readyz  # type: ignore[assignment]
+    # ヘルスサーバーはスレッドで先行起動済み (main() -> _start_health_in_thread)。
+    # amain では indexer 本体の起動だけ担う。
 
     if _MIGRATION_STATE["status"] != "ok":
-        log.error("indexer parked: migration not ok")
-        await health.run_forever()
+        log.error("indexer parked: migration not ok; health server still running on port %d",
+                  settings.health_port + 1)
+        await asyncio.Event().wait()
         return
 
     try:
         from copytrader.indexer.supervisor import run as run_indexer
     except ImportError as e:
-        log.warning("indexer modules not yet implemented (%s); running health-only", e)
-        await health.run_forever()
+        log.warning("indexer modules not yet implemented (%s); health-only mode", e)
+        await asyncio.Event().wait()
         return
 
-    await asyncio.gather(
-        health.run_forever(),
-        run_indexer(),
-    )
+    await run_indexer()
+
+
+def _start_health_in_thread() -> None:
+    """Health server in background thread — starts BEFORE migrations (T21)."""
+    rpc_check = _rpc_check
+
+    async def readyz_with_state(request):  # type: ignore[no-untyped-def]
+        from aiohttp import web as _w
+
+        from copytrader.db.engine import ping as db_ping
+        db_ok = db_ping()
+        body = {
+            "status": "ok" if db_ok else "degraded",
+            "db": "ok" if db_ok else "down",
+            "migration": _MIGRATION_STATE,
+            "role": "indexer",
+        }
+        return _w.json_response(body, status=200 if db_ok else 503)
+
+    health = HealthServer(settings.health_port + 1, rpc_check)
+    health.readyz = readyz_with_state  # type: ignore[assignment]
+
+    def runner() -> None:
+        asyncio.run(health.run_forever())
+
+    t = threading.Thread(target=runner, name="health-indexer", daemon=True)
+    t.start()
+    log.info("health server started on port %d", settings.health_port + 1)
 
 
 def main() -> None:
@@ -102,8 +113,9 @@ def main() -> None:
     log.info("indexer_main: boot start (git_sha=%s build_time=%s)",
              settings.git_sha, settings.build_time)
     _dump_boot_env()
-    _run_migrations_safely()
-    asyncio.run(amain())
+    _start_health_in_thread()  # step 1: health server first
+    _run_migrations_safely()   # step 2: migrate
+    asyncio.run(amain())       # step 3: indexer supervisor
 
 
 if __name__ == "__main__":

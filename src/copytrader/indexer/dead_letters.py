@@ -50,10 +50,13 @@ def mark_retry(dl_id: int, error_text: str) -> None:
             return
         row.retries += 1
         row.error_text = error_text
-        backoff_s = BACKOFF_BASE_SECONDS * (2 ** (row.retries - 1))
-        row.next_retry = datetime.now(UTC) + timedelta(seconds=backoff_s)
         if row.retries >= MAX_RETRIES:
-            log.error("dead-letter id=%d gave up after %d retries", dl_id, row.retries)
+            log.error("dead-letter id=%d gave up after %d retries; marking resolved", dl_id, row.retries)
+            # resolved_at を設定しないと pending() に返り続け無限リトライになる
+            row.resolved_at = datetime.now(UTC)
+        else:
+            backoff_s = BACKOFF_BASE_SECONDS * (2 ** (row.retries - 1))
+            row.next_retry = datetime.now(UTC) + timedelta(seconds=backoff_s)
 
 
 def mark_resolved(dl_id: int) -> None:

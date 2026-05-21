@@ -329,7 +329,7 @@ with r1[2], st.container(border=True):
             )
             wc2.caption(fmt_ago(wl_added))
             toggle_label = "🟢 active" if wl_active else "⚪ inactive"
-            if wc3.button(toggle_label, key=f"wl_toggle_{addr_b.hex()[:8]}",
+            if wc3.button(toggle_label, key=f"wl_toggle_{addr_b.hex()}",
                           use_container_width=True):
                 try:
                     from sqlalchemy import update as sa_update
@@ -342,7 +342,7 @@ with r1[2], st.container(border=True):
                     st.rerun()
                 except Exception as e:  # noqa: BLE001
                     st.error(str(e))
-            if wc4.button("🗑", key=f"wl_del_{addr_b.hex()[:8]}",
+            if wc4.button("🗑", key=f"wl_del_{addr_b.hex()}",
                           use_container_width=True):
                 try:
                     with get_session() as s:
