@@ -22,78 +22,133 @@
 
 ## 0.5 略号・専門用語ミニ早見表
 
-本書とアプリ画面で頻出する略号。詳細は §8。
+本書とアプリ画面で頻出する略号。**略号 / フルスペル / 日本語訳 / 補足説明** の 4 列で網羅。詳細は §8。
 
 ### お金まわり
-| 略号 | 正式名 | 意味 |
-|---|---|---|
-| **PnL** | Profit and Loss | **損益**。日次 PnL = 今日の利益/損失 |
-| **DD** | Drawdown | **最高益からの下落 %**。例: 過去ピーク $1,000 から $900 に下落 → DD = -10% |
-| **ROI** | Return On Investment | **収益率 %**。利益 ÷ 元本 |
-| **Sharpe** | Sharpe ratio | **リスク調整後リターン**。> 1.0 で優秀 |
-| **USDC** | USD Coin | ステーブルコイン。**1 USDC ≈ 1 ドル** |
-| **MATIC** | Polygon native token | **Polygon のガス代** 用通貨。発注ごとに少し消費 |
 
-### 取引まわり
-| 略号 | 正式名 | 意味 |
-|---|---|---|
-| **edge** | (英: 優位性) | **期待値プラスの優位性**。これが無い copy は損 |
-| **signal** | (英: 信号) | **コピー元 wallet の約定検知イベント** |
-| **copy** | (英: 真似する) | **別ウォレットの約定を遅延付きで真似する取引** |
-| **slippage** | (英: ずれ) | **想定価格と実約定価格のずれ %** |
-| **fill** | (英: 約定) | **発注が成立すること** |
-| **delay** | (英: 遅延) | **signal 検知から発注までの待ち時間 (秒)** |
-| **halt** | (英: 停止) | **全自動発注の停止** |
-| **kill switch** | (英: 緊急停止) | 全発注を即止めるマスタースイッチ |
+| 略号 | フルスペル | 日本語 | 補足 |
+|---|---|---|---|
+| **PnL** | Profit and Loss | 損益 | 日次 PnL = 今日の利益/損失。Profit (利益) と Loss (損失) の合算 |
+| **DD** | Drawdown | ドローダウン (最高益からの下落%) | 例: 過去ピーク $1,000 → $900 に下落 = DD -10% |
+| **ROI** | Return On Investment | 投資収益率 (%) | 利益 ÷ 元本。「投じた額に対していくら戻るか」 |
+| **Sharpe** | Sharpe Ratio | シャープ・レシオ (リスク調整後リターン) | (リターン − 無リスク利率) ÷ 標準偏差。> 1.0 で優秀。命名: William F. Sharpe |
+| **USDC** | USD Coin | ユーエスディーコイン (米ドルステーブルコイン) | 1 USDC ≈ 1 米ドル。Circle 社発行 |
+| **MATIC** | (固有名詞) | マティック (Polygon ネイティブトークン) | Polygon ネットワークのガス代用。発注ごとに微量消費 |
+| **USD** | United States Dollar | 米ドル | $ 記号で表記 |
+| **bps** | basis points | ベーシスポイント (1bp = 0.01%) | 100 bps = 1%。金融業界の慣習単位 |
 
-### システムまわり
-| 略号 | 正式名 | 意味 |
-|---|---|---|
-| **indexer** | (英: 索引付け) | **ブロックチェーンを監視して取引データを DB に取り込む裏方プロセス** |
-| **cursor** | (英: 進捗ポインタ) | indexer の「ここまで処理した」記録 |
-| **lag** | (英: 遅れ) | indexer がブロックチェーンに対して何秒遅れているか |
-| **CLOB** | Central Limit Order Book | **Polymarket の発注先** (取引所の注文板) |
-| **RPC** | Remote Procedure Call | ブロックチェーンノードへの通信。Polygon RPC = Polygon ノード |
-| **WS** | WebSocket | リアルタイム通信プロトコル。RPC の一種 |
-| **API** | Application Programming Interface | 外部サービスへのアクセス窓口 |
-| **dead-letter** | (英: 配達不能郵便) | **処理失敗した RPC chunk の再試行キュー** |
+### 取引まわり (英単語そのまま使用)
 
-### Phase (段階)
-| 略号 | 意味 |
-|---|---|
-| **Phase 0** | **オフライン edge 検証**。実発注なし、過去データで「儲かるか」をシミュ |
-| **Phase A** | **Paper trading**。実発注なし、シグナルだけ受信して仮想発注 (4 週) |
-| **Phase B** | **Micro live**。$10/trade で本物の発注、検証スタート (4 週) |
-| **Phase C** | **Small live**。$50/trade、本格運用準備 (8 週) |
-| **Phase D** | **Scale**。$250/trade〜、本番稼働 |
+| 用語 | フルスペル / 文脈 | 日本語 | 補足 |
+|---|---|---|---|
+| **edge** | trading edge | (取引上の) 優位性 | 期待値プラスの優位性。これが無い copy trade は損失要因 |
+| **signal** | trading signal | 取引シグナル (取引指示) | コピー元 wallet の約定を検知して発注対象とするイベント |
+| **copy trade** | copy trade / copy trading | コピー取引 | 別ウォレットの約定を遅延付きで真似する取引手法 |
+| **slippage** | price slippage | スリッページ (価格のずれ) | 想定価格と実約定価格のずれ %。delay が長いほど大きくなる |
+| **fill** | order fill | フィル (約定) | 発注が市場と成立すること。partial fill = 部分約定 |
+| **delay** | execution delay | 遅延 (発注までの待ち時間, 秒) | signal 検知から発注までの間隔。0 だと slippage と相殺で逆に儲からない |
+| **halt** | trading halt | 取引停止 | 全自動発注の停止状態。kill switch ON と同義 |
+| **kill switch** | emergency kill switch | 緊急停止スイッチ | 全発注を即止めるマスタースイッチ |
+| **backtest** | backtesting | バックテスト (過去データ検証) | 過去データで戦略を仮想実行して儲かるかをシミュ |
+| **paper trading** | paper trading | ペーパートレード (仮想取引) | 実発注せずシグナル受信のみ。Phase A で実施 |
+| **wallet** | wallet | ウォレット (口座) | Polygon 上のアカウント。0x... のアドレスで識別 |
+| **watchlist** | watchlist | ウォッチリスト (監視対象一覧) | copy 対象として登録した wallet の集合 |
+| **smart money** | smart money | スマートマネー (上手な投資家) | 過去成績の良い wallet。copy 対象候補 |
+
+### システム・インフラまわり
+
+| 略号 | フルスペル | 日本語 | 補足 |
+|---|---|---|---|
+| **indexer** | blockchain event indexer | ブロックチェーン イベント インデクサー | ブロックチェーンを監視して取引データを DB に取り込む裏方プロセス |
+| **cursor** | indexer cursor | (インデクサー) 進捗カーソル | 「ここまで処理した」記録。Polygon ブロック番号で表される |
+| **lag** | indexer lag | (インデクサーの) 遅れ秒数 | 最新ブロックから何秒遅れて処理しているか |
+| **CLOB** | Central Limit Order Book | セントラル・リミット・オーダー・ブック (中央指値注文板) | Polymarket の取引所。注文板 + マッチングエンジン |
+| **RPC** | Remote Procedure Call | リモート・プロシージャ・コール (遠隔手続呼出) | ブロックチェーンノードへのアクセス方式 |
+| **WS** | WebSocket | ウェブソケット (双方向リアルタイム通信) | RPC の一種、リアルタイム購読向け |
+| **HTTP** | HyperText Transfer Protocol | ハイパーテキスト転送プロトコル | Web の標準通信プロトコル。RPC でも使う |
+| **API** | Application Programming Interface | アプリケーション・プログラミング・インターフェース | 外部サービスへの呼び出し窓口 |
+| **DB** | Database | データベース | 本プロジェクトでは PostgreSQL |
+| **dead-letter** | dead-letter queue (DLQ) | デッドレターキュー (配達不能再試行キュー) | 処理失敗した RPC chunk を後で再試行するための一時保管 |
+| **chunk** | data chunk | チャンク (データの塊) | indexer が一度に処理するブロック範囲 (デフォルト 1000 ブロック) |
+| **migration** | database migration | データベース マイグレーション (スキーマ変更履歴管理) | テーブル構造変更を Alembic で管理 |
+| **idempotent** | idempotent operation | 冪等 (べきとう) | 同じ操作を何度しても結果が変わらない性質。発注の二重実行防止に使用 |
+
+### Phase (運用段階)
+
+| 略号 | 日本語名 / フルスペル | 内容 | 期間 / size |
+|---|---|---|---|
+| **Phase 0** | Phase Zero (オフライン edge 検証) | 実発注なし、過去データで「儲かるか」をシミュ | (検証のみ) |
+| **Phase A** | Phase A "Paper Trading" (ペーパートレード) | 実発注なし、シグナルだけ受信して仮想発注 | 4 週 / $0 |
+| **Phase B** | Phase B "Micro Live" (マイクロ実発注) | $10/trade で本物の発注、検証スタート | 4 週 / $10 |
+| **Phase C** | Phase C "Small Live" (スモール実発注) | $50/trade、本格運用準備 | 8 週 / $50 |
+| **Phase D** | Phase D "Scale" (スケール本番) | $250/trade〜、本番稼働 | 継続 / $250+ |
 
 ### 発注の用語
-| 略号 | 意味 |
-|---|---|
-| **size** | 1 trade あたりの金額 (USDC) |
-| **BUY / B** | 買い注文 |
-| **SELL / S** | 売り注文 |
-| **TIF** | Time In Force = 注文の有効期限種別 |
-| **GTC** | Good Till Cancelled = キャンセルまで有効 (通常はこれ) |
-| **IOC** | Immediate Or Cancel = 即約定、残りキャンセル |
-| **FOK** | Fill Or Kill = 全量約定 or 全キャンセル |
-| **bps** | basis points = **0.01%**。100 bps = 1% |
-| **p50 / p95** | 中央値 / 95 パーセンタイル (statistics) |
-| **0x...** | Ethereum/Polygon ウォレットアドレス (16進数 42 文字) |
-| **token_id** | Polymarket の取引対象の内部 ID |
-| **market** | 予測市場の 1 件 (例: 「米大統領 2028 — Dem」) |
-| **resolve** | 予測市場が確定して 0 or 1 USDC になること |
 
-### シグナル状態アイコン
-| アイコン | 意味 |
-|---|---|
-| **✅** | 約定成功 |
-| **⏳** | 待機中 (delay 経過中) |
-| **❌** | 発注失敗 (CLOB rejected) |
-| **⏭** | スキップ (リスク上限ヒット) |
-| **🟢** | 正常 (LIVE 状態) |
-| **🛑** | 停止 (HALTED 状態) |
-| **⚠** | 警告 (条件超過) |
+| 略号 / 用語 | フルスペル | 日本語 | 補足 |
+|---|---|---|---|
+| **size** | trade size | サイズ (1 取引あたりの金額) | 単位は USDC |
+| **BUY** / **B** | BUY (buy order) | 買い注文 | 「Yes」または「対象が起きる」に賭ける |
+| **SELL** / **S** | SELL (sell order) | 売り注文 | 「No」または「対象が起きない」に賭ける |
+| **TIF** | Time In Force | タイム・イン・フォース (注文有効期限種別) | 注文がいつまで生きるかの設定 |
+| **GTC** | Good Till Cancelled | グッド・ティル・キャンセルド (キャンセルまで有効) | 通常はこれを使う |
+| **IOC** | Immediate Or Cancel | イミディエイト・オア・キャンセル (即時 or キャンセル) | 即約定可能な部分だけ約定、残りはキャンセル |
+| **FOK** | Fill Or Kill | フィル・オア・キル (全量 or 全キャンセル) | 全量約定できないなら全てキャンセル |
+| **p50** | 50th percentile (median) | 中央値 (50 パーセンタイル) | データを並べて真ん中の値 |
+| **p95** | 95th percentile | 95 パーセンタイル | 下位 95% を含む値。外れ値の影響を見る |
+| **0x...** | hexadecimal prefix | (16 進数表記の) ウォレットアドレス | Polygon/Ethereum 共通。"0x" + 16進40文字 |
+| **token_id** | Polymarket token ID | トークン ID (取引対象の内部識別子) | Polymarket の各 outcome を表す数値 |
+| **market** | prediction market | 予測市場 | 1 件の予測対象 (例: 「米大統領 2028 — Dem」) |
+| **outcome** | market outcome | 結果 (Yes / No) | 予測市場が最終的にどちらに決着したか |
+| **resolve** | market resolution | 市場解決 (確定) | 予測市場が確定して 0 or 1 USDC になること |
+| **liquidity** | market liquidity | 流動性 | 取引量。低いと slippage が悪化 |
+| **OI** | Open Interest | オープン・インタレスト (未決済建玉総額) | その市場に建っている総 USDC |
+| **vol** | volume | ボリューム (出来高) | 一定期間の取引総額。24h vol = 24 時間出来高 |
+
+### シグナル / 状態アイコン
+
+| アイコン | 英語 | 意味 |
+|---|---|---|
+| **✅** | filled | 約定成功 |
+| **⏳** | pending | 待機中 (delay 経過中) |
+| **❌** | rejected | 発注失敗 (CLOB rejected) |
+| **⏭** | skipped | スキップ (リスク上限ヒット) |
+| **🟢** | live | 正常稼働中 (LIVE 状態) |
+| **🛑** | halted | 全停止中 (HALTED 状態) |
+| **⚠** | warning | 警告 (条件超過) |
+| **●** | current | 現在 (ステッパー内) |
+
+### ブロックチェーン関連
+
+| 用語 | フルスペル | 日本語 | 補足 |
+|---|---|---|---|
+| **Polygon** | Polygon PoS (Proof of Stake) | ポリゴン (Ethereum レイヤー2 ネットワーク) | Polymarket はここで動いている |
+| **Ethereum** | Ethereum | イーサリアム | 大本のブロックチェーン |
+| **PoS** | Proof of Stake | プルーフ・オブ・ステーク (権威証明) | Polygon の合意アルゴリズム |
+| **gas** | gas fee | ガス代 (取引手数料) | トランザクション 1 件あたりの計算料金。MATIC で支払う |
+| **block** | block | ブロック | ブロックチェーンの記録単位。Polygon は約 2 秒に 1 ブロック |
+| **tx** | transaction | トランザクション (取引) | ブロックチェーン上の 1 件の処理 |
+| **WS** | WebSocket subscription | WS 購読 | リアルタイムでブロック / イベントを受信 |
+| **OrderFilled** | OrderFilled event | (CTF Exchange の) 約定イベント | Polymarket の約定が発生したという通知 |
+| **CTF** | Conditional Token Framework | コンディショナル・トークン・フレームワーク | Polymarket の取引対象トークン規格 |
+
+### Tech / DevOps 略号
+
+| 略号 | フルスペル | 日本語 | 補足 |
+|---|---|---|---|
+| **CI** | Continuous Integration | 継続的統合 | テストを自動実行する仕組み (GitHub Actions) |
+| **CD** | Continuous Deployment | 継続的デプロイ | 自動デプロイ |
+| **PR** | Pull Request | プルリクエスト | コード変更の提案単位 |
+| **CLI** | Command Line Interface | コマンドラインインターフェース | ターミナルでの操作 |
+| **SSH** | Secure Shell | セキュアシェル | 暗号化通信プロトコル |
+| **UI** | User Interface | ユーザーインターフェース | 画面 |
+| **e2e** | end-to-end | エンド・ツー・エンド (端から端まで) | 全体通しのテスト |
+| **DoD** | Definition of Done | 完了の定義 | 「終わった」と判断する基準 |
+| **JST** | Japan Standard Time | 日本標準時 (UTC+9) | 日本時間 |
+| **UTC** | Coordinated Universal Time | 協定世界時 | 世界標準時刻、時差なし |
+| **JSON** | JavaScript Object Notation | ジェイソン (JS オブジェクト記法) | データ形式 |
+| **SQL** | Structured Query Language | エスキューエル (構造化問合せ言語) | DB の操作言語 |
+| **DDL** | Data Definition Language | データ定義言語 | SQL のうち CREATE TABLE 等 |
 
 ---
 
