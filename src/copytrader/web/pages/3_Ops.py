@@ -36,25 +36,24 @@ hr { margin: 0.3rem 0 !important; }
 input, textarea, .stNumberInput input, .stSelectbox div { font-size: 0.78rem !important; }
 .stTabs [data-baseweb="tab"] { padding: 0.2rem 0.5rem !important; font-size: 0.78rem !important; }
 code { font-size: 0.7rem !important; }
-.help-tip { position: relative; cursor: help; font-size: 0.85rem;
-  display: inline-block; margin-left: 0.2rem; opacity: 0.55;
-  color: #2c7fb8; font-weight: bold; }
-.help-tip:hover { opacity: 1; }
-.help-tip .help-popup { visibility: hidden; position: absolute; z-index: 9999;
-  width: 340px; background: #1f2933; color: #f7fafc;
-  padding: 10px 14px; border-radius: 6px;
-  font-size: 0.75rem; line-height: 1.55; font-weight: normal;
-  left: 0; top: 1.4rem; white-space: normal; text-align: left;
-  box-shadow: 0 6px 18px rgba(0,0,0,0.35); pointer-events: none; }
-.help-tip:hover .help-popup { visibility: visible; }
-.help-tip .help-popup b { color: #ffd166; }
-.help-tip .help-popup hr { border: 0; border-top: 1px solid #4a5568; margin: 6px 0; }
 </style>
 """, unsafe_allow_html=True)
 
 
-def help_icon(text: str) -> str:
-    return f'<span class="help-tip">ⓘ<span class="help-popup">{text}</span></span>'
+def help_icon(html_text: str) -> str:
+    """Inline ⓘ icon with browser-native title tooltip (hover-only)."""
+    text = html_text
+    text = text.replace("<hr>", chr(10) + "────────" + chr(10))
+    text = text.replace("<br>", chr(10))
+    text = text.replace("<b>", "").replace("</b>", "")
+    text = text.replace("&lt;", "<").replace("&gt;", ">")
+    text = text.replace("&amp;", "&").replace("&quot;", "'")
+    text = text.replace('"', "'")
+    return (
+        '<span title="' + text + '" '
+        'style="cursor:help;color:#2c7fb8;font-weight:bold;font-size:0.85rem">'
+        'ⓘ</span>'
+    )
 
 
 HELP = {
