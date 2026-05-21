@@ -194,9 +194,21 @@ class _SubHandle(JobHandle):
         self.captured_result = r
 
 
+def handle_gamma_resolve_fetch(handle: JobHandle) -> None:
+    """Pull resolved markets from Polymarket Gamma into market_resolutions."""
+    from copytrader.gamma.resolver import run_gamma_resolve_fetch_job
+
+    params = handle.params or {}
+    handle.log(f"gamma fetch start params={params}")
+    summary = run_gamma_resolve_fetch_job(params)
+    handle.log(f"gamma fetch done: {summary}")
+    handle.result(_to_jsonable(summary))
+
+
 HANDLERS = {
     "backfill": handle_backfill,
     "rank": handle_rank,
     "replay": handle_replay,
     "phase0": handle_phase0,
+    "gamma_resolve_fetch": handle_gamma_resolve_fetch,
 }
