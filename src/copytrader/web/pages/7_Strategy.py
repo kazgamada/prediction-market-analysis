@@ -197,44 +197,88 @@ st.plotly_chart(scatter, use_container_width=True)
 
 st.divider()
 
-st.subheader("シミュレーション ドリルダウン")
-st.caption("market × strategy を選ぶと equity curve と詳細統計を表示。")
-d1, d2 = st.columns(2)
-sel_market = d1.selectbox("市場", MARKETS, index=int(best_idx[0]))
-sel_strat = d2.selectbox(
-    "戦略", strat_labels, index=int(best_idx[1]),
+st.subheader("シミュレーション ドリルダウン — Top 10")
+st.caption(
+    "全 market × strategy 組み合わせをパフォーマンス順にソートし上位 10 を表示。"
+    "並び替え指標を切り替え可能。"
 )
-mi = MARKETS.index(sel_market)
-si = strat_labels.index(sel_strat)
 
-dc1, dc2, dc3, dc4 = st.columns(4)
-dc1.metric("ROI", f"{roi_matrix[mi, si]:+.2f}%")
-dc2.metric("Sharpe", f"{sharpe_matrix[mi, si]:+.2f}")
-dc3.metric("trades", f"{trades_matrix[mi, si]}")
-dc4.metric("max DD", f"{dd_matrix[mi, si]:.2f}%")
+sort_metric = st.radio(
+    "並び替え指標",
+    ["ROI %", "Sharpe", "ROI × Sharpe (複合)"],
+    horizontal=True,
+)
+
+all_combos = []
+for mi_, m_ in enumerate(MARKETS):
+    for si_, s_ in enumerate(STRATEGIES):
+        all_combos.append({
+            "market_idx": mi_,
+            "strat_idx": si_,
+            "market": m_,
+            "strategy": strat_labels[si_],
+            "ROI %": float(roi_matrix[mi_, si_]),
+            "Sharpe": float(sharpe_matrix[mi_, si_]),
+            "trades": int(trades_matrix[mi_, si_]),
+            "max DD %": float(dd_matrix[mi_, si_]),
+        })
+combo_df = pd.DataFrame(all_combos)
+if sort_metric == "ROI %":
+    combo_df["_score"] = combo_df["ROI %"]
+elif sort_metric == "Sharpe":
+    combo_df["_score"] = combo_df["Sharpe"]
+else:
+    combo_df["_score"] = combo_df["ROI %"] * combo_df["Sharpe"].clip(lower=0)
+top10 = combo_df.sort_values("_score", ascending=False).head(10).reset_index(drop=True)
+top10.insert(0, "rank", range(1, len(top10) + 1))
 
 eq_points = 60
-seed = (mi * 1000 + si) % (2**31 - 1)
-sub_rng = np.random.default_rng(seed)
-drift = roi_matrix[mi, si] / 100 / eq_points * 1000
-noise = sub_rng.normal(0, max(80, abs(roi_matrix[mi, si]) * 8), size=eq_points)
-equity = np.cumsum(np.full(eq_points, drift * 10) + noise) + 1000
 dates = pd.date_range(end=pd.Timestamp.utcnow(), periods=eq_points, freq="D")
+palette = px.colors.qualitative.Bold + px.colors.qualitative.Set2
+
 eq_fig = go.Figure()
-eq_fig.add_trace(go.Scatter(
-    x=dates, y=equity, mode="lines",
-    line=dict(color="#2c7fb8", width=2),
-    fill="tozeroy", fillcolor="rgba(44,127,184,0.1)",
-    name="equity",
-))
+final_equities: list[float] = []
+for i, row in top10.iterrows():
+    mi_ = int(row["market_idx"])
+    si_ = int(row["strat_idx"])
+    seed = (mi_ * 1000 + si_) % (2**31 - 1)
+    sub_rng = np.random.default_rng(seed)
+    drift = row["ROI %"] / 100 / eq_points * 1000
+    noise = sub_rng.normal(0, max(60, abs(row["ROI %"]) * 6), size=eq_points)
+    equity = np.cumsum(np.full(eq_points, drift * 10) + noise) + 1000
+    final_equities.append(float(equity[-1]))
+    label = f"#{int(row['rank'])} {row['market'][:10]} × {row['strategy'].split(' /')[0]}"
+    eq_fig.add_trace(go.Scatter(
+        x=dates, y=equity, mode="lines",
+        line=dict(color=palette[i % len(palette)], width=2),
+        name=label,
+        hovertemplate=(f"{row['market']}<br>{row['strategy']}<br>"
+                       "%{x|%Y-%m-%d}: $%{y:.0f}<extra></extra>"),
+    ))
 eq_fig.add_hline(y=1000, line_dash="dot", line_color="gray",
                  annotation_text="initial $1,000")
 eq_fig.update_layout(
-    height=320, margin=dict(t=20, b=20, l=10, r=10),
-    yaxis_title="USDC", xaxis_title="",
-    title=f"{sel_market} × {sel_strat} — equity curve",
+    height=440, margin=dict(t=30, b=20, l=10, r=10),
+    yaxis_title="equity (USDC)", xaxis_title="",
+    title=f"Top 10 equity curves — sorted by {sort_metric}",
+    legend=dict(font=dict(size=10), orientation="v", x=1.02, y=1),
 )
 st.plotly_chart(eq_fig, use_container_width=True)
+
+top10_display = top10.drop(columns=["_score", "market_idx", "strat_idx"]).copy()
+top10_display["final equity"] = [round(e, 0) for e in final_equities]
+st.dataframe(
+    top10_display,
+    use_container_width=True,
+    hide_index=True,
+    column_config={
+        "rank": st.column_config.NumberColumn(width="small"),
+        "ROI %": st.column_config.NumberColumn(format="%+.2f%%"),
+        "Sharpe": st.column_config.NumberColumn(format="%+.2f"),
+        "max DD %": st.column_config.NumberColumn(format="%.2f%%"),
+        "final equity": st.column_config.NumberColumn(format="$%d"),
+    },
+)
 
 st.divider()
 st.caption(
