@@ -205,10 +205,64 @@ def handle_gamma_resolve_fetch(handle: JobHandle) -> None:
     handle.result(_to_jsonable(summary))
 
 
+def handle_watchlist_rotate(handle: JobHandle) -> None:
+    """Auto-promote top wallets + demote underperformers."""
+    from copytrader.jobs.watchlist_rotate import run_watchlist_rotate_job
+
+    params = handle.params or {}
+    handle.log(f"watchlist_rotate start params={params}")
+    summary = run_watchlist_rotate_job(params)
+    handle.log(f"watchlist_rotate done: {summary}")
+    handle.result(_to_jsonable(summary))
+
+
+def handle_daily_summary_telegram(handle: JobHandle) -> None:
+    """Send daily Telegram summary (fail-soft if bot not configured)."""
+    from datetime import UTC, datetime, timedelta
+    from sqlalchemy import func, select
+    from copytrader.db.engine import get_session
+    from copytrader.db.models import Position, TradePnl
+    from copytrader.db import settings_table as _st
+    from copytrader.telegram import notify_daily_summary
+
+    midnight = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    with get_session() as s:
+        today = float(s.execute(
+            select(func.coalesce(func.sum(TradePnl.realized_usdc), 0))
+            .where(TradePnl.ts >= midnight)
+        ).scalar_one())
+        n_pos = int(s.execute(
+            select(func.count()).select_from(Position)
+            .where(Position.open_size_shares > 0)
+        ).scalar_one())
+    phase = str(_st.get("rollout_phase") or "A")
+    started_raw = _st.get("rollout_started_at")
+    try:
+        started = datetime.fromisoformat(str(started_raw).replace("Z", "+00:00"))
+        day_in_phase = (datetime.now(UTC) - started).days
+    except Exception:  # noqa: BLE001
+        day_in_phase = 0
+    phase_pnl = 0.0  # placeholder; per-phase aggregation later
+    usdc = float(_st.get("usdc_balance_cache") or 0.0)
+    matic = float(_st.get("matic_balance_cache") or 0.0)
+    kill = bool(_st.get("kill_switch_on") or False)
+    status = "🛑 HALTED" if kill else "🟢 LIVE"
+    notify_daily_summary(
+        phase=phase, day_in_phase=day_in_phase, phase_pnl=phase_pnl,
+        today_pnl=today, open_positions=n_pos, usdc=usdc, matic=matic,
+        status=status,
+    )
+    summary = {"sent": True, "today_pnl": today, "positions": n_pos}
+    handle.log(f"daily summary: {summary}")
+    handle.result(summary)
+
+
 HANDLERS = {
     "backfill": handle_backfill,
     "rank": handle_rank,
     "replay": handle_replay,
     "phase0": handle_phase0,
     "gamma_resolve_fetch": handle_gamma_resolve_fetch,
+    "watchlist_rotate": handle_watchlist_rotate,
+    "daily_summary_telegram": handle_daily_summary_telegram,
 }

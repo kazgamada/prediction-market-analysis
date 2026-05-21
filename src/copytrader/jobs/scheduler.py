@@ -117,6 +117,10 @@ def seed_default_schedule() -> None:
          now + timedelta(hours=1)),
         ("gamma_resolve_fetch", "@every:60m", "gamma_resolve_fetch",
          {}, now + timedelta(minutes=5)),
+        ("watchlist_rotate", "0 19 * * *", "watchlist_rotate",
+         {}, now + timedelta(hours=2)),
+        ("daily_summary_telegram", "0 0 * * *", "daily_summary_telegram",
+         {}, now + timedelta(hours=3)),
     ]
     with get_session() as s:
         for name, cron_expr, kind, params, next_run in defaults:
