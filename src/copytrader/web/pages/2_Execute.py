@@ -308,24 +308,51 @@ with r1[2], st.container(border=True):
                         st.success(f"added {short_addr(ab)}")
                     except Exception as e:  # noqa: BLE001
                         st.error(str(e))
+        # Watchlist 一覧 + toggle / delete
         try:
             with get_session() as s:
-                rows = s.execute(
+                wl_rows = s.execute(
                     select(Watchlist).order_by(Watchlist.added_at.desc()).limit(20)
                 ).scalars().all()
-                wdata = [
-                    {
-                        "address": "0x" + r.address.hex()[:16] + "…",
-                        "note": r.note,
-                        "active": r.active,
-                        "added": fmt_ago(r.added_at),
-                    }
-                    for r in rows
-                ]
+                wl_list = [(r.address, r.note, r.active, r.added_at) for r in wl_rows]
         except Exception as e:  # noqa: BLE001
-            wdata = []
+            wl_list = []
             st.caption(f"db: {e}")
-        st.dataframe(wdata, use_container_width=True, hide_index=True, height=160)
+
+        for addr_b, wl_note, wl_active, wl_added in wl_list:
+            addr_disp = "0x" + addr_b.hex()[:16] + "…"
+            wc1, wc2, wc3, wc4 = st.columns([3, 2, 1, 1])
+            wc1.markdown(
+                f"<span style='font-size:0.75rem;font-family:monospace'>{addr_disp}</span>"
+                + (f" <span style='color:#888;font-size:0.65rem'>{wl_note}</span>" if wl_note else ""),
+                unsafe_allow_html=True,
+            )
+            wc2.caption(fmt_ago(wl_added))
+            toggle_label = "🟢 active" if wl_active else "⚪ inactive"
+            if wc3.button(toggle_label, key=f"wl_toggle_{addr_b.hex()[:8]}",
+                          use_container_width=True):
+                try:
+                    from sqlalchemy import update as sa_update
+                    with get_session() as s:
+                        s.execute(
+                            sa_update(Watchlist)
+                            .where(Watchlist.address == addr_b)
+                            .values(active=not wl_active)
+                        )
+                    st.rerun()
+                except Exception as e:  # noqa: BLE001
+                    st.error(str(e))
+            if wc4.button("🗑", key=f"wl_del_{addr_b.hex()[:8]}",
+                          use_container_width=True):
+                try:
+                    with get_session() as s:
+                        row = s.get(Watchlist, addr_b)
+                        if row:
+                            s.delete(row)
+                    st.rerun()
+                except Exception as e:  # noqa: BLE001
+                    st.error(str(e))
+
     with tab_jobs:
         try:
             with get_session() as s:
@@ -343,7 +370,62 @@ with r1[2], st.container(border=True):
         except Exception as e:  # noqa: BLE001
             jdata = []
             st.caption(f"db: {e}")
-        st.dataframe(jdata, use_container_width=True, hide_index=True, height=220)
+        st.dataframe(jdata, use_container_width=True, hide_index=True, height=140)
+
+        # Job live log (F17)
+        from copytrader.db.models import JobLog
+        jc1, jc2 = st.columns([2, 1])
+        selected_jid = jc1.number_input(
+            "Job ID でログを表示",
+            min_value=1, step=1,
+            value=jdata[0]["id"] if jdata and "id" in jdata[0] else 1,
+            key="exec_job_id",
+            label_visibility="collapsed",
+        )
+        auto_ref = jc2.checkbox("自動更新 (2s)", key="exec_auto_ref")
+
+        @st.cache_data(ttl=2)
+        def _exec_job_logs(jid: int) -> tuple[dict | None, list[str]]:
+            try:
+                with get_session() as s:
+                    j = s.get(Job, jid)
+                    if not j:
+                        return None, []
+                    logs = s.execute(
+                        select(JobLog).where(JobLog.job_id == jid)
+                        .order_by(JobLog.ts).limit(300)
+                    ).scalars().all()
+                    return (
+                        {"status": j.status, "progress": j.progress,
+                         "result": j.result, "error": j.error_text},
+                        [f"[{lg.ts.strftime('%H:%M:%S')}] {lg.message}" for lg in logs],
+                    )
+            except Exception as e:  # noqa: BLE001
+                return None, [str(e)]
+
+        jmeta, jlogs = _exec_job_logs(int(selected_jid))
+        if jmeta:
+            sc = {"SUCCEEDED": "green", "FAILED": "red", "RUNNING": "orange"}.get(
+                jmeta["status"], "gray"
+            )
+            st.markdown(
+                f"<b style='color:{sc}'>{jmeta['status']}</b>"
+                + (f" — {jmeta['error']}" if jmeta.get("error") else ""),
+                unsafe_allow_html=True,
+            )
+            if jmeta.get("result"):
+                st.json(jmeta["result"], expanded=False)
+            if jlogs:
+                st.code("\n".join(jlogs[-80:]), language=None)
+            else:
+                st.caption("ログなし")
+        else:
+            st.caption("job が見つかりません")
+
+        if auto_ref:
+            import time as _time
+            _time.sleep(2)
+            st.rerun()
     with tab_manual:
         with st.form("manual"):
             mc1, mc2 = st.columns(2)

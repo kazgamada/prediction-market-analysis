@@ -28,14 +28,8 @@ primary_region = 'nrt'
     hard_limit = 50
     soft_limit = 25
 
-[[services]]
-  protocol = "tcp"
-  internal_port = 8080
-  processes = ["web"]
-
-  [[services.ports]]
-    port = 8080
-    handlers = ["http"]
+# health server (port 8080) は各プロセスが内部で起動するが
+# Fly の http_service でのみ外部公開するため [[services]] は使わない (T14)
 
 [[vm]]
   size = 'shared-cpu-1x'

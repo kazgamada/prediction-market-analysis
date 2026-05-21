@@ -164,7 +164,10 @@ STRATEGIES = [
 ]
 n_m, n_s = len(MARKETS), len(STRATEGIES)
 roi = rng.normal(4, 8, (n_m, n_s))
-roi[:, 0] += 3; roi[:, -2] -= 5; roi[2, :] += 6; roi[7, :] -= 4
+roi[:, 0] += 3
+roi[:, -2] -= 5
+roi[2, :] += 6
+roi[7, :] -= 4
 sharpe = roi / (4 + rng.uniform(0, 3, (n_m, n_s)))
 trades = rng.integers(20, 400, (n_m, n_s))
 strat_labels = [s["name"] for s in STRATEGIES]
@@ -305,7 +308,7 @@ with r2[1], st.container(border=True):
         st.markdown(help_icon(HELP["top10"]), unsafe_allow_html=True)
     combos = []
     for mi, m in enumerate(MARKETS):
-        for si, s in enumerate(STRATEGIES):
+        for si, _s in enumerate(STRATEGIES):
             combos.append({"market_idx": mi, "strat_idx": si,
                            "market": m, "strategy": strat_labels[si],
                            "ROI %": float(roi[mi, si]),
@@ -342,7 +345,7 @@ with r2[2], st.container(border=True):
                 unsafe_allow_html=True)
     try:
         with get_session() as s:
-            rows = (
+            phase0_rows = (
                 s.execute(
                     select(Job).where(Job.kind == "phase0")
                     .order_by(desc(Job.created_at)).limit(8)
@@ -355,9 +358,38 @@ with r2[2], st.container(border=True):
                     "created": fmt_ago(r.created_at),
                     "window": (r.params or {}).get("window"),
                 }
-                for r in rows
+                for r in phase0_rows
             ]
+            # 最新の完了 job の結果を保持
+            last_done = next(
+                (r for r in phase0_rows if r.status == "SUCCEEDED" and r.result), None
+            )
     except Exception as e:  # noqa: BLE001
         data = []
+        phase0_rows = []
+        last_done = None
         st.caption(f"db: {e}")
-    st.dataframe(data, use_container_width=True, hide_index=True, height=220)
+    st.dataframe(data, use_container_width=True, hide_index=True, height=130)
+
+    # 最新の完了した Phase 0 の Replay 結果を表示
+    if last_done and last_done.result:
+        st.markdown("**最新 Phase 0 結果**")
+        replay_res = (last_done.result or {}).get("replay", {})
+        per_delay = (replay_res or {}).get("per_delay", [])
+        if per_delay:
+            import pandas as pd
+            df_replay = pd.DataFrame([
+                {
+                    "delay (s)": r.get("delay_seconds"),
+                    "signals": f"{r.get('signals_executed',0)}/{r.get('signals_total',0)}",
+                    "PnL (USDC)": r.get("realized_pnl_usdc", "—"),
+                    "ROI %": r.get("roi_pct", "—"),
+                }
+                for r in per_delay
+            ])
+            st.dataframe(df_replay, use_container_width=True, hide_index=True, height=90)
+        wallets = (last_done.result or {}).get("top_wallets", [])
+        if wallets:
+            st.caption(f"上位 {len(wallets)} wallets")
+    elif data:
+        st.caption("完了した Phase 0 がありません")

@@ -268,11 +268,14 @@ with r[1], st.container(border=True):
     st.markdown(f"##### Settings overrides {help_icon(HELP['settings'])}",
                 unsafe_allow_html=True)
     KNOWN_KEYS = [
-        "exchange_addresses",
-        "order_filled_topic0",
+        "indexer_window_days",
         "rank_min_trades",
         "rank_min_volume_usdc",
         "replay_default_delays",
+        "replay_copy_usd",
+        "watchlist_top_n",
+        "exchange_addresses",
+        "order_filled_topic0",
     ]
     with st.form("setting"):
         key = st.selectbox("key", KNOWN_KEYS + ["(custom)"],
