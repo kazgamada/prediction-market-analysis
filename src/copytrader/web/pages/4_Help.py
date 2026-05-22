@@ -248,10 +248,267 @@ GLOSSARY = {
 search = st.text_input("🔍 検索 (略号 / 英語 / 日本語、部分一致)",
                        placeholder="例: PnL、Sharpe、シグナル、CLOB").strip().lower()
 
-tab_labels = list(GLOSSARY.keys())
+SETUP_TAB_LABEL = "🚀 初期設定"
+
+SETUP_STEPS = [
+    (
+        "Step 0 — Deploy 検証 (今日〜数日)",
+        """
+**目的**: 全 17 PR の deploy が走り、システムが裏で動き始めている確認。
+
+**チェックリスト**:
+- ✅ GitHub Actions の `Deploy to Fly.io #N` が ✅
+- ✅ Ops ページの `git_sha` が最新
+- ✅ **migration が走った** (Ops で cursors / dead-letters が表示される)
+- ✅ **scheduler が動いている** (Ops → Recent jobs に `gamma_resolve_fetch` が出現)
+- ✅ **indexer 稼働** (cursor block が更新され続け、trades 1h > 0)
+- ✅ **risk evaluator 動作** (Execute のリスクゲージが正常表示)
+- ✅ **Home/Strategy/Execute/Ops** が全部開ける
+""",
+    ),
+    (
+        "Step 1 — 外部準備 (1〜2 週間)",
+        """
+**目的**: 実発注に必要な外部サービスの登録 + Fly secrets 投入。
+
+**必要なもの**:
+1. **Polymarket CLOB API key** — https://polymarket.com → Settings → Developer → API Keys。3 つの値 (key / secret / passphrase) 取得
+2. **Polygon トレーダーウォレット** — MetaMask で **新規ウォレット作成** (生活用と分離)
+   - 秘密鍵をエクスポート (`TRADER_PRIVATE_KEY`)
+   - 公開アドレス (`TRADER_ADDRESS`)
+3. **USDC + MATIC 入金** — 取引所から Polygon ネットワークでウォレットへ:
+   - USDC: $100 (Phase B 検証用に $200 推奨)
+   - MATIC: $5 程度
+4. **Telegram bot 作成** — @BotFather に `/newbot` → token 取得
+   - `https://api.telegram.org/bot<TOKEN>/getUpdates` で chat_id 取得
+   - 自分の user_id を `TELEGRAM_ADMIN_USER_IDS` に
+
+**Fly secrets 投入** (Fly.io ダッシュボード → Secrets):
+```
+CLOB_API_KEY, CLOB_API_SECRET, CLOB_API_PASSPHRASE
+TRADER_PRIVATE_KEY, TRADER_ADDRESS
+TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_ADMIN_USER_IDS
+```
+
+保存すると Fly が自動再起動。
+
+**動作確認**:
+- Telegram で `/status` → 返答あり → bot 接続 OK
+- Ops ページで cursor / trades が引き続き動いている
+""",
+    ),
+    (
+        "Step 2 — edge 検証 (2〜4 週間)",
+        """
+**目的**: Phase 0 を毎晩自動実行し、edge が **本当に存在するか** を見極める。撤退判断もここで。
+
+**何もしなくても自動で動くもの**:
+- 毎晩 18:00 UTC `nightly_phase0` job が走る
+- 毎時 `gamma_resolve_fetch` で resolved market を取り込む
+- 毎晩 19:00 `watchlist_rotate` で auto promote/demote
+
+**初日にやること**:
+1. Strategy ページで `Run` を 1 回手動実行 (window=30, top_n=10)
+2. 数分〜十数分待って status=SUCCEEDED 確認
+3. Strategy ページの KPI が表示される
+
+**毎日チェック (3 分)**:
+- Strategy ページの KPI:
+  - **黒字率** > 50% か (赤いほど edge 薄い)
+  - **中央値 ROI** > +3% か
+  - **ベスト** が突出してないか (= 過学習サイン)
+
+**2〜4 週間後の判断**:
+
+| 状況 | 判断 |
+|---|---|
+| 中央値 ROI > +5%、黒字率 > 60%、Top10 全部右肩上がり | ✅ **Phase A へ進む** |
+| 中央値 ROI 0〜+3%、ばらつき大 | ⚠ もう 2 週観察 |
+| 中央値 ROI < 0 が 2 週続く | 🛑 **撤退**。実発注しない |
+
+**この時点で watchlist が空なら**: Strategy の上位 wallet 一覧から 10〜15 件を Execute → Watchlist で手動登録。
+""",
+    ),
+    (
+        "Step A — Phase A Paper Trading ($0/trade, 4 週間)",
+        """
+**目的**: 実発注なしで「もし発注してたら」のシミュレーション。
+
+**準備**:
+1. Ops → Settings で `execution_enabled = false` を確認 (デフォルト)
+2. Execute → Watchlist に **active wallet 10〜15 件**
+
+**毎日 (5 分)**:
+- Home の KPI を確認 (Indexer lag、受信シグナル、DD gauge)
+- Execute → シグナル tab: watchlist の wallet が約定すると signal 行が出現
+  - `⏭ skipped` reason="paper" になる
+- Telegram の朝サマリー (9:00 JST) を確認
+
+**週次 (30 分)**:
+- Strategy ページで Phase 0 結果を見る
+- backtest predicted vs paper-mode signals 件数を比較
+- latency p95 を確認
+
+**4 週間後の昇格条件**:
+- 経過 ≥ 28 日
+- 累積 paper ROI ≥ +3%
+- 最大 DD ≤ -8%
+- 勝率 ≥ 52%
+- backtest 乖離 ≤ 20%
+- Latency p95 ≤ 3000ms
+- **kill switch を 1 回手動 ON/OFF してテスト**
+""",
+    ),
+    (
+        "Step B — Phase B Micro Live ($10/trade, 4 週間)",
+        """
+**目的**: 本物のお金で動かす最初のフェーズ。
+
+**昇格手順**:
+1. Execute ページで昇格条件全 ✅ + 停止条件 0 ヒット 確認
+2. Telegram `/status` で念のため確認
+3. 「→ B 昇格」ボタンクリック
+4. 自動的に `execution_enabled=true`, `copy_size_usdc=10`, Telegram 通知
+
+**運用 4 週間**:
+- 日次: Home + Telegram (3 分)
+- 週次: Strategy + Execute レビュー (30 分)
+- **異常時**: Telegram `/halt` (即停止)
+
+**典型的なトラブルと対処**:
+
+| 症状 | 対処 |
+|---|---|
+| latency p95 > 3 秒 | RPC ノード切替 |
+| slippage > 1% 多発 | `limit_slippage_bps` を 100→50 に絞る |
+| Watchlist wallet 突然パフォーマンス低下 | auto_rotate が deactivate するのを待つ |
+| 連敗 3 回 | 自動 size 半減 ($10→$5)、24h でリセット |
+| dead-letters > 100 件 | RPC 不調、Ops で確認 |
+| kill switch 発動 | 停止条件タブで原因確認、解決後手動 OFF |
+
+**昇格条件 (Phase C へ)**:
+- B で 28 日以上稼働
+- 累計 ROI ≥ +3% (paper 予測の 70% 以上)
+- 最大 DD ≤ 8%
+- 勝率 ≥ 52%
+""",
+    ),
+    (
+        "Step C — Phase C Small Live ($50/trade, 8 週間)",
+        """
+**目的**: 本格運用へのスケールアップ。月次レビュー導入。
+
+**昇格時**:
+- USDC を **$500 以上** に入金
+- 「→ C 昇格」ボタン → `copy_size_usdc = 50` 自動更新
+
+**運用 8 週間**:
+- 日次 / 週次は変わらず
+- **月次レビュー (1〜2 時間) を追加**:
+  - 月初に Home / Strategy / Execute のスクショ保存
+  - 前月との比較
+  - watchlist の入れ替え方針見直し
+  - settings パラメータ調整可否判断
+
+**昇格条件 (Phase D へ)**:
+- C で 56 日以上稼働 (約 2 ヶ月)
+- 累計 ROI ≥ +8%
+- 月次 Sharpe ≥ 0.8
+- 最大 DD ≤ 10%
+""",
+    ),
+    (
+        "Step D — Phase D Scale ($250+/trade, 継続)",
+        """
+**目的**: フル運用。資金を 5% ずつ拡大しながら継続。
+
+**昇格時**:
+- USDC を **$2,500+** に入金
+- `copy_size_usdc = 250`
+- 「→ D 昇格」
+
+**運用ルール**:
+- 日次 / 週次 / 月次を継続
+- **四半期 (3 ヶ月) ごと**:
+  - secrets ローテーション (CLOB key 再発行)
+  - 戦略の根本見直し (新しい wallet 母集団、新しい delay 設定)
+- **常時**:
+  - `copy_size_usdc` は **資金の 5% を超えない** (Kelly 上限)
+  - 残高が増えたら段階的に size 拡大 (例: $1k→50 / $5k→250 / $20k→1000)
+
+**撤退判定 (継続評価)**:
+- 任意の 1 ヶ月で連続赤字 → 警戒
+- 任意の 1 ヶ月で DD > 15% → 一時 Halt + 原因調査
+- 3 ヶ月連続赤字 → Phase C へ降格 or 撤退
+""",
+    ),
+    (
+        "⚠ やってはいけないこと",
+        """
+| やってはいけない | なぜ |
+|---|---|
+| 停止条件の閾値を緩める | 過去の自分の安全設定を裏切る = 破産への直行便 |
+| size を急に 2x にする | リスクが指数的に増える。**5% ずつ** |
+| kill switch 中に手動発注を乱発 | 自動システムの判断と矛盾 |
+| Phase A をスキップして B へ直行 | backtest と実発注の乖離を見ずに本番 |
+| Watchlist を 1 件に絞る | 単一 wallet 劣化で即終了 |
+| 「もうそろそろ大丈夫」で監視を止める | 暴落は監視してない時に来る |
+| 秘密鍵を生活用ウォレットと共有 | 漏洩時の被害が連鎖 |
+| settings.execution_enabled を Step A 前に true にする | paper 検証を飛ばして本番 |
+""",
+    ),
+    (
+        "🎯 今すぐの 3 アクション",
+        """
+**deploy が green なら、今日中にこの 3 つを終わらせる**:
+
+1. **Step 0 確認**: GitHub Actions で Deploy が green、Ops で git_sha が最新を確認
+2. **Step 1 開始**: Polymarket CLOB key を取得して Fly secrets に投入 (15 分)
+3. **Step 2 起動**: Strategy ページで `Run` を 1 回手動実行 → 結果を見る
+
+**3 つすべて今日中に終わる作業です。**
+
+完了したら 2 週間の検証期間 (Step 2)、その間アプリは自動で回ります。
+2 週間後に edge が確認できれば Phase A → B → C → D と段階的に進む。
+
+**正式運用 (Phase D) までの想定期間: 4.5〜6 ヶ月**
+""",
+    ),
+]
+
+tab_labels = [SETUP_TAB_LABEL] + list(GLOSSARY.keys())
 tabs = st.tabs(tab_labels)
 
-for (label, items), tab in zip(GLOSSARY.items(), tabs, strict=False):
+# Setup tab (first)
+with tabs[0]:
+    st.markdown(
+        "**Phase 0 (実装完了) → Phase A → B → C → D (正式運用) の段階別ロードマップ。**"
+        "各ステップを expander で展開して詳細確認。",
+    )
+    if search:
+        # Filter steps by title or body keyword match
+        matched = [
+            (t, b) for t, b in SETUP_STEPS
+            if search in t.lower() or search in b.lower()
+        ]
+        if not matched:
+            st.info(f"「{search}」に該当する setup ステップはありません。")
+        for title, body in matched:
+            with st.expander(title, expanded=True):
+                st.markdown(body)
+    else:
+        for i, (title, body) in enumerate(SETUP_STEPS):
+            # First 2 steps + immediate action expanded by default
+            expanded = (
+                title.startswith("Step 0")
+                or title.startswith("Step 1")
+                or title.startswith("🎯")
+            )
+            with st.expander(title, expanded=expanded):
+                st.markdown(body)
+
+# Glossary tabs (rest)
+for (label, items), tab in zip(GLOSSARY.items(), tabs[1:], strict=False):
     with tab:
         rows = items
         if search:
