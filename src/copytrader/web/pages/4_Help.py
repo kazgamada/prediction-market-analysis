@@ -482,8 +482,8 @@ tabs = st.tabs(tab_labels)
 # Setup tab (first)
 with tabs[0]:
     st.markdown(
-        "**Phase 0 (実装完了) → Phase A → B → C → D (正式運用) の段階別ロードマップ。**"
-        "各ステップを expander で展開して詳細確認。",
+        "**Phase 0 (実装完了) → Phase A → B → C → D (正式運用) "
+        "の段階別ロードマップ。** 各ステップを expander で展開して詳細確認。",
     )
     if search:
         # Filter steps by title or body keyword match

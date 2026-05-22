@@ -236,19 +236,129 @@ input, textarea, .stNumberInput input, .stTextInput input,
 }
 .stPageLink a:hover { color: #60a5fa !important; }
 
-/* === Alerts (toast / success / error) === */
-.stAlert, [data-testid="stNotification"] {
+/* === Alerts (toast / success / error / info / warning) === */
+.stAlert, [data-testid="stNotification"],
+[data-testid="stAlert"], [data-baseweb="notification"] {
   background-color: #0a0d12 !important;
   border: 1px solid #1a2230 !important;
+  color: #fafafa !important;
+}
+[data-testid="stAlert"] p, [data-testid="stAlert"] span,
+[data-testid="stAlert"] div { color: #fafafa !important; }
+/* success → green accent border, error → red, warning → yellow, info → cyan */
+[data-testid="stAlert"][kind="success"],
+.stAlert.st-emotion-cache-1xhwxgs { border-left: 4px solid #22c55e !important; }
+[data-testid="stAlert"][kind="error"] { border-left: 4px solid #ef4444 !important; }
+[data-testid="stAlert"][kind="warning"] { border-left: 4px solid #ffd166 !important; }
+[data-testid="stAlert"][kind="info"] { border-left: 4px solid #3aa3ff !important; }
+
+/* === Expander === */
+[data-testid="stExpander"],
+details[data-testid="stExpander"],
+.streamlit-expander, details {
+  background-color: #0a0d12 !important;
+  border: 1px solid #1a2230 !important;
+  border-radius: 6px !important;
+  margin-bottom: 0.3rem !important;
+}
+[data-testid="stExpander"] summary,
+[data-testid="stExpander"] [data-testid="stExpanderHeader"],
+[data-testid="stExpander"] details > summary,
+details > summary,
+.streamlit-expanderHeader,
+[data-testid="stExpanderToggleIcon"] + div {
+  background-color: #0a0d12 !important;
+  color: #fafafa !important;
+  font-weight: 600 !important;
+}
+[data-testid="stExpander"] summary:hover,
+.streamlit-expanderHeader:hover,
+details > summary:hover {
+  background-color: #0f1623 !important;
+  color: #3aa3ff !important;
+}
+[data-testid="stExpanderDetails"],
+[data-testid="stExpander"] [data-testid="stExpanderDetails"],
+.streamlit-expanderContent {
+  background-color: #0a0d12 !important;
+  color: #e6e6e6 !important;
+  border-top: 1px solid #1a2230 !important;
+}
+[data-testid="stExpanderDetails"] p,
+[data-testid="stExpanderDetails"] li,
+[data-testid="stExpanderDetails"] span,
+[data-testid="stExpanderDetails"] div,
+[data-testid="stExpander"] p,
+[data-testid="stExpander"] li {
+  color: #e6e6e6 !important;
+}
+[data-testid="stExpanderDetails"] strong,
+[data-testid="stExpander"] strong { color: #fafafa !important; }
+
+/* === Markdown tables (rendered from | syntax) === */
+[data-testid="stMarkdown"] table,
+[data-testid="stMarkdownContainer"] table,
+.element-container table {
+  background-color: #050708 !important;
+  border: 1px solid #1a2230 !important;
+  border-collapse: collapse !important;
+  color: #e6e6e6 !important;
+  width: 100% !important;
+}
+[data-testid="stMarkdown"] th,
+[data-testid="stMarkdownContainer"] th,
+.element-container th {
+  background-color: #0f1623 !important;
+  color: #ffd166 !important;
+  border: 1px solid #1a2230 !important;
+  padding: 0.4rem 0.6rem !important;
+  text-align: left !important;
+}
+[data-testid="stMarkdown"] td,
+[data-testid="stMarkdownContainer"] td,
+.element-container td {
+  background-color: #0a0d12 !important;
+  color: #e6e6e6 !important;
+  border: 1px solid #1a2230 !important;
+  padding: 0.3rem 0.6rem !important;
+}
+[data-testid="stMarkdown"] tr:hover td,
+[data-testid="stMarkdownContainer"] tr:hover td {
+  background-color: #0f1623 !important;
 }
 
-/* === Code blocks === */
-code, .stCode {
+/* === Markdown ul/ol/li in content === */
+[data-testid="stMarkdown"] ul,
+[data-testid="stMarkdown"] ol,
+[data-testid="stMarkdown"] li { color: #e6e6e6 !important; }
+[data-testid="stMarkdown"] strong { color: #fafafa !important; }
+[data-testid="stMarkdown"] em { color: #b3bccc !important; }
+[data-testid="stMarkdown"] a { color: #3aa3ff !important; }
+[data-testid="stMarkdown"] a:hover { color: #60a5fa !important; }
+[data-testid="stMarkdown"] blockquote {
+  background-color: #050708 !important;
+  border-left: 3px solid #3aa3ff !important;
+  color: #b3bccc !important;
+  padding: 0.5rem 1rem !important;
+}
+
+/* === Code blocks (``` ``` and inline `code`) === */
+code, .stCode, pre {
   background-color: #050708 !important;
   color: #ffd166 !important;
   border: 1px solid #1a2230 !important;
   font-size: 0.72rem !important;
+  padding: 0.1rem 0.3rem !important;
+  border-radius: 3px !important;
 }
+pre code { border: none !important; padding: 0 !important; }
+pre {
+  background-color: #050708 !important;
+  padding: 0.6rem !important;
+}
+
+/* === Form labels and other text === */
+label, .stFormSubmitButton label { color: #b3bccc !important; }
 
 /* === Toggle === */
 .stCheckbox label, .stToggle label { color: #cbd5e1 !important; }
