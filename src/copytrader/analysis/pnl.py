@@ -238,6 +238,70 @@ def compute_wallet_pnl_with_resolutions(window_days: int) -> dict[bytes, WalletP
     return wallets
 
 
+def compute_wallet_equity_curves(
+    addresses: list[bytes],
+    window_days: int = 30,
+    points: int = 30,
+) -> dict[bytes, list[float]]:
+    """For each wallet address, return a daily cumulative realized-PnL series.
+
+    Used to plot per-wallet equity curves. Memory-bounded by chunked stream.
+    """
+    from datetime import UTC, timedelta
+
+    if not addresses:
+        return {}
+    since = datetime.now(UTC) - timedelta(days=window_days)
+    addr_set = set(addresses)
+    # day index -> { address -> running pnl }
+    # We compute realized PnL day-by-day per wallet using the same
+    # weighted-avg accounting as compute_wallet_pnl.
+    per_wallet: dict[bytes, WalletPnl] = {
+        a: WalletPnl(address=a) for a in addr_set
+    }
+    daily_pnl: dict[bytes, dict] = {a: {} for a in addr_set}
+
+    with get_session() as s:
+        stmt = (
+            select(
+                Trade.ts, Trade.taker, Trade.token_id, Trade.side,
+                Trade.price, Trade.size_shares, Trade.size_usdc,
+            )
+            .where(Trade.ts >= since)
+            .where(Trade.taker.in_(addr_set))
+            .order_by(Trade.ts)
+            .execution_options(yield_per=5000)
+        )
+        for ts, taker, token_id, side, price, size_shares, size_usdc in s.execute(stmt):
+            if taker not in addr_set:
+                continue
+            tr = TradeRow(ts, taker, int(token_id), side, price,
+                          size_shares, size_usdc)
+            wp = per_wallet[taker]
+            prev = wp.realized_pnl_usdc
+            _apply_trade(wp, tr)
+            delta = wp.realized_pnl_usdc - prev
+            day = ts.date()
+            daily_pnl[taker].setdefault(day, Decimal(0))
+            daily_pnl[taker][day] += delta
+
+    # Build dense daily series ordered by date
+    from datetime import date as _date, timedelta as _td
+    end_day = datetime.now(UTC).date()
+    days = [end_day - _td(days=i) for i in range(points - 1, -1, -1)]
+
+    out: dict[bytes, list[float]] = {}
+    for a in addresses:
+        deltas = daily_pnl.get(a, {})
+        cum = Decimal(0)
+        series: list[float] = []
+        for d in days:
+            cum += deltas.get(d, Decimal(0))
+            series.append(float(cum))
+        out[a] = series
+    return out
+
+
 def load_trades(window_days: int) -> list[TradeRow]:
     """Pull all trades from the last `window_days` days, keyed by taker.
 

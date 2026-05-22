@@ -164,10 +164,55 @@ def handle_phase0(handle: JobHandle) -> None:
     })
     handle_replay(replay_sub)
 
+    # Step 4: enrich result with per-wallet equity curves and aggregate
+    # stats so the Strategy UI can render real data without recomputing.
+    handle.log("phase0: step 4/4 enrich (equity curves + aggregates)")
+    try:
+        from copytrader.analysis.pnl import compute_wallet_equity_curves
+
+        addr_bytes = [bytes.fromhex(a[2:]) for a in top_wallets[:10]]
+        curves_map = compute_wallet_equity_curves(
+            addresses=addr_bytes, window_days=window, points=30,
+        )
+        wallet_curves = [
+            {"address": a, "series": curves_map.get(bytes.fromhex(a[2:]), [])}
+            for a in top_wallets[:10]
+        ]
+    except Exception as e:  # noqa: BLE001
+        handle.log(f"enrich failed (continuing): {e}", level=30)
+        wallet_curves = []
+
+    # Aggregate: KPIs derived from replay.per_delay
+    per_delay = (replay_sub.captured_result or {}).get("per_delay", [])
+    roi_values: list[float] = []
+    for d in per_delay:
+        v = d.get("roi_pct")
+        if v is None:
+            continue
+        try:
+            roi_values.append(float(v))
+        except (TypeError, ValueError):
+            pass
+    if roi_values:
+        agg = {
+            "sim_count": len(roi_values),
+            "positive_count": sum(1 for v in roi_values if v > 0),
+            "best_roi": max(roi_values),
+            "worst_roi": min(roi_values),
+            "median_roi": float(sorted(roi_values)[len(roi_values) // 2]),
+        }
+    else:
+        agg = {
+            "sim_count": 0, "positive_count": 0,
+            "best_roi": None, "worst_roi": None, "median_roi": None,
+        }
+
     handle.result({
         "top_wallets": top_wallets,
         "rank": rank_sub.captured_result,
         "replay": replay_sub.captured_result,
+        "wallet_curves": wallet_curves,
+        "aggregate": agg,
     })
 
 
