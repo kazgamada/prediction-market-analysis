@@ -144,15 +144,31 @@ hr { margin: 0.3rem 0 !important; border-color: #1a2230 !important; }
 }
 
 /* === DataFrames === */
-.stDataFrame, [data-testid="stDataFrame"] {
+.stDataFrame, [data-testid="stDataFrame"],
+[data-testid="stDataFrameResizable"] {
   background-color: #0a0d12 !important;
   font-size: 0.75rem !important;
+  border: 1px solid #1a2230 !important;
+  border-radius: 4px !important;
 }
-.stDataFrame [data-testid="stTable"] {
+.stDataFrame [data-testid="stTable"],
+.stDataFrame .row-widget,
+[data-testid="stDataFrame"] > div,
+.glideDataEditor {
   background-color: #0a0d12 !important;
+  color: #e6e6e6 !important;
 }
-.stDataFrame thead { color: #7a8499 !important; }
-.stDataFrame tbody td { color: #e6e6e6 !important; }
+.stDataFrame thead { color: #7a8499 !important; background-color: #050708 !important; }
+.stDataFrame tbody td, .stDataFrame tbody tr { color: #e6e6e6 !important; }
+/* Glide data grid (Streamlit's renderer for dataframe) */
+canvas { background-color: #0a0d12 !important; }
+/* Empty state */
+.stDataFrame:empty, [data-testid="stDataFrame"]:empty {
+  display: none !important;
+}
+
+/* === Placeholders === */
+input::placeholder, textarea::placeholder { color: #4a5568 !important; }
 
 /* === Buttons === */
 .stButton button {

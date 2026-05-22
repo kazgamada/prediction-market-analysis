@@ -72,18 +72,19 @@ def tile_header(title: str, page_path: str, icon: str, help_text: str) -> None:
         st.markdown(help_icon(help_text), unsafe_allow_html=True)
 
 
-# Real-data accessors (cached 5s). Fall back to mock when DB has no rows.
+# Real-data accessors (cached 5s). All-empty defaults if DB has no rows.
 @st.cache_data(ttl=5)
 def _real_home_metrics() -> dict:
     from datetime import UTC, datetime, timedelta
 
-    from sqlalchemy import func, select
+    from sqlalchemy import desc, func, select
 
     from copytrader.db import settings_table as _st
     from copytrader.db.engine import get_session
     from copytrader.db.models import (
         Cursor,
         Execution,
+        Job,
         Position,
         RiskEvaluation,
         Signal,
@@ -93,8 +94,10 @@ def _real_home_metrics() -> dict:
     from copytrader.indexer.backfill import CURSOR_NAME
 
     out: dict = {"db_ok": True}
-    midnight = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-    month_ago = datetime.now(UTC) - timedelta(days=30)
+    now = datetime.now(UTC)
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    month_ago = now - timedelta(days=30)
+    quarter_ago = now - timedelta(days=90)
     try:
         with get_session() as s:
             out["today_pnl"] = float(s.execute(
@@ -115,7 +118,7 @@ def _real_home_metrics() -> dict:
             ).scalar_one())
             cur = s.get(Cursor, CURSOR_NAME)
             out["cursor_age_seconds"] = (
-                (datetime.now(UTC) - cur.updated_at).total_seconds()
+                (now - cur.updated_at).total_seconds()
                 if cur and cur.updated_at else None
             )
             latest_risk = s.execute(
@@ -124,25 +127,60 @@ def _real_home_metrics() -> dict:
             out["risk_metrics"] = (
                 dict(latest_risk.metrics_snapshot or {}) if latest_risk else {}
             )
+
+            # Daily PnL series (cumulative for equity + drawdown tiles)
+            daily_rows = s.execute(
+                select(
+                    func.date_trunc("day", TradePnl.ts).label("day"),
+                    func.sum(TradePnl.realized_usdc).label("pnl"),
+                )
+                .where(TradePnl.ts >= quarter_ago)
+                .group_by(func.date_trunc("day", TradePnl.ts))
+                .order_by(func.date_trunc("day", TradePnl.ts))
+            ).all()
+            out["daily_pnl_series"] = [
+                (d, float(p or 0)) for d, p in daily_rows
+            ]
+
             # Latency p50 from recent executions
             lat_rows = s.execute(
                 select(Execution.signal_to_place_ms)
                 .where(Execution.signal_to_place_ms.is_not(None))
-                .order_by(Execution.placed_at.desc()).limit(100)
+                .order_by(Execution.placed_at.desc()).limit(200)
             ).scalars().all()
             out["latencies"] = [int(x) for x in lat_rows if x]
+
             # Recent signals
             sig_rows = s.execute(
                 select(Signal).order_by(Signal.id.desc()).limit(5)
             ).scalars().all()
+            status_icon = {
+                "PENDING": "⏳", "EXECUTING": "⏳", "EXECUTED": "✅",
+                "SKIPPED": "⏭", "REJECTED": "❌", "LEGACY": "·",
+            }
             out["recent_signals"] = [
                 {
                     "time": (r.detected_at or r.ts).strftime("%H:%M:%S"),
                     "side": "B" if int(r.side) == 0 else "S",
-                    "status": r.status,
+                    "状態": status_icon.get(r.status, r.status[:2]),
                 }
                 for r in sig_rows
             ]
+
+            # Signal heatmap: weekday x hour over last 30d
+            sig_hist = s.execute(
+                select(Signal.detected_at, Signal.ts)
+                .where(Signal.ts >= month_ago)
+                .limit(50000)
+            ).all()
+            heat = [[0] * 24 for _ in range(7)]
+            for det, ts in sig_hist:
+                t = det or ts
+                if t is None:
+                    continue
+                heat[t.weekday()][t.hour] += 1
+            out["signal_heatmap"] = heat
+
             # Position breakdown
             pos_rows = s.execute(
                 select(Position).where(Position.open_size_shares > 0)
@@ -150,11 +188,44 @@ def _real_home_metrics() -> dict:
             ).scalars().all()
             out["positions"] = [
                 {
-                    "label": p.market_label or str(p.token_id)[:8] + "…",
+                    "label": (p.market_label or "tk_" + str(p.token_id)[:6])[:14],
                     "size": float(p.open_size_usdc),
+                    "side": int(p.side),
                 }
                 for p in pos_rows
             ]
+
+            # Watchlist top 5 (alphabetical fallback since per-wallet PnL is expensive)
+            wl_rows = s.execute(
+                select(Watchlist).where(Watchlist.active.is_(True))
+                .order_by(Watchlist.added_at.desc()).limit(5)
+            ).scalars().all()
+            out["watchlist_top"] = [
+                {
+                    "wallet": "0x" + w.address.hex()[:8],
+                    "note": (w.note or "")[:20],
+                    "added": w.added_at.strftime("%m/%d"),
+                }
+                for w in wl_rows
+            ]
+
+            # Indexer lag history: derived from cursor updated_at vs now.
+            # Without a time-series of lag, show single point repeated.
+            out["lag_history"] = (
+                [int(out["cursor_age_seconds"])] * 24
+                if out["cursor_age_seconds"] is not None else []
+            )
+
+            # Latest completed phase0 job result (for heatmap/top10/matrix tiles)
+            latest_phase0 = s.execute(
+                select(Job).where(Job.kind == "phase0")
+                .where(Job.status == "SUCCEEDED")
+                .order_by(desc(Job.finished_at)).limit(1)
+            ).scalar_one_or_none()
+            out["latest_phase0"] = (
+                dict(latest_phase0.result or {}) if latest_phase0 else None
+            )
+
     except Exception as e:  # noqa: BLE001
         out["db_ok"] = False
         out["error"] = str(e)
@@ -212,18 +283,24 @@ with r1[0], st.container(border=True):
         "ライン が水平化 / 下降したウォレットは edge を失っており、copy 継続は損失要因。"
         "<hr><b>アクション</b><br>下降トレンドが 2 週間続く wallet は Execute → Watchlist で active=false に。"
     )
-    days = pd.date_range(end=datetime.now(UTC), periods=30, freq="D")
-    eq_df = pd.DataFrame({
-        "date": np.tile(days, 5),
-        "wallet": np.repeat([f"w{i}" for i in range(5)], 30),
-        "pnl": np.concatenate([
-            np.cumsum(rng.normal(loc=b, scale=80, size=30)) for b in [25, 18, 12, 8, -3]
-        ]),
-    })
-    fig = px.line(eq_df, x="date", y="pnl", color="wallet",
-                  color_discrete_sequence=_PALETTE)
-    fig.update_layout(**LAY, xaxis_title="", yaxis_title="")
-    st.plotly_chart(fig, use_container_width=True, key="t1")
+    series = _M.get("daily_pnl_series") or []
+    if not series:
+        st.caption("(no trade_pnl yet — Phase B 以降で蓄積)")
+    else:
+        # Cumulative system equity over last 90d (clipped to last 30 for tile)
+        recent = series[-30:]
+        dates = [d for d, _ in recent]
+        cum = np.cumsum([p for _, p in recent])
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=dates, y=cum, mode="lines+markers",
+            line=dict(color=ACCENT_CYAN, width=2),
+            marker=dict(size=4, color=ACCENT_CYAN),
+            fill="tozeroy", fillcolor="rgba(58,163,255,0.15)",
+        ))
+        fig.add_hline(y=0, line_dash="dot", line_color="#444")
+        fig.update_layout(**LAY, xaxis_title="", yaxis_title="")
+        st.plotly_chart(fig, use_container_width=True, key="t1")
 
 with r1[1], st.container(border=True):
     tile_header(
@@ -234,17 +311,26 @@ with r1[1], st.container(border=True):
         "<hr><b>アクション</b><br>オレンジ線 (-15%) を超えたら kill switch 検討。"
         "-10% で size 半減、-15% で全停止が目安。"
     )
-    pnl = np.cumsum(rng.normal(15, 80, 90)) + 200
-    peak = np.maximum.accumulate(pnl)
-    dd = (pnl - peak) / np.maximum(peak, 1) * 100
-    f = go.Figure()
-    f.add_trace(go.Scatter(x=pd.date_range(end=datetime.now(UTC), periods=90, freq="D"),
-                           y=dd, fill="tozeroy", mode="lines",
-                           line=dict(color=ACCENT_RED, width=1),
-                           fillcolor="rgba(239,68,68,0.2)"))
-    f.add_hline(y=-15, line_dash="dash", line_color=ACCENT_YELLOW)
-    f.update_layout(**LAY, xaxis_title="", yaxis_title="")
-    st.plotly_chart(f, use_container_width=True, key="t2")
+    series = _M.get("daily_pnl_series") or []
+    if not series:
+        st.caption("(no trade_pnl yet — DD は実トレード開始後に計算)")
+    else:
+        dates = [d for d, _ in series]
+        cum = np.cumsum([p for _, p in series])
+        # Reference baseline = max(starting capital from settings, |min cum|+1)
+        capital = max(1000.0, abs(float(np.min(cum))) + 1.0)
+        eq = cum + capital
+        peak = np.maximum.accumulate(eq)
+        dd_pct = (eq - peak) / np.maximum(peak, 1) * 100
+        f = go.Figure()
+        f.add_trace(go.Scatter(
+            x=dates, y=dd_pct, fill="tozeroy", mode="lines",
+            line=dict(color=ACCENT_RED, width=1.5),
+            fillcolor="rgba(239,68,68,0.25)",
+        ))
+        f.add_hline(y=-15, line_dash="dash", line_color=ACCENT_YELLOW)
+        f.update_layout(**LAY, xaxis_title="", yaxis_title="")
+        st.plotly_chart(f, use_container_width=True, key="t2")
 
 with r1[2], st.container(border=True):
     tile_header(
@@ -255,14 +341,19 @@ with r1[2], st.container(border=True):
         "<hr><b>アクション</b><br>濃い緑のセル位置を Execute → 執行パラメータに反映。"
         "週次で再計算して sweet spot のドリフトを追跡。"
     )
-    delays = [15, 30, 60, 120, 300, 600]
-    sizes = [10, 25, 50, 100, 250, 500]
-    roi = rng.normal(2.5, 4, (len(sizes), len(delays)))
-    roi[:, 0] += 3
-    roi[:, -2:] -= 4
-    f = go.Figure(data=go.Heatmap(z=roi, colorscale="RdYlGn", zmid=0, showscale=False))
-    f.update_layout(**LAY, xaxis=dict(visible=False), yaxis=dict(visible=False))
-    st.plotly_chart(f, use_container_width=True, key="t3")
+    p0 = _M.get("latest_phase0") or {}
+    grid = p0.get("delay_size_roi") if p0 else None
+    if not grid:
+        st.caption("(no Phase 0 result yet — Strategy で Run)")
+    else:
+        # grid expected: {"delays": [...], "sizes": [...], "roi": [[...]]}
+        roi = grid.get("roi") or []
+        f = go.Figure(data=go.Heatmap(
+            z=roi, colorscale="RdYlGn", zmid=0, showscale=False,
+        ))
+        f.update_layout(**{**LAY, "xaxis": dict(visible=False),
+                           "yaxis": dict(visible=False)})
+        st.plotly_chart(f, use_container_width=True, key="t3")
 
 with r1[3], st.container(border=True):
     tile_header(
@@ -273,16 +364,20 @@ with r1[3], st.container(border=True):
         "<hr><b>アクション</b><br>上位の安定的な戦略を本番戦略に採用。"
         "詳細は Strategy ページの Top 10 並び替えで確認。"
     )
-    dates60 = pd.date_range(end=datetime.now(UTC), periods=60, freq="D")
-    f = go.Figure()
-    for i in range(6):
-        sub = np.random.default_rng(100 + i)
-        eq = np.cumsum(sub.normal(loc=(6 - i) * 6 / 60 * 10, scale=40, size=60)) + 1000
-        f.add_trace(go.Scatter(x=dates60, y=eq, mode="lines",
-                               line=dict(color=_PALETTE[i % len(_PALETTE)], width=1.5)))
-    f.add_hline(y=1000, line_dash="dot", line_color="#444")
-    f.update_layout(**LAY, xaxis_title="", yaxis_title="")
-    st.plotly_chart(f, use_container_width=True, key="t4")
+    p0 = _M.get("latest_phase0") or {}
+    top10_curves = p0.get("top10_curves") if p0 else None
+    if not top10_curves:
+        st.caption("(no Phase 0 result — Strategy で Run)")
+    else:
+        f = go.Figure()
+        for i, curve in enumerate(top10_curves[:6]):
+            f.add_trace(go.Scatter(
+                y=curve, mode="lines",
+                line=dict(color=_PALETTE[i % len(_PALETTE)], width=1.5),
+            ))
+        f.add_hline(y=1000, line_dash="dot", line_color="#444")
+        f.update_layout(**LAY, xaxis_title="", yaxis_title="")
+        st.plotly_chart(f, use_container_width=True, key="t4")
 
 r2 = st.columns(4)
 
@@ -295,11 +390,17 @@ with r2[0], st.container(border=True):
         "<hr><b>アクション</b><br>全緑なら戦略安泰、まだら模様なら市場ごとに戦略切替が必要。"
         "詳細は Strategy ページのヒートマップで。"
     )
-    rm = rng.normal(3, 7, (8, 6))
-    rm[2, :] += 5
-    f = go.Figure(data=go.Heatmap(z=rm, colorscale="RdYlGn", zmid=0, showscale=False))
-    f.update_layout(**LAY, xaxis=dict(visible=False), yaxis=dict(visible=False))
-    st.plotly_chart(f, use_container_width=True, key="t5")
+    p0 = _M.get("latest_phase0") or {}
+    matrix = p0.get("market_strategy_matrix") if p0 else None
+    if not matrix:
+        st.caption("(no Phase 0 result)")
+    else:
+        f = go.Figure(data=go.Heatmap(
+            z=matrix, colorscale="RdYlGn", zmid=0, showscale=False,
+        ))
+        f.update_layout(**{**LAY, "xaxis": dict(visible=False),
+                           "yaxis": dict(visible=False)})
+        st.plotly_chart(f, use_container_width=True, key="t5")
 
 with r2[1], st.container(border=True):
     tile_header(
@@ -309,12 +410,16 @@ with r2[1], st.container(border=True):
         "閑散時間帯の signal は薄く、信頼性低い (1 人の誤発注を copy するリスク)。"
         "<hr><b>アクション</b><br>濃い時間帯のみ稼働させ、薄い時間帯は signal を skip する設定も検討。"
     )
-    heat = rng.poisson(3, (7, 24)).astype(float)
-    heat[:, 13:22] *= 2.5
-    heat[5:7, :] *= 0.6
-    f = go.Figure(data=go.Heatmap(z=heat, colorscale="Blues", showscale=False))
-    f.update_layout(**LAY, xaxis=dict(visible=False), yaxis=dict(visible=False))
-    st.plotly_chart(f, use_container_width=True, key="t6")
+    heat = _M.get("signal_heatmap") or []
+    if not heat or sum(sum(row) for row in heat) == 0:
+        st.caption("(no signals yet — Watchlist 約定待ち)")
+    else:
+        f = go.Figure(data=go.Heatmap(
+            z=heat, colorscale="Blues", showscale=False,
+        ))
+        f.update_layout(**{**LAY, "xaxis": dict(visible=False),
+                           "yaxis": dict(visible=False)})
+        st.plotly_chart(f, use_container_width=True, key="t6")
 
 with r2[2], st.container(border=True):
     tile_header(
@@ -325,9 +430,11 @@ with r2[2], st.container(border=True):
         "<hr><b>アクション</b><br>赤ゾーン (6.4% 超) に入ったら手動で発注停止を検討、"
         "8% 到達で自動 halt が走る。"
     )
+    dd_now = abs(float(_M.get("risk_metrics", {}).get("today_pnl_pct", 0.0)))
     g = go.Figure(go.Indicator(
-        mode="gauge+number", value=3.2,
-        number={"suffix": "%", "valueformat": ".1f", "font": {"size": 18, "color": "#fafafa"}},
+        mode="gauge+number", value=dd_now,
+        number={"suffix": "%", "valueformat": ".1f",
+                "font": {"size": 22, "color": "#fafafa"}},
         gauge={"axis": {"range": [0, 8], "tickfont": {"size": 7, "color": "#7a8499"}},
                "bar": {"color": ACCENT_RED},
                "bgcolor": TILE_BG,
@@ -349,11 +456,15 @@ with r2[3], st.container(border=True):
         "<hr><b>アクション</b><br>p95 が 3 秒超なら執行ロジック / RPC ノード見直し。"
         "山が右に動いてるなら劣化中。"
     )
-    lat = rng.normal(850, 280, 200).clip(min=100)
-    f = go.Figure(data=go.Histogram(x=lat, nbinsx=20, marker_color=ACCENT_CYAN))
-    f.add_vline(x=np.median(lat), line_dash="dash", line_color=ACCENT_YELLOW)
-    f.update_layout(**LAY, xaxis_title="", yaxis_title="")
-    st.plotly_chart(f, use_container_width=True, key="t8")
+    lat = _M.get("latencies") or []
+    if not lat:
+        st.caption("(no executions yet — Phase B 開始後に出る)")
+    else:
+        f = go.Figure(data=go.Histogram(x=lat, nbinsx=20, marker_color=ACCENT_CYAN))
+        f.add_vline(x=float(np.median(lat)), line_dash="dash",
+                    line_color=ACCENT_YELLOW)
+        f.update_layout(**LAY, xaxis_title="", yaxis_title="")
+        st.plotly_chart(f, use_container_width=True, key="t8")
 
 r3 = st.columns(4)
 
@@ -366,14 +477,20 @@ with r3[0], st.container(border=True):
         "<hr><b>アクション</b><br>単一バーが全体の 25% を超えてたら新規 entry を skip する設定を確認 "
         "(Execute → 停止条件)。"
     )
-    labels = ["米大統領", "FRB", "BTC", "AI", "G7", "WC", "投票率"]
-    sizes_ = [320, 250, 480, 410, 200, 180, 1370]
-    pnls = [22.8, 13.6, 80, 12, -2.8, -30, 90.2]
-    colors = [ACCENT_GREEN if p >= 0 else ACCENT_RED for p in pnls]
-    f = go.Figure(go.Bar(x=sizes_, y=labels, orientation="h", marker_color=colors))
-    f.update_layout(**LAY, xaxis=dict(visible=False),
-                    yaxis=dict(tickfont=dict(size=8)))
-    st.plotly_chart(f, use_container_width=True, key="t9")
+    positions = _M.get("positions") or []
+    if not positions:
+        st.caption("(no open positions yet)")
+    else:
+        labels = [p["label"] for p in positions]
+        sizes_ = [p["size"] for p in positions]
+        colors = [ACCENT_CYAN if int(p["side"]) == 0 else ACCENT_YELLOW
+                  for p in positions]
+        f = go.Figure(go.Bar(
+            x=sizes_, y=labels, orientation="h", marker_color=colors,
+        ))
+        f.update_layout(**{**LAY, "xaxis": dict(visible=False),
+                           "yaxis": dict(tickfont=dict(size=8, color="#fafafa"))})
+        st.plotly_chart(f, use_container_width=True, key="t9")
 
 with r3[1], st.container(border=True):
     tile_header(
@@ -384,16 +501,11 @@ with r3[1], st.container(border=True):
         "<hr><b>アクション</b><br>下降中の wallet を Execute → Watchlist タブで active=false。"
         "新しい wallet は Strategy で Phase 0 を回して候補発掘。"
     )
-    df = pd.DataFrame({
-        "wallet": [f"0x{rng.integers(0, 16**8):08x}" for _ in range(5)],
-        "PnL": sorted([int(rng.normal(2000, 1200)) for _ in range(5)], reverse=True),
-        "30d": [list(np.cumsum(rng.normal(0, 1, 20))) for _ in range(5)],
-    })
-    st.dataframe(df, use_container_width=True, hide_index=True, height=TILE_H,
-                 column_config={
-                     "PnL": st.column_config.NumberColumn(format="$%d", width="small"),
-                     "30d": st.column_config.LineChartColumn(width="small"),
-                 })
+    wl = _M.get("watchlist_top") or []
+    if not wl:
+        st.caption("(no active watchlist — Execute → Watchlist で追加)")
+    else:
+        st.dataframe(wl, use_container_width=True, hide_index=True, height=TILE_H)
 
 with r3[2], st.container(border=True):
     tile_header(
@@ -405,14 +517,12 @@ with r3[2], st.container(border=True):
         "✅ = 約定 / ⏳ = 待機中 / ❌ = CLOB rejected (要 Ops 確認) / "
         "⏭ = リスク上限 skip (Execute の停止条件にヒット)"
     )
-    now = datetime.now(UTC)
-    df = pd.DataFrame({
-        "時刻": [(now - timedelta(seconds=int(s))).strftime("%H:%M:%S")
-                 for s in sorted(rng.integers(5, 900, 5))],
-        "side": rng.choice(["BUY", "SELL"], 5).tolist(),
-        "状態": rng.choice(["✅", "⏳", "❌", "⏭"], 5, p=[0.5, 0.2, 0.1, 0.2]).tolist(),
-    })
-    st.dataframe(df, use_container_width=True, hide_index=True, height=TILE_H)
+    sigs = _M.get("recent_signals") or []
+    if not sigs:
+        st.caption("(no signals yet — Watchlist 約定待ち)")
+    else:
+        st.dataframe(sigs, use_container_width=True, hide_index=True,
+                     height=TILE_H)
 
 with r3[3], st.container(border=True):
     tile_header(
@@ -423,14 +533,17 @@ with r3[3], st.container(border=True):
         "<hr><b>アクション</b><br>赤線突破が続くなら Ops で dead-letter 確認、"
         "Polygon RPC ノードのリージョン切替を検討。"
     )
-    lag = rng.uniform(5, 60, 24)
-    lag[-3:] *= 2.5
-    f = go.Figure()
-    f.add_trace(go.Scatter(
-        x=pd.date_range(end=datetime.now(UTC), periods=24, freq="h"),
-        y=lag, mode="lines+markers",
-        line=dict(color=ACCENT_CYAN, width=1.5),
-        marker=dict(size=4, color=ACCENT_CYAN)))
-    f.add_hline(y=120, line_dash="dash", line_color=ACCENT_RED)
-    f.update_layout(**LAY, xaxis_title="", yaxis_title="")
-    st.plotly_chart(f, use_container_width=True, key="t12")
+    lag = _M.get("lag_history") or []
+    age = _M.get("cursor_age_seconds")
+    if not lag and age is None:
+        st.caption("(no indexer data)")
+    else:
+        f = go.Figure()
+        f.add_trace(go.Scatter(
+            x=list(range(len(lag))),
+            y=lag, mode="lines+markers",
+            line=dict(color=ACCENT_CYAN, width=1.5),
+            marker=dict(size=4, color=ACCENT_CYAN)))
+        f.add_hline(y=120, line_dash="dash", line_color=ACCENT_RED)
+        f.update_layout(**LAY, xaxis_title="", yaxis_title="")
+        st.plotly_chart(f, use_container_width=True, key="t12")

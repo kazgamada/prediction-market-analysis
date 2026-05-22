@@ -497,7 +497,11 @@ with r1[2], st.container(border=True):
         except Exception as e:  # noqa: BLE001
             wdata = []
             st.caption(f"db: {e}")
-        st.dataframe(wdata, use_container_width=True, hide_index=True, height=160)
+        if not wdata:
+            st.caption("(active な wallet なし — 上のフォームで追加)")
+        else:
+            st.dataframe(wdata, use_container_width=True, hide_index=True,
+                         height=160)
     with tab_jobs:
         try:
             with get_session() as s:
@@ -515,7 +519,11 @@ with r1[2], st.container(border=True):
         except Exception as e:  # noqa: BLE001
             jdata = []
             st.caption(f"db: {e}")
-        st.dataframe(jdata, use_container_width=True, hide_index=True, height=220)
+        if not jdata:
+            st.caption("(no jobs yet)")
+        else:
+            st.dataframe(jdata, use_container_width=True, hide_index=True,
+                         height=220)
     with tab_manual:
         with st.form("manual"):
             mc1, mc2 = st.columns(2)
