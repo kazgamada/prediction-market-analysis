@@ -246,16 +246,4 @@ fix(api): handle empty webhook payload from Make.com
 
 以下の統合Skillsが利用可能です。Claude Codeは各Skillの内容を自動参照します。
 
-@.claude/skills/general-best-practices.md
-@.claude/skills/ui-component-patterns.md
-@.claude/skills/security-best-practices.md
 @.claude/skills/devops-deploy-checklist.md
-@.claude/skills/ai-llm-integration.md
-@.claude/skills/api-route-patterns.md
-@.claude/skills/database-migration-pattern.md
-@.claude/skills/auth-complete-flow.md
-@.claude/skills/billing-stripe-integration.md
-@.claude/skills/inbox-scheduling.md
-@.claude/skills/performance.md
-@.claude/skills/medical-lecture-slide-design.md
-@.claude/skills/multi-tool-bulk-apply.md
