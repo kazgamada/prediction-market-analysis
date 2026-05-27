@@ -246,5 +246,4 @@ fix(api): handle empty webhook payload from Make.com
 
 以下の統合Skillsが利用可能です。Claude Codeは各Skillの内容を自動参照します。
 
-@.claude/skills/general-best-practices.md
 @.claude/skills/debugging.md

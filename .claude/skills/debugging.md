@@ -4,175 +4,152 @@ description: >-
   バグ・不具合報告を受けたときに厳守すべき修正ワークフロー。 Next.js/TypeScript
   プロジェクト全般（API連携・DB・表示不具合など）に適用する。 「動かない」報告を受けたら必ずこのスキルを参照してからコードに触れること。
 category: debugging
-version: 1
-effectiveTimestamp: '2026-05-25T00:00:00.000Z'
+version: 3
+effectiveTimestamp: '2026-05-26T00:00:00.000Z'
 sourceSkillIds:
+  - a50bbc64
   - f6371710
-generatedAt: '2026-05-26'
+generatedAt: '2026-05-27'
 ---
 
 # デバッグ修正ワークフロー（厳守）
 
 > **このワークフローは省略不可。コードに触れる前に必ず全ステップを実行すること。**
+>
+> 適用範囲: Next.js/TypeScript プロジェクト全般  
+> （REST/GraphQL API 連携・DB クエリ・表示不具合・外部サービス連携 等）
+
+---
+
+## STEP 0 — このスキルを開く（前提確認）
+
+バグ・不具合報告を受けたら **最初にこのファイルを開き**、以下を確認する。
+
+| 確認項目 | OK? |
+|---|---|
+| 再現手順を口頭またはテキストで説明できる | ☐ |
+| 影響範囲（画面/API/DB）を1行で言える | ☐ |
+| 「たぶんこれが原因」という仮説を一旦棚上げした | ☐ |
 
 ---
 
 ## STEP 1 — 事実の収集（仮説より先に証拠を集める）
 
-コードを読む前に、以下の情報を確認・収集する。
+### 1-1. エラーメッセージ・ログを取得する
 
-```
-[ ] エラーメッセージの全文（スタックトレース含む）
-[ ] 再現手順（どの操作・URLで発生するか）
-[ ] 期待値 vs 実際の値（件数・レスポンス・表示など）
-[ ] 最後に動作していたタイミング・直前の変更内容
-[ ] 環境情報（本番/開発、ブラウザ、ログ出力）
+```bash
+# ブラウザコンソール / Node プロセスログをそのままコピー
+# スタックトレースは末尾まで省略しない
 ```
 
-**原則**: 「たぶん〇〇が原因」という推測でコードを変更しない。
+確認すべき場所:
+
+- ブラウザ DevTools → Console / Network タブ
+- Next.js サーバーログ（`next dev` / `next start` の標準出力）
+- 外部サービス管理画面のログ（Supabase Logs, Shopify Partners, Vercel Functions 等）
+- DB クライアントのクエリログ・スロークエリログ
+
+### 1-2. 再現条件を特定する
+
+```
+再現率: 常に / 特定操作後のみ / 稀に
+環境:   local / staging / production
+ユーザー: 全員 / 特定ロール / 特定ID
+```
+
+### 1-3. 「最後に動いていた状態」を確認する
+
+```bash
+git log --oneline -20        # 直近の変更履歴
+git diff HEAD~1 HEAD -- <疑わしいファイル>
+```
 
 ---
 
-## STEP 2 — 問題の切り分け（層ごとに分離する）
+## STEP 2 — 仮説の列挙と優先付け
 
-Next.js プロジェクトの典型的な層を上から順に確認する。
+証拠が揃ったら初めて仮説を立てる。**3つ以上**挙げてから絞る。
 
-```
-┌─────────────────────────────┐
-│  UI / フロントエンド層       │  ← レンダリング・状態管理・表示ロジック
-├─────────────────────────────┤
-│  API Route / Server Action  │  ← リクエスト処理・バリデーション
-├─────────────────────────────┤
-│  ビジネスロジック層          │  ← データ変換・集計・フィルタリング
-├─────────────────────────────┤
-│  外部API / DB 層             │  ← クエリ・レスポンス・スキーマ整合性
-└─────────────────────────────┘
-```
+| # | 仮説 | 根拠（ログ/コード行） | 確認コスト |
+|---|---|---|---|
+| 1 | | | 低/中/高 |
+| 2 | | | 低/中/高 |
+| 3 | | | 低/中/高 |
 
-**各層で確認すること**:
-
-| 層 | 確認ポイント |
-|---|---|
-| UI | `console.log` で props/state の実値を確認。型と表示の不一致を疑う |
-| API Route | レスポンスの shape を直接 curl/fetch で確認。ステータスコードを確認 |
-| ビジネスロジック | 入力と出力を単体でログ出力。変換・フィルタのロジックを trace |
-| 外部API / DB | クエリをそのまま実行して結果を確認。ページネーション・件数制限を確認 |
+> **アンチパターン**: 最初に浮かんだ仮説だけを追いかけてコードを書き換える。
+> 必ず複数仮説を並列検討してから手を動かす。
 
 ---
 
-## STEP 3 — 根本原因の特定（修正前に言語化する）
+## STEP 3 — 最小再現と仮説検証
 
-コードを変更する前に、以下を自然言語で明示する。
+### 3-1. 最小再現ケースを作る
 
-```
-【根本原因】
-  どの層の、どのコードが、なぜ期待通りに動いていないか。
-
-【証拠】
-  STEP 1〜2 で得られた事実のうち、原因を裏付けるもの。
-
-【影響範囲】
-  修正によって影響を受ける可能性のある他の機能・エンドポイント。
-```
-
-根本原因を言語化できない場合は STEP 2 に戻る。
-
----
-
-## STEP 4 — 修正（最小変更の原則）
-
-```
-[ ] 修正は1つの根本原因に対して1箇所を基本とする
-[ ] 複数箇所を同時に変更しない（原因特定が困難になるため）
-[ ] 型安全性を維持する（any の濫用・型アサーションの乱用をしない）
-[ ] 既存のテスト・動作している機能を壊さない
-```
-
-### 典型的な修正パターン
-
-#### データ件数の不一致
+- 影響範囲を **1ファイル / 1エンドポイント / 1コンポーネント** まで絞る
+- 外部依存（API・DB）を可能な限りモックして切り離す
 
 ```typescript
-// ❌ Bad: デフォルトの件数制限に気づかず使用
-const { data } = await supabase.from('items').select('*')
-// → Supabase はデフォルト 1000 件制限がある
-
-// ✅ Good: 件数を明示的に指定 or ページネーション実装
-const { data, count } = await supabase
-  .from('items')
-  .select('*', { count: 'exact' })
-  .range(0, 99)
+// 例: API 呼び出しを切り離して UI ロジックだけ確認
+const mockData = { id: 1, status: "active" } satisfies Product;
 ```
 
-#### 外部API エラーハンドリング
+### 3-2. 追加ログで仮説を検証する
 
 ```typescript
-// ❌ Bad: エラーを握り潰して空配列を返す
-async function fetchItems(): Promise<Item[]> {
-  try {
-    const res = await fetch('/api/items')
-    return res.json()
-  } catch {
-    return []  // エラーが隠れて原因特定が困難
-  }
-}
-
-// ✅ Good: エラーを上位に伝播させてログを残す
-async function fetchItems(): Promise<Item[]> {
-  const res = await fetch('/api/items')
-  if (!res.ok) {
-    const error = await res.text()
-    console.error('[fetchItems] API error:', res.status, error)
-    throw new Error(`API error: ${res.status}`)
-  }
-  return res.json()
-}
+// 削除前提のデバッグログは TODO コメントで明示
+// TODO: debug - remove before merge
+console.log("[DEBUG] fetchProducts response:", JSON.stringify(res, null, 2));
 ```
 
-#### 非同期処理の競合
+### 3-3. よくある原因チェックリスト
 
-```typescript
-// ❌ Bad: await を忘れて未解決の Promise を使用
-const data = fetchData()  // Promise<Data> が data に入る
-console.log(data.items)   // undefined
+#### API / ネットワーク
 
-// ✅ Good: 必ず await する
-const data = await fetchData()
-console.log(data.items)
-```
+- [ ] レスポンスの HTTP ステータスを確認した（200 以外の扱い）
+- [ ] ページネーション・レート制限に引っかかっていないか
+- [ ] 環境変数（`NEXT_PUBLIC_*` / サーバーサイド専用）の混在がないか
+- [ ] キャッシュ（fetch cache / CDN / ブラウザキャッシュ）が古い状態を返していないか
 
-#### 型ガードによる安全な絞り込み
+#### DB / クエリ
 
-```typescript
-// ❌ Bad: 型アサーションで強制変換
-const item = response.data as Item
+- [ ] フィルタ・JOIN 条件が意図どおりか（実際のクエリをログ出力して確認）
+- [ ] NULL 値・空配列の扱いが意図どおりか
+- [ ] トランザクション境界・楽観的ロックの競合がないか
+- [ ] インデックスが効いているか（EXPLAIN / EXPLAIN ANALYZE）
 
-// ✅ Good: 型ガードで検証してから使用
-function isItem(v: unknown): v is Item {
-  return typeof v === 'object' && v !== null && 'id' in v
-}
-if (isItem(response.data)) {
-  console.log(response.data.id)
-}
-```
+#### TypeScript / 型
+
+- [ ] `as` キャストや `!` 非 null アサーションで型エラーを隠していないか
+- [ ] `unknown` / `any` の境界で実行時エラーが起きていないか
+- [ ] Zod 等のランタイムバリデーションが期待どおり動いているか
+
+#### Next.js 特有
+
+- [ ] Server Component / Client Component の境界が正しいか（`"use client"` の有無）
+- [ ] `getServerSideProps` / `getStaticProps` / Server Actions のデータが古くないか
+- [ ] Route Handler の `dynamic = "force-dynamic"` / `revalidate` 設定が意図どおりか
+- [ ] Middleware でリクエストが意図せず書き換えられていないか
 
 ---
 
-## STEP 5 — 検証（修正が根本原因を解消したか確認する）
+## STEP 4 — 修正と影響範囲の確認
+
+### 4-1. 修正方針を決める（コードを書く前に）
 
 ```
-[ ] 再現手順を再実行して問題が解消されたか確認
-[ ] 修正前に確認した「期待値 vs 実際の値」が一致するか確認
-[ ] 影響範囲として挙げた他機能が壊れていないか確認
-[ ] デバッグ用の console.log・一時コードを削除
+修正方針: <1〜2行で記述>
+変更ファイル: <変更予定ファイルのリスト>
+リグレッションリスク: 低 / 中（理由: ）/ 高（理由: ）
 ```
 
----
+### 4-2. 修正を実装する
 
-## STEP 6 — 再発防止（任意だが推奨）
+- **1つの仮説につき1つのコミット** を目安にする
+- デバッグ用 `console.log` は必ず削除してからコミット
+- 型を緩める方向（`any` 化・キャスト追加）の修正は **最終手段**
 
-修正内容に応じて以下を検討する。
+```typescript
+// NG: 型エラーを隠す
+const data = response as SomeType;
 
-```
-[ ] エラーが握り潰されていた箇所に適切なエラーハンドリングを追加
-[ ] 型定義を強化して同種のバグを型レベルで防ぐ
+// OK: 実行時バ
