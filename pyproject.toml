@@ -23,6 +23,7 @@ dependencies = [
     "streamlit>=1.36",
     "aiohttp>=3.10",
     "plotly>=5.20",
+    "croniter>=2.0",
 ]
 
 [project.optional-dependencies]

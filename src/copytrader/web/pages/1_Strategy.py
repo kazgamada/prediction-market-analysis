@@ -14,39 +14,22 @@ from copytrader.db.engine import get_session
 from copytrader.db.models import Job
 from copytrader.jobs.queue import enqueue
 from copytrader.web.auth import require_password
+from copytrader.web.theme import (
+    ACCENT_CYAN, ACCENT_GREEN, ACCENT_RED, ACCENT_YELLOW,
+    LIVE_LAYOUT, LIVE_PALETTE, STATIC_LAYOUT, STATIC_PALETTE,
+    TILE_BG, inject_theme,
+)
 from copytrader.web.format import fmt_ago
 
 st.set_page_config(page_title="Strategy", layout="wide",
                    initial_sidebar_state="collapsed")
 require_password()
 
-st.markdown("""
-<style>
-.block-container { padding-top: 0.6rem !important; padding-bottom: 0.4rem !important; max-width: 100% !important; }
-[data-testid="stMetric"] { padding: 0.1rem !important; }
-[data-testid="stMetricLabel"] { font-size: 0.7rem !important; }
-[data-testid="stMetricValue"] { font-size: 1.0rem !important; }
-[data-testid="stMetricDelta"] { font-size: 0.65rem !important; }
-h1, h3, h4, h5 { padding: 0 !important; margin: 0.2rem 0 !important; }
-h1 { font-size: 1.2rem !important; }
-h5 { font-size: 0.85rem !important; }
-hr { margin: 0.3rem 0 !important; }
-.stDataFrame { font-size: 0.72rem !important; }
-[data-testid="stVerticalBlockBorderWrapper"] { padding: 0.3rem 0.5rem !important; }
-.stRadio > div { gap: 0.5rem !important; }
-.stRadio label { font-size: 0.75rem !important; }
-.stButton button { padding: 0.2rem 0.5rem !important; font-size: 0.78rem !important; }
-input, select, .stNumberInput input { font-size: 0.78rem !important; }
-</style>
-""", unsafe_allow_html=True)
+inject_theme()
 
 
 def help_icon(html_text: str) -> str:
-    """Inline ⓘ icon with browser-native title tooltip (hover-only).
-
-    Uses &#10; (HTML numeric char ref for LF) instead of real newlines so the
-    markdown parser doesn't split the attribute across lines.
-    """
+    """Inline ⓘ icon with browser-native title tooltip (hover-only)."""
     text = html_text
     text = text.replace("<hr>", "&#10;────────&#10;")
     text = text.replace("<br>", "&#10;")
@@ -55,9 +38,7 @@ def help_icon(html_text: str) -> str:
     text = text.replace("&amp;", "&").replace("&quot;", "'")
     text = text.replace('"', "'")
     return (
-        '<span title="' + text + '" '
-        'style="cursor:help;color:#2c7fb8;font-weight:bold;font-size:0.85rem">'
-        'ⓘ</span>'
+        '<span class="help-tip-icon" title="' + text + '">ⓘ</span>'
     )
 
 
@@ -148,30 +129,34 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-rng = np.random.default_rng(2026)
+# Real data accessor — pulls the latest completed phase0 job's result.
+@st.cache_data(ttl=10)
+def _latest_phase0() -> dict:
+    try:
+        with get_session() as s:
+            row = s.execute(
+                select(Job).where(Job.kind == "phase0")
+                .where(Job.status == "SUCCEEDED")
+                .order_by(desc(Job.finished_at)).limit(1)
+            ).scalar_one_or_none()
+            if not row or not row.result:
+                return {"ok": False}
+            return {
+                "ok": True,
+                "result": dict(row.result),
+                "params": dict(row.params or {}),
+                "finished_at": row.finished_at,
+            }
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)}
 
-MARKETS = ["米大統領 2028", "FRB 6月 利下げ", "BTC>$150k EOY", "AI バブル崩壊",
-           "G7 開催", "WC — Brazil", "投票率 60%+", "OpenAI IPO", "EU 関税",
-           "為替 140 割れ"]
-STRATEGIES = [
-    {"name": "Top10/30s/$50", "delay": 30, "size": 50},
-    {"name": "Top10/60s/$50", "delay": 60, "size": 50},
-    {"name": "Top5/30s/$100", "delay": 30, "size": 100},
-    {"name": "Top20/120s/$25", "delay": 120, "size": 25},
-    {"name": "Top5/15s/$200", "delay": 15, "size": 200},
-    {"name": "Contra-B5/60s", "delay": 60, "size": 50},
-    {"name": "Whale>$10k/30s", "delay": 30, "size": 100},
-]
-n_m, n_s = len(MARKETS), len(STRATEGIES)
-roi = rng.normal(4, 8, (n_m, n_s))
-roi[:, 0] += 3; roi[:, -2] -= 5; roi[2, :] += 6; roi[7, :] -= 4
-sharpe = roi / (4 + rng.uniform(0, 3, (n_m, n_s)))
-trades = rng.integers(20, 400, (n_m, n_s))
-strat_labels = [s["name"] for s in STRATEGIES]
 
-best = np.unravel_index(np.argmax(roi), roi.shape)
-worst = np.unravel_index(np.argmin(roi), roi.shape)
-pos_sims = int((roi > 0).sum())
+_P = _latest_phase0()
+_RESULT = _P.get("result") or {}
+_AGG = _RESULT.get("aggregate") or {}
+_REPLAY = (_RESULT.get("replay") or {}).get("per_delay") or []
+_WALLETS = (_RESULT.get("rank") or {}).get("wallets") or []
+_CURVES = _RESULT.get("wallet_curves") or []
 
 top_row = st.columns([2.4, 1, 1, 1, 1, 1])
 with top_row[0], st.container(border=True):
@@ -196,146 +181,184 @@ with top_row[0], st.container(border=True):
                 st.success(f"enqueued #{jid}")
             except Exception as e:  # noqa: BLE001
                 st.error(f"enqueue failed: {e}")
+sim_count = int(_AGG.get("sim_count", 0))
+pos_count = int(_AGG.get("positive_count", 0))
+best_v = _AGG.get("best_roi")
+worst_v = _AGG.get("worst_roi")
+median_v = _AGG.get("median_roi")
 top_row[1].metric(
-    "sim 総数", f"{n_m * n_s}", f"{n_m}×{n_s}",
-    help="マーケット数 × ストラテジー数 = 全 backtest 件数。"
-         "多いほど信頼性高いが計算時間も増える。70〜200 件が現実的。",
+    "sim 総数", f"{sim_count}" if sim_count else "—",
+    f"{len(_REPLAY)} delays" if _REPLAY else "no run yet",
+    help="直近 Phase 0 run の replay 試行回数 (= delays の数)。"
+         "70〜200 件が現実的だが Phase 0 は delay 数 = 試行数。",
 )
 top_row[2].metric(
-    "黒字", f"{pos_sims}", f"{pos_sims / (n_m * n_s) * 100:.0f}%",
-    help="ROI > 0 のシナリオ数 / 全シナリオの比率。50% 未満は edge が薄い。"
-         "本物の edge があれば 60〜70% の市場で黒字。",
+    "黒字", f"{pos_count}/{sim_count}" if sim_count else "—",
+    f"{pos_count / sim_count * 100:.0f}%" if sim_count else "—",
+    help="ROI > 0 だった delay 設定の比率。50% 未満は edge が薄い。"
+         "本物の edge があれば 60〜70% で黒字。",
 )
-top_row[3].metric(
-    "ベスト", f"{roi[best]:+.1f}%", MARKETS[best[0]][:8],
-    help="全シナリオ中の最高 ROI とそのマーケット。"
-         "1 件だけ突出して他が赤なら過学習 / 偶然のリスクあり。",
-)
-top_row[4].metric(
-    "ワースト", f"{roi[worst]:+.1f}%", MARKETS[worst[0]][:8],
-    delta_color="inverse",
-    help="全シナリオ中の最悪 ROI。-20% 超があれば戦略を絞り込み必要。",
-)
-top_row[5].metric(
-    "中央値", f"{np.median(roi):+.1f}%",
-    help="全シナリオ ROI の中央値。「典型的なシナリオで儲かるか」の指標。"
-         "ベスト/ワーストより信頼できる。+3% 以上で edge ありと判断。",
-)
+if best_v is not None:
+    top_row[3].metric(
+        "ベスト", f"{float(best_v):+.1f}%",
+        help="全 replay 中の最高 ROI。",
+    )
+else:
+    top_row[3].metric("ベスト", "—", help="Phase 0 未実行")
+if worst_v is not None:
+    top_row[4].metric(
+        "ワースト", f"{float(worst_v):+.1f}%",
+        delta_color="inverse",
+        help="全 replay 中の最悪 ROI。-20% 超があれば戦略を絞り込み必要。",
+    )
+else:
+    top_row[4].metric("ワースト", "—")
+if median_v is not None:
+    top_row[5].metric(
+        "中央値", f"{float(median_v):+.1f}%",
+        help="全シナリオ ROI の中央値。「典型的なシナリオで儲かるか」。",
+    )
+else:
+    top_row[5].metric("中央値", "—")
 
 r1 = st.columns([1, 1.2])
 
 with r1[0], st.container(border=True):
-    st.markdown(f"##### マーケット一覧 {help_icon(HELP['market_list'])}",
+    st.markdown(f"##### 上位ウォレット一覧 {help_icon(HELP['market_list'])}",
                 unsafe_allow_html=True)
-    mkt = pd.DataFrame({
-        "market": MARKETS,
-        "24h vol": rng.integers(10_000, 800_000, n_m).tolist(),
-        "price": [round(float(rng.uniform(0.1, 0.9)), 3) for _ in range(n_m)],
-        "resolve": rng.integers(3, 365, n_m).tolist(),
-        "best ROI": [round(float(roi[i].max()), 1) for i in range(n_m)],
-        "trend": [list(np.clip(0.5 + np.cumsum(rng.normal(0, 0.02, 20)), 0.05, 0.95))
-                  for _ in range(n_m)],
-    })
-    mkt = mkt.sort_values("24h vol", ascending=False).reset_index(drop=True)
-    st.dataframe(mkt, use_container_width=True, hide_index=True, height=240,
-                 column_config={
-                     "24h vol": st.column_config.NumberColumn(format="$%d"),
-                     "price": st.column_config.ProgressColumn(
-                         min_value=0.0, max_value=1.0, format="%.2f"),
-                     "resolve": st.column_config.NumberColumn(format="%d日"),
-                     "best ROI": st.column_config.NumberColumn(format="%+.1f%%"),
-                     "trend": st.column_config.LineChartColumn(y_min=0, y_max=1),
-                 })
+    if not _WALLETS:
+        st.caption("(no Phase 0 result — フォームで Run)")
+    else:
+        # Map address -> equity curve
+        curves_by_addr = {c["address"]: c.get("series", []) for c in _CURVES}
+        mkt_rows = []
+        for w in _WALLETS:
+            try:
+                pnl_val = float(w.get("realized_pnl_usdc") or 0)
+                vol_val = float(w.get("volume_usdc") or 0)
+                wr_val = float(w.get("win_rate") or 0) if w.get("win_rate") else 0.0
+            except (TypeError, ValueError):
+                pnl_val, vol_val, wr_val = 0.0, 0.0, 0.0
+            mkt_rows.append({
+                "wallet": w.get("address", "")[:14] + "…",
+                "trades": int(w.get("trades", 0)),
+                "volume": vol_val,
+                "PnL": pnl_val,
+                "win_rate": wr_val,
+                "30d": curves_by_addr.get(w.get("address", ""), []),
+            })
+        mkt_rows.sort(key=lambda r: r["PnL"], reverse=True)
+        st.dataframe(
+            mkt_rows, use_container_width=True, hide_index=True, height=240,
+            column_config={
+                "trades": st.column_config.NumberColumn(format="%d"),
+                "volume": st.column_config.NumberColumn(format="$%d"),
+                "PnL": st.column_config.NumberColumn(format="$%+.0f"),
+                "win_rate": st.column_config.NumberColumn(format="%.2f"),
+                "30d": st.column_config.LineChartColumn(),
+            },
+        )
 
 with r1[1], st.container(border=True):
     hc1, hc2 = st.columns([5, 1])
     with hc1:
-        metric_pick = st.radio(
-            "色付け", ["ROI %", "Sharpe", "trades"],
-            horizontal=True, label_visibility="collapsed", key="metric_pick",
-        )
+        st.markdown("##### delay 別 ROI / signals")
     with hc2:
         st.markdown(help_icon(HELP["heatmap"]), unsafe_allow_html=True)
-    if metric_pick == "ROI %":
-        z, cs, zm, fmt = roi, "RdYlGn", 0, "{:+.1f}"
-    elif metric_pick == "Sharpe":
-        z, cs, zm, fmt = sharpe, "RdYlGn", 0, "{:+.2f}"
+    if not _REPLAY:
+        st.caption("(no Phase 0 replay results)")
     else:
-        z, cs, zm, fmt = trades, "Blues", None, "{:.0f}"
-    hm = go.Figure(data=go.Heatmap(
-        z=z, x=strat_labels, y=MARKETS,
-        colorscale=cs, zmid=zm, showscale=False,
-        text=[[fmt.format(v) for v in r] for r in z], texttemplate="%{text}",
-        hovertemplate="%{y} × %{x}<br>%{z}<extra></extra>",
-    ))
-    hm.update_layout(height=220, margin=dict(t=5, b=5, l=5, r=5),
-                     xaxis=dict(tickangle=-30, tickfont=dict(size=9)),
-                     yaxis=dict(tickfont=dict(size=9)),
-                     font=dict(size=8))
-    st.plotly_chart(hm, use_container_width=True, key="t_hm")
+        delays = [str(r.get("delay_seconds")) + "s" for r in _REPLAY]
+        rois = [float(r.get("roi_pct") or 0) for r in _REPLAY]
+        execs = [int(r.get("signals_executed") or 0) for r in _REPLAY]
+        totals = [int(r.get("signals_total") or 0) for r in _REPLAY]
+        # Build a 2-row heatmap: [ROI%], [fill rate %]
+        fill_rates = [
+            (e / t * 100) if t else 0 for e, t in zip(execs, totals, strict=False)
+        ]
+        z = [rois, fill_rates]
+        text = [
+            [f"{v:+.1f}%" for v in rois],
+            [f"{v:.0f}%" for v in fill_rates],
+        ]
+        hm = go.Figure(data=go.Heatmap(
+            z=z, x=delays, y=["ROI%", "fill%"],
+            colorscale="RdYlGn", zmid=0, showscale=False,
+            text=text, texttemplate="%{text}",
+            hovertemplate="%{y} @ %{x}: %{z}<extra></extra>",
+        ))
+        hm.update_layout(
+            **{**STATIC_LAYOUT, "height": 220,
+               "xaxis": {**STATIC_LAYOUT["xaxis"],
+                         "tickfont": dict(size=10, color="#1a1a1a")},
+               "yaxis": {**STATIC_LAYOUT["yaxis"],
+                         "tickfont": dict(size=10, color="#1a1a1a")}},
+        )
+        st.plotly_chart(hm, use_container_width=True, key="t_hm")
 
 r2 = st.columns([1, 1, 1])
 
 with r2[0], st.container(border=True):
-    st.markdown(f"##### ROI × Sharpe × trades {help_icon(HELP['scatter'])}",
+    st.markdown(f"##### wallet PnL × 勝率 × volume {help_icon(HELP['scatter'])}",
                 unsafe_allow_html=True)
-    rows = []
-    for mi, m in enumerate(MARKETS):
-        for si, s in enumerate(STRATEGIES):
-            rows.append({"market": m, "strategy": s["name"],
-                         "ROI %": roi[mi, si], "Sharpe": sharpe[mi, si],
-                         "trades": int(trades[mi, si])})
-    sdf = pd.DataFrame(rows)
-    sc = px.scatter(sdf, x="ROI %", y="Sharpe", size="trades", color="strategy",
-                    hover_data=["market"], size_max=16)
-    sc.add_hline(y=0, line_dash="dot", line_color="gray")
-    sc.add_vline(x=0, line_dash="dot", line_color="gray")
-    sc.update_layout(height=220, margin=dict(t=5, b=5, l=5, r=5),
-                     showlegend=False, font=dict(size=8))
-    st.plotly_chart(sc, use_container_width=True, key="t_sc")
+    if not _WALLETS:
+        st.caption("(no Phase 0 result)")
+    else:
+        rows = []
+        for w in _WALLETS:
+            try:
+                pnl = float(w.get("realized_pnl_usdc") or 0)
+                vol = float(w.get("volume_usdc") or 0)
+                wr = float(w.get("win_rate") or 0) if w.get("win_rate") else 0.0
+                trades_n = int(w.get("trades", 0))
+            except (TypeError, ValueError):
+                continue
+            rows.append({
+                "wallet": w.get("address", "")[:10] + "…",
+                "PnL": pnl, "win_rate": wr,
+                "trades": trades_n, "volume": vol,
+            })
+        sdf = pd.DataFrame(rows)
+        sc = px.scatter(
+            sdf, x="PnL", y="win_rate", size="trades", color="wallet",
+            hover_data=["volume"], size_max=18,
+            color_discrete_sequence=STATIC_PALETTE * 3,
+        )
+        sc.add_hline(y=0.5, line_dash="dot", line_color="#999")
+        sc.add_vline(x=0, line_dash="dot", line_color="#999")
+        sc.update_layout(
+            **{**STATIC_LAYOUT, "height": 220, "showlegend": False},
+        )
+        st.plotly_chart(sc, use_container_width=True, key="t_sc")
 
 with r2[1], st.container(border=True):
     hc1, hc2 = st.columns([5, 1])
     with hc1:
-        sort_pick = st.radio(
-            "Top10 並び替え", ["ROI %", "Sharpe", "ROI×Sharpe"],
-            horizontal=True, label_visibility="collapsed", key="sort_pick",
-        )
+        st.markdown("##### Top 10 wallet equity (30d)")
     with hc2:
         st.markdown(help_icon(HELP["top10"]), unsafe_allow_html=True)
-    combos = []
-    for mi, m in enumerate(MARKETS):
-        for si, s in enumerate(STRATEGIES):
-            combos.append({"market_idx": mi, "strat_idx": si,
-                           "market": m, "strategy": strat_labels[si],
-                           "ROI %": float(roi[mi, si]),
-                           "Sharpe": float(sharpe[mi, si])})
-    cdf = pd.DataFrame(combos)
-    if sort_pick == "ROI %":
-        cdf["_s"] = cdf["ROI %"]
-    elif sort_pick == "Sharpe":
-        cdf["_s"] = cdf["Sharpe"]
+    if not _CURVES:
+        st.caption("(no wallet curves — Phase 0 を Run)")
     else:
-        cdf["_s"] = cdf["ROI %"] * cdf["Sharpe"].clip(lower=0)
-    top10 = cdf.sort_values("_s", ascending=False).head(10).reset_index(drop=True)
-    dates60 = pd.date_range(end=pd.Timestamp.utcnow(), periods=60, freq="D")
-    palette = px.colors.qualitative.Bold + px.colors.qualitative.Set2
-    eq = go.Figure()
-    for i, row in top10.iterrows():
-        mi_, si_ = int(row["market_idx"]), int(row["strat_idx"])
-        sub = np.random.default_rng((mi_ * 1000 + si_) % (2**31 - 1))
-        drift = row["ROI %"] / 100 / 60 * 1000
-        noise = sub.normal(0, max(60, abs(row["ROI %"]) * 6), size=60)
-        equity = np.cumsum(np.full(60, drift * 10) + noise) + 1000
-        eq.add_trace(go.Scatter(x=dates60, y=equity, mode="lines",
-                                line=dict(color=palette[i % len(palette)], width=1.5),
-                                name=f"#{int(i + 1)}",
-                                hovertemplate=f"{row['market']}<br>{row['strategy']}<br>$%{{y:.0f}}<extra></extra>"))
-    eq.add_hline(y=1000, line_dash="dot", line_color="gray")
-    eq.update_layout(height=180, margin=dict(t=5, b=5, l=5, r=5),
-                     font=dict(size=8),
-                     legend=dict(font=dict(size=7), x=1.01, y=1))
-    st.plotly_chart(eq, use_container_width=True, key="t_eq")
+        palette = STATIC_PALETTE * 2
+        eq = go.Figure()
+        for i, c in enumerate(_CURVES[:10]):
+            series = c.get("series") or []
+            if not series:
+                continue
+            eq.add_trace(go.Scatter(
+                y=series, mode="lines",
+                line=dict(color=palette[i % len(palette)], width=1.5),
+                name=f"#{i + 1} {c.get('address', '')[:8]}…",
+                hovertemplate="$%{y:+.0f}<extra></extra>",
+            ))
+        eq.add_hline(y=0, line_dash="dot", line_color="#999")
+        eq.update_layout(
+            **{**STATIC_LAYOUT, "height": 180,
+               "showlegend": True,
+               "legend": dict(font=dict(size=7, color="#1a1a1a"), x=1.01, y=1)},
+        )
+        st.plotly_chart(eq, use_container_width=True, key="t_eq")
 
 with r2[2], st.container(border=True):
     st.markdown(f"##### Recent Phase 0 runs {help_icon(HELP['recent_runs'])}",

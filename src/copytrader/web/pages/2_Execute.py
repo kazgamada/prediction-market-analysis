@@ -14,39 +14,22 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from copytrader.db.engine import get_session
 from copytrader.db.models import Job, Watchlist
 from copytrader.web.auth import require_password
+from copytrader.web.theme import (
+    ACCENT_CYAN, ACCENT_GREEN, ACCENT_RED, ACCENT_YELLOW,
+    LIVE_LAYOUT, LIVE_PALETTE, STATIC_LAYOUT, STATIC_PALETTE,
+    TILE_BG, inject_theme,
+)
 from copytrader.web.format import fmt_ago, short_addr
 
 st.set_page_config(page_title="Execute", layout="wide",
                    initial_sidebar_state="collapsed")
 require_password()
 
-st.markdown("""
-<style>
-.block-container { padding-top: 0.6rem !important; padding-bottom: 0.4rem !important; max-width: 100% !important; }
-[data-testid="stMetric"] { padding: 0.1rem !important; }
-[data-testid="stMetricLabel"] { font-size: 0.7rem !important; }
-[data-testid="stMetricValue"] { font-size: 1.0rem !important; }
-[data-testid="stMetricDelta"] { font-size: 0.65rem !important; }
-h1, h3, h4, h5 { padding: 0 !important; margin: 0.2rem 0 !important; }
-h1 { font-size: 1.2rem !important; }
-h5 { font-size: 0.85rem !important; }
-hr { margin: 0.3rem 0 !important; }
-.stDataFrame { font-size: 0.72rem !important; }
-[data-testid="stVerticalBlockBorderWrapper"] { padding: 0.3rem 0.5rem !important; }
-.stProgress > div > div > div { height: 6px !important; }
-.stButton button { padding: 0.2rem 0.5rem !important; font-size: 0.78rem !important; }
-input, .stNumberInput input { font-size: 0.78rem !important; }
-.stTabs [data-baseweb="tab"] { padding: 0.2rem 0.5rem !important; font-size: 0.78rem !important; }
-</style>
-""", unsafe_allow_html=True)
+inject_theme()
 
 
 def help_icon(html_text: str) -> str:
-    """Inline ⓘ icon with browser-native title tooltip (hover-only).
-
-    Uses &#10; (HTML numeric char ref for LF) instead of real newlines so the
-    markdown parser doesn't split the attribute across lines.
-    """
+    """Inline ⓘ icon with browser-native title tooltip (hover-only)."""
     text = html_text
     text = text.replace("<hr>", "&#10;────────&#10;")
     text = text.replace("<br>", "&#10;")
@@ -55,9 +38,7 @@ def help_icon(html_text: str) -> str:
     text = text.replace("&amp;", "&").replace("&quot;", "'")
     text = text.replace('"', "'")
     return (
-        '<span title="' + text + '" '
-        'style="cursor:help;color:#2c7fb8;font-weight:bold;font-size:0.85rem">'
-        'ⓘ</span>'
+        '<span class="help-tip-icon" title="' + text + '">ⓘ</span>'
     )
 
 
@@ -165,54 +146,191 @@ st.markdown(
 
 rng = np.random.default_rng(7)
 
+
+# ---------------------------------------------------------------------------
+# Real-data accessors (graceful fall-through to mocks if DB is empty/down)
+# ---------------------------------------------------------------------------
+
+from copytrader.db import settings_table as _st  # noqa: E402
+from copytrader.db.models import (  # noqa: E402
+    Execution as ExecModel,
+)
+from copytrader.db.models import (
+    Position as PosModel,
+)
+from copytrader.db.models import (
+    RiskEvaluation,
+)
+from copytrader.db.models import (
+    Signal as SigModel,
+)
+from copytrader.db.models import (
+    TradePnl as TPModel,
+)
+
+
+@st.cache_data(ttl=5)
+def _real_metrics() -> dict:
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import func, select
+
+    out: dict = {"db_ok": True, "error": None}
+    midnight = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    week_ago = datetime.now(UTC) - timedelta(days=7)
+    month_ago = datetime.now(UTC) - timedelta(days=30)
+    try:
+        with get_session() as s:
+            out["today_pnl"] = float(s.execute(
+                select(func.coalesce(func.sum(TPModel.realized_usdc), 0))
+                .where(TPModel.ts >= midnight)
+            ).scalar_one())
+            out["week_pnl"] = float(s.execute(
+                select(func.coalesce(func.sum(TPModel.realized_usdc), 0))
+                .where(TPModel.ts >= week_ago)
+            ).scalar_one())
+            out["month_pnl"] = float(s.execute(
+                select(func.coalesce(func.sum(TPModel.realized_usdc), 0))
+                .where(TPModel.ts >= month_ago)
+            ).scalar_one())
+            open_count, open_total = s.execute(
+                select(
+                    func.count().filter(PosModel.open_size_shares > 0),
+                    func.coalesce(func.sum(PosModel.open_size_usdc), 0),
+                ).select_from(PosModel)
+            ).first() or (0, 0)
+            out["open_count"] = int(open_count or 0)
+            out["open_total_usdc"] = float(open_total or 0)
+            # latest risk metrics
+            latest_risk = s.execute(
+                select(RiskEvaluation).order_by(RiskEvaluation.ts.desc()).limit(1)
+            ).scalar_one_or_none()
+            out["risk"] = {
+                "allow": bool(latest_risk.allow_new) if latest_risk else True,
+                "halted": list(latest_risk.halted_reasons or [])
+                if latest_risk else [],
+                "metrics": dict(latest_risk.metrics_snapshot or {})
+                if latest_risk else {},
+            }
+    except Exception as e:  # noqa: BLE001
+        out["db_ok"] = False
+        out["error"] = str(e)
+    out["usdc"] = float(_st.get("usdc_balance_cache") or 0.0)
+    out["matic"] = float(_st.get("matic_balance_cache") or 0.0)
+    out["kill_switch_on"] = bool(_st.get("kill_switch_on") or False)
+    out["phase"] = str(_st.get("rollout_phase") or "A")
+    return out
+
+
+_M = _real_metrics()
+
 sb = st.columns([1, 1, 1, 1, 1, 1, 1.2])
-sb[0].metric("USDC", "$8,432", "-$120",
-             help="Polygon 上の USDC 残高。発注の元手。"
-                  "$500 以下で停止条件にヒット、自動発注停止。")
-sb[1].metric("MATIC", "12.4", "OK",
-             help="Polygon ガス用の MATIC。1.0 未満で発注不能。")
-sb[2].metric("オープン", "7", "$3,210",
-             help="保有ポジション数 / 総額。"
-                  "多すぎ (>15) は管理不能、少なすぎ (<3) は分散効果薄い。")
-sb[3].metric("今日 PnL", "+$184", "+2.2%",
-             help="本日 0:00 UTC 起算の実現 PnL。"
-                  "-5% で日次停止条件ヒット、-3% で警戒モード。")
-sb[4].metric("Sharpe 30d", "1.42", "+0.08",
-             help="直近 30 日の Sharpe ratio。"
-                  "> 1.0 良好、< 0.5 劣化、< 0 戦略破綻。週次レビューの主指標。")
-sb[5].metric("phase 累計", "+$72", "+$8 (24h)",
-             help="現 rollout phase 開始からの累計 PnL。"
-                  "phase 完了時の昇格判断に使う。")
+sb[0].metric(
+    "USDC", f"${_M['usdc']:,.0f}" if _M["usdc"] else "—",
+    help="Polygon 上の USDC 残高 (settings.usdc_balance_cache、execution layer 更新)。"
+         "$500 以下で停止条件にヒット、自動発注停止。",
+)
+sb[1].metric(
+    "MATIC", f"{_M['matic']:.1f}" if _M["matic"] else "—",
+    help="Polygon ガス用の MATIC。1.0 未満で発注不能。",
+)
+sb[2].metric(
+    "オープン", str(_M.get("open_count", 0)),
+    f"${_M.get('open_total_usdc', 0):,.0f}",
+    help="保有ポジション数 / 総額 (positions テーブル)。"
+         "多すぎ (>15) は管理不能、少なすぎ (<3) は分散効果薄い。",
+)
+today_pnl = _M.get("today_pnl", 0.0)
+sb[3].metric(
+    "今日 PnL", f"${today_pnl:+,.2f}",
+    delta_color="normal" if today_pnl >= 0 else "inverse",
+    help="本日 0:00 UTC 起算の実現 PnL (trade_pnl テーブル)。"
+         "-5% で日次停止条件ヒット、-3% で警戒モード。",
+)
+week_pnl = _M.get("week_pnl", 0.0)
+sb[4].metric(
+    "7d PnL", f"${week_pnl:+,.2f}",
+    delta_color="normal" if week_pnl >= 0 else "inverse",
+    help="過去 7 日の実現 PnL。週次トレンド指標。"
+         "-8% で週次停止条件ヒット。",
+)
+month_pnl = _M.get("month_pnl", 0.0)
+sb[5].metric(
+    "30d PnL", f"${month_pnl:+,.2f}",
+    help="過去 30 日の実現 PnL。月次レビューの主指標。",
+)
 with sb[6]:
     st.markdown(help_icon(HELP["killswitch"]), unsafe_allow_html=True)
-    kill = st.toggle("Kill Switch", value=False, key="kill_mock")
+    kill_default = _M.get("kill_switch_on", False)
+    kill = st.toggle("Kill Switch", value=kill_default, key="kill_switch_live")
+    if kill != kill_default:
+        # User toggled — persist to settings
+        try:
+            from copytrader.db.models import AuditLog
+            _st.set_("kill_switch_on", kill)
+            with get_session() as _s:
+                _s.add(AuditLog(actor="web", action=(
+                    "kill_switch_on" if kill else "kill_switch_off"),
+                    details={"via": "web_ui"}))
+            st.toast(f"Kill switch → {'ON' if kill else 'OFF'}")
+        except Exception as e:  # noqa: BLE001
+            st.error(f"persist failed: {e}")
     if kill:
         st.error("🛑 HALTED")
     else:
         st.success("🟢 LIVE")
+if not _M.get("db_ok"):
+    st.caption(f"⚠️ DB アクセス失敗: {_M.get('error', '')[:80]}")
 
 r1 = st.columns([1, 1.3, 1.4])
 
 with r1[0], st.container(border=True):
     st.markdown(f"##### リスク {help_icon(HELP['risk'])}",
                 unsafe_allow_html=True)
+    rmet = _M.get("risk", {}).get("metrics", {})
+    today_dd_pct = abs(float(rmet.get("today_pnl_pct", 0.0)))
+    halt_limit = abs(float(_st.get("halt_daily_pnl_pct") or -5.0))
     g = go.Figure(go.Indicator(
-        mode="gauge+number", value=3.2,
-        number={"suffix": "%", "valueformat": ".1f", "font": {"size": 20}},
-        title={"text": "今日 DD", "font": {"size": 10}},
-        gauge={"axis": {"range": [0, 8], "tickfont": {"size": 8}},
-               "bar": {"color": "#d9534f"},
-               "steps": [{"range": [0, 4], "color": "#e7f6e7"},
-                         {"range": [4, 6.4], "color": "#fff3cd"},
-                         {"range": [6.4, 8], "color": "#f8d7da"}],
-               "threshold": {"line": {"color": "red", "width": 3},
-                             "thickness": 0.75, "value": 8}}))
-    g.update_layout(height=140, margin=dict(t=20, b=0, l=10, r=10))
+        mode="gauge+number", value=today_dd_pct,
+        number={"suffix": "%", "valueformat": ".1f",
+                "font": {"size": 22, "color": "#fafafa"}},
+        title={"text": "今日 DD", "font": {"size": 10, "color": "#7a8499"}},
+        gauge={
+            "axis": {"range": [0, halt_limit],
+                     "tickfont": {"size": 8, "color": "#7a8499"}},
+            "bar": {"color": ACCENT_RED},
+            "bgcolor": TILE_BG,
+            "bordercolor": "#1a2230",
+            "steps": [{"range": [0, halt_limit * 0.5], "color": "#0d3320"},
+                      {"range": [halt_limit * 0.5, halt_limit * 0.8],
+                       "color": "#3d2f0a"},
+                      {"range": [halt_limit * 0.8, halt_limit],
+                       "color": "#3d0d12"}],
+            "threshold": {"line": {"color": ACCENT_RED, "width": 3},
+                          "thickness": 0.75, "value": halt_limit}}))
+    g.update_layout(
+        **{**LIVE_LAYOUT, "height": 140,
+           "margin": dict(t=20, b=0, l=10, r=10)},
+    )
     st.plotly_chart(g, use_container_width=True)
-    st.progress(0.43, text="exposure 43/70%")
-    st.progress(1.0, text="単一 token 27/25% ⚠")
-    st.progress(0.62, text="trades 62/100")
-    st.progress(0.38, text="連敗 2/5")
+    # Live progress bars from risk_evaluations.metrics_snapshot
+    exp_pct = float(rmet.get("total_exposure_pct", 0.0))
+    exp_lim = float(_st.get("limit_total_exposure_pct") or 70.0)
+    st.progress(min(exp_pct / max(exp_lim, 1), 1.0),
+                text=f"exposure {exp_pct:.0f}/{exp_lim:.0f}%")
+    single_pct = float(rmet.get("max_single_market_pct", 0.0))
+    single_lim = float(_st.get("limit_single_token_pct") or 25.0)
+    over = " ⚠" if single_pct > single_lim else ""
+    st.progress(min(single_pct / max(single_lim, 1), 1.0),
+                text=f"単一 token {single_pct:.0f}/{single_lim:.0f}%{over}")
+    daily_trades = int(rmet.get("daily_trades", 0))
+    trades_lim = int(_st.get("limit_daily_trades") or 100)
+    st.progress(min(daily_trades / max(trades_lim, 1), 1.0),
+                text=f"trades {daily_trades}/{trades_lim}")
+    cl = int(rmet.get("consecutive_losses", 0))
+    cl_lim = int(_st.get("halt_consecutive_losses") or 5)
+    st.progress(min(cl / max(cl_lim, 1), 1.0),
+                text=f"連敗 {cl}/{cl_lim}")
 
 with r1[1], st.container(border=True):
     hc1, hc2 = st.columns([5, 1])
@@ -222,49 +340,103 @@ with r1[1], st.container(border=True):
         st.markdown(help_icon(HELP["exec_tabs"]), unsafe_allow_html=True)
     tab_pos, tab_sig, tab_fill = st.tabs(["ポジション", "シグナル", "fills"])
     with tab_pos:
-        pos = pd.DataFrame({
-            "market": ["米大統領 — Dem", "FRB 6月 — Yes", "BTC>$150k — Yes",
-                       "AI — No", "G7 — Yes", "WC — Brazil", "投票率 — Yes"],
-            "side": ["B", "B", "B", "S", "B", "B", "B"],
-            "size": [320, 250, 480, 410, 200, 180, 1370],
-            "PnL": [22.8, 13.6, 80.0, 12.0, -2.8, -30.0, 90.2],
-            "保有": ["2h", "5h", "1d", "3d", "12h", "8h", "30m"],
-        })
-        st.dataframe(pos, use_container_width=True, hide_index=True, height=220,
-                     column_config={
-                         "size": st.column_config.NumberColumn(format="$%d"),
-                         "PnL": st.column_config.NumberColumn(format="$%+.1f"),
-                     })
+        try:
+            with get_session() as s:
+                rows = s.execute(
+                    select(PosModel).where(PosModel.open_size_shares > 0)
+                    .order_by(PosModel.open_size_usdc.desc()).limit(15)
+                ).scalars().all()
+                pos_data = [
+                    {
+                        "market": r.market_label or str(r.token_id)[:14] + "…",
+                        "side": "B" if int(r.side) == 0 else "S",
+                        "size": float(r.open_size_usdc),
+                        "entry": float(r.avg_price),
+                        "保有": fmt_ago(r.opened_at),
+                    }
+                    for r in rows
+                ]
+        except Exception as e:  # noqa: BLE001
+            pos_data = []
+            st.caption(f"db: {e}")
+        if not pos_data:
+            st.caption("(オープンポジションなし)")
+        st.dataframe(
+            pos_data, use_container_width=True, hide_index=True, height=220,
+            column_config={
+                "size": st.column_config.NumberColumn(format="$%.0f"),
+                "entry": st.column_config.NumberColumn(format="%.3f"),
+            },
+        )
     with tab_sig:
-        now = datetime.now(UTC)
-        sig = pd.DataFrame({
-            "時刻": [(now - timedelta(seconds=int(s))).strftime("%H:%M:%S")
-                     for s in sorted(rng.integers(5, 900, 8))],
-            "wallet": [f"0x{rng.integers(0, 16**8):08x}" for _ in range(8)],
-            "market": rng.choice(["米大統領", "FRB", "BTC", "AI"], 8),
-            "side": rng.choice(["B", "S"], 8).tolist(),
-            "price": [round(float(rng.uniform(0.1, 0.9)), 3) for _ in range(8)],
-            "状態": rng.choice(["✅", "⏳", "❌", "⏭"], 8, p=[0.5, 0.2, 0.1, 0.2]).tolist(),
-        })
-        st.dataframe(sig, use_container_width=True, hide_index=True, height=220)
+        try:
+            with get_session() as s:
+                rows = s.execute(
+                    select(SigModel)
+                    .order_by(SigModel.id.desc()).limit(15)
+                ).scalars().all()
+                status_icon = {
+                    "PENDING": "⏳", "EXECUTING": "⏳", "EXECUTED": "✅",
+                    "SKIPPED": "⏭", "REJECTED": "❌", "LEGACY": "·",
+                }
+                sig_data = [
+                    {
+                        "時刻": r.detected_at.strftime("%H:%M:%S")
+                        if r.detected_at else r.ts.strftime("%H:%M:%S"),
+                        "wallet": "0x" + r.address.hex()[:8],
+                        "side": "B" if int(r.side) == 0 else "S",
+                        "price": float(r.price),
+                        "size": float(r.size_usdc),
+                        " ": status_icon.get(r.status, r.status[:2]),
+                        "reason": r.skip_reason or "",
+                    }
+                    for r in rows
+                ]
+        except Exception as e:  # noqa: BLE001
+            sig_data = []
+            st.caption(f"db: {e}")
+        if not sig_data:
+            st.caption("(シグナル受信なし — Watchlist の wallet が発注すると現れる)")
+        st.dataframe(
+            sig_data, use_container_width=True, hide_index=True, height=220,
+            column_config={
+                "price": st.column_config.NumberColumn(format="%.3f"),
+                "size": st.column_config.NumberColumn(format="$%.0f"),
+            },
+        )
     with tab_fill:
-        fills = pd.DataFrame({
-            "時刻": [(datetime.now(UTC) - timedelta(seconds=int(s))).strftime("%H:%M:%S")
-                     for s in sorted(rng.integers(30, 7200, 8))],
-            "market": rng.choice(["米大統領", "FRB", "BTC", "AI", "WC"], 8),
-            "side": rng.choice(["B", "S"], 8).tolist(),
-            "size": [int(rng.choice([50, 100, 150, 200])) for _ in range(8)],
-            "ms": [int(rng.normal(850, 280)) for _ in range(8)],
-            "slip%": [round(float(rng.normal(0.4, 0.6)), 2) for _ in range(8)],
-            "PnL": [round(float(rng.normal(2, 12)), 2) for _ in range(8)],
-        })
-        st.dataframe(fills, use_container_width=True, hide_index=True, height=220,
-                     column_config={
-                         "size": st.column_config.NumberColumn(format="$%d"),
-                         "ms": st.column_config.NumberColumn(format="%d"),
-                         "slip%": st.column_config.NumberColumn(format="%+.2f"),
-                         "PnL": st.column_config.NumberColumn(format="$%+.1f"),
-                     })
+        try:
+            with get_session() as s:
+                rows = s.execute(
+                    select(ExecModel)
+                    .where(ExecModel.status.in_(["FILLED", "PARTIAL"]))
+                    .order_by(ExecModel.placed_at.desc()).limit(15)
+                ).scalars().all()
+                fills_data = [
+                    {
+                        "時刻": r.fill_time.strftime("%H:%M:%S")
+                        if r.fill_time else r.placed_at.strftime("%H:%M:%S"),
+                        "token": str(r.token_id)[:8] + "…",
+                        "side": "B" if int(r.side) == 0 else "S",
+                        "size": float(r.size_usdc),
+                        "price": float(r.filled_price or r.limit_price),
+                        "ms": r.signal_to_place_ms or 0,
+                    }
+                    for r in rows
+                ]
+        except Exception as e:  # noqa: BLE001
+            fills_data = []
+            st.caption(f"db: {e}")
+        if not fills_data:
+            st.caption("(約定なし — execution_enabled=true で動き始める)")
+        st.dataframe(
+            fills_data, use_container_width=True, hide_index=True, height=220,
+            column_config={
+                "size": st.column_config.NumberColumn(format="$%.0f"),
+                "price": st.column_config.NumberColumn(format="%.3f"),
+                "ms": st.column_config.NumberColumn(format="%d ms"),
+            },
+        )
 
 with r1[2], st.container(border=True):
     hc1, hc2 = st.columns([5, 1])
@@ -325,7 +497,11 @@ with r1[2], st.container(border=True):
         except Exception as e:  # noqa: BLE001
             wdata = []
             st.caption(f"db: {e}")
-        st.dataframe(wdata, use_container_width=True, hide_index=True, height=160)
+        if not wdata:
+            st.caption("(active な wallet なし — 上のフォームで追加)")
+        else:
+            st.dataframe(wdata, use_container_width=True, hide_index=True,
+                         height=160)
     with tab_jobs:
         try:
             with get_session() as s:
@@ -343,7 +519,11 @@ with r1[2], st.container(border=True):
         except Exception as e:  # noqa: BLE001
             jdata = []
             st.caption(f"db: {e}")
-        st.dataframe(jdata, use_container_width=True, hide_index=True, height=220)
+        if not jdata:
+            st.caption("(no jobs yet)")
+        else:
+            st.dataframe(jdata, use_container_width=True, hide_index=True,
+                         height=220)
     with tab_manual:
         with st.form("manual"):
             mc1, mc2 = st.columns(2)
@@ -364,37 +544,42 @@ with r2[0], st.container(border=True):
     st.markdown(f"##### Rollout 進行 (A→B→C→D) {help_icon(HELP['rollout'])}",
                 unsafe_allow_html=True)
     PHASES = [
-        ("A", "Paper", 28, 0, "#9aa0a6"),
-        ("B", "Micro", 28, 10, "#5b9bd5"),
-        ("C", "Small", 56, 50, "#2c7fb8"),
-        ("D", "Scale", 9999, 250, "#1a5490"),
+        ("A", "Paper", 28, 0, "#475569"),
+        ("B", "Micro", 28, 10, "#3aa3ff"),
+        ("C", "Small", 56, 50, "#1d4ed8"),
+        ("D", "Scale", 9999, 250, "#7c3aed"),
     ]
     CUR, DAY = 1, 18
     stp = go.Figure()
     for i, (pid, name, dur, sz, col) in enumerate(PHASES):
         if i < CUR:
-            color, op, suf = "#2ca02c", 1.0, " ✓"
+            color, op, suf = ACCENT_GREEN, 1.0, " ✓"
         elif i == CUR:
             color, op, suf = col, 1.0, " ●"
         else:
-            color, op, suf = "#cccccc", 0.5, ""
+            color, op, suf = "#1f2937", 1.0, ""
         stp.add_shape(type="rect", x0=i + 0.05, x1=i + 0.95, y0=0.35, y1=0.85,
-                      fillcolor=color, opacity=op, line=dict(width=0))
+                      fillcolor=color, opacity=op,
+                      line=dict(width=1, color="#1a2230"))
+        text_color = "#fafafa" if i <= CUR else "#7a8499"
         stp.add_annotation(
             x=i + 0.5, y=0.6, showarrow=False,
-            text=f"<b>{pid}{suf}</b> {name}　<span style='font-size:8px;color:#eee'>{dur}d/${sz}</span>",
-            font=dict(size=10, color="white" if op > 0.7 else "#666"))
+            text=f"<b>{pid}{suf}</b> {name}　<span style='font-size:8px'>{dur}d/${sz}</span>",
+            font=dict(size=10, color=text_color))
         if i < len(PHASES) - 1:
             stp.add_annotation(x=i + 1, y=0.6, showarrow=False, text="→",
-                               font=dict(size=14, color="#888"))
+                               font=dict(size=14, color="#475569"))
     prog = DAY / max(1, PHASES[CUR][2])
     stp.add_shape(type="rect", x0=CUR + 0.05,
                   x1=CUR + 0.05 + 0.9 * min(prog, 1.0),
-                  y0=0.27, y1=0.32, fillcolor="#ff8c00", line=dict(width=0))
-    stp.update_layout(height=70, margin=dict(t=0, b=0, l=5, r=5),
-                      xaxis=dict(visible=False, range=[0, len(PHASES)]),
-                      yaxis=dict(visible=False, range=[0, 1]),
-                      plot_bgcolor="white")
+                  y0=0.27, y1=0.32, fillcolor=ACCENT_YELLOW, line=dict(width=0))
+    stp.update_layout(
+        **{**LIVE_LAYOUT, "height": 70,
+           "margin": dict(t=0, b=0, l=5, r=5),
+           "xaxis": dict(visible=False, range=[0, len(PHASES)]),
+           "yaxis": dict(visible=False, range=[0, 1]),
+           "plot_bgcolor": "rgba(0,0,0,0)"},
+    )
     st.plotly_chart(stp, use_container_width=True, key="stepper")
     ac = st.columns(4)
     ac[0].button("→ C 昇格", type="primary", use_container_width=True,

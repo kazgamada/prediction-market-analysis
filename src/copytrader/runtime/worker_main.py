@@ -75,7 +75,33 @@ async def amain() -> None:
         await health.run_forever()
         return
 
-    await asyncio.gather(health.run_forever(), run_worker())
+    # Seed and start the cron scheduler alongside the job runner.
+    coros = [health.run_forever(), run_worker()]
+    try:
+        from copytrader.jobs.scheduler import run_scheduler, seed_default_schedule
+        seed_default_schedule()
+        coros.append(run_scheduler(interval_seconds=60))
+    except Exception as e:  # noqa: BLE001
+        log.warning("scheduler init failed (%s); running without cron", e)
+
+    # Start the executor (Phase A paper by default; flips to live when
+    # settings.execution_enabled=true).
+    try:
+        from copytrader.execution.executor import run_executor
+        from copytrader.execution.position_tracker import run_position_tracker
+        coros.append(run_executor(tick_seconds=2))
+        coros.append(run_position_tracker(tick_seconds=5))
+    except Exception as e:  # noqa: BLE001
+        log.warning("executor init failed (%s); running without executor", e)
+
+    # Start Telegram command listener (no-op if TELEGRAM_BOT_TOKEN unset).
+    try:
+        from copytrader.telegram.commands import run_telegram_commands
+        coros.append(run_telegram_commands())
+    except Exception as e:  # noqa: BLE001
+        log.warning("telegram init failed (%s); skipping", e)
+
+    await asyncio.gather(*coros)
 
 
 def main() -> None:

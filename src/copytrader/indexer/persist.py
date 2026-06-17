@@ -27,7 +27,34 @@ def persist_trades(trades: Sequence[DecodedTrade]) -> int:
             update_columns=None,  # idempotent: never overwrite trade rows
         )
     log.info("persisted %d trades", n)
+
+    # Phase 1: emit signals for watchlist matches. Errors here must NOT
+    # block trade persistence — copy trade is downstream from data ingest.
+    try:
+        _emit_signals_for_watchlist(trades)
+    except Exception as e:  # noqa: BLE001
+        log.warning("signal emission failed (ignored): %s", e)
+
     return n
+
+
+def _emit_signals_for_watchlist(trades: Sequence[DecodedTrade]) -> None:
+    """For each newly-persisted trade whose taker is on the active watchlist,
+    record a signals row. Idempotent via (address, token_id, ts) uniqueness
+    is enforced by the executor's de-dup, not at the DB level here.
+    """
+    from copytrader.execution.signal_consumer import maybe_record_signal
+
+    for t in trades:
+        row = decoded_to_row(t)
+        maybe_record_signal(
+            address=row["taker"],
+            token_id=int(row["token_id"]),
+            side=int(row["side"]),
+            price=row["price"],
+            size_usdc=row["size_usdc"],
+            trade_ts=row["ts"],
+        )
 
 
 def mark_blocks_seen(blocks: dict[int, int]) -> None:

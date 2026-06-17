@@ -164,10 +164,55 @@ def handle_phase0(handle: JobHandle) -> None:
     })
     handle_replay(replay_sub)
 
+    # Step 4: enrich result with per-wallet equity curves and aggregate
+    # stats so the Strategy UI can render real data without recomputing.
+    handle.log("phase0: step 4/4 enrich (equity curves + aggregates)")
+    try:
+        from copytrader.analysis.pnl import compute_wallet_equity_curves
+
+        addr_bytes = [bytes.fromhex(a[2:]) for a in top_wallets[:10]]
+        curves_map = compute_wallet_equity_curves(
+            addresses=addr_bytes, window_days=window, points=30,
+        )
+        wallet_curves = [
+            {"address": a, "series": curves_map.get(bytes.fromhex(a[2:]), [])}
+            for a in top_wallets[:10]
+        ]
+    except Exception as e:  # noqa: BLE001
+        handle.log(f"enrich failed (continuing): {e}", level=30)
+        wallet_curves = []
+
+    # Aggregate: KPIs derived from replay.per_delay
+    per_delay = (replay_sub.captured_result or {}).get("per_delay", [])
+    roi_values: list[float] = []
+    for d in per_delay:
+        v = d.get("roi_pct")
+        if v is None:
+            continue
+        try:
+            roi_values.append(float(v))
+        except (TypeError, ValueError):
+            pass
+    if roi_values:
+        agg = {
+            "sim_count": len(roi_values),
+            "positive_count": sum(1 for v in roi_values if v > 0),
+            "best_roi": max(roi_values),
+            "worst_roi": min(roi_values),
+            "median_roi": float(sorted(roi_values)[len(roi_values) // 2]),
+        }
+    else:
+        agg = {
+            "sim_count": 0, "positive_count": 0,
+            "best_roi": None, "worst_roi": None, "median_roi": None,
+        }
+
     handle.result({
         "top_wallets": top_wallets,
         "rank": rank_sub.captured_result,
         "replay": replay_sub.captured_result,
+        "wallet_curves": wallet_curves,
+        "aggregate": agg,
     })
 
 
@@ -194,9 +239,75 @@ class _SubHandle(JobHandle):
         self.captured_result = r
 
 
+def handle_gamma_resolve_fetch(handle: JobHandle) -> None:
+    """Pull resolved markets from Polymarket Gamma into market_resolutions."""
+    from copytrader.gamma.resolver import run_gamma_resolve_fetch_job
+
+    params = handle.params or {}
+    handle.log(f"gamma fetch start params={params}")
+    summary = run_gamma_resolve_fetch_job(params)
+    handle.log(f"gamma fetch done: {summary}")
+    handle.result(_to_jsonable(summary))
+
+
+def handle_watchlist_rotate(handle: JobHandle) -> None:
+    """Auto-promote top wallets + demote underperformers."""
+    from copytrader.jobs.watchlist_rotate import run_watchlist_rotate_job
+
+    params = handle.params or {}
+    handle.log(f"watchlist_rotate start params={params}")
+    summary = run_watchlist_rotate_job(params)
+    handle.log(f"watchlist_rotate done: {summary}")
+    handle.result(_to_jsonable(summary))
+
+
+def handle_daily_summary_telegram(handle: JobHandle) -> None:
+    """Send daily Telegram summary (fail-soft if bot not configured)."""
+    from datetime import UTC, datetime, timedelta
+    from sqlalchemy import func, select
+    from copytrader.db.engine import get_session
+    from copytrader.db.models import Position, TradePnl
+    from copytrader.db import settings_table as _st
+    from copytrader.telegram import notify_daily_summary
+
+    midnight = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    with get_session() as s:
+        today = float(s.execute(
+            select(func.coalesce(func.sum(TradePnl.realized_usdc), 0))
+            .where(TradePnl.ts >= midnight)
+        ).scalar_one())
+        n_pos = int(s.execute(
+            select(func.count()).select_from(Position)
+            .where(Position.open_size_shares > 0)
+        ).scalar_one())
+    phase = str(_st.get("rollout_phase") or "A")
+    started_raw = _st.get("rollout_started_at")
+    try:
+        started = datetime.fromisoformat(str(started_raw).replace("Z", "+00:00"))
+        day_in_phase = (datetime.now(UTC) - started).days
+    except Exception:  # noqa: BLE001
+        day_in_phase = 0
+    phase_pnl = 0.0  # placeholder; per-phase aggregation later
+    usdc = float(_st.get("usdc_balance_cache") or 0.0)
+    matic = float(_st.get("matic_balance_cache") or 0.0)
+    kill = bool(_st.get("kill_switch_on") or False)
+    status = "🛑 HALTED" if kill else "🟢 LIVE"
+    notify_daily_summary(
+        phase=phase, day_in_phase=day_in_phase, phase_pnl=phase_pnl,
+        today_pnl=today, open_positions=n_pos, usdc=usdc, matic=matic,
+        status=status,
+    )
+    summary = {"sent": True, "today_pnl": today, "positions": n_pos}
+    handle.log(f"daily summary: {summary}")
+    handle.result(summary)
+
+
 HANDLERS = {
     "backfill": handle_backfill,
     "rank": handle_rank,
     "replay": handle_replay,
     "phase0": handle_phase0,
+    "gamma_resolve_fetch": handle_gamma_resolve_fetch,
+    "watchlist_rotate": handle_watchlist_rotate,
+    "daily_summary_telegram": handle_daily_summary_telegram,
 }

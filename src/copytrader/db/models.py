@@ -111,6 +111,12 @@ class Signal(Base):
     size_usdc: Mapped[Decimal] = mapped_column(Numeric(28, 6))
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     source: Mapped[str] = mapped_column(Text)
+    # Phase 1 execution lifecycle columns (alembic 0002)
+    detected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    execute_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(Text, server_default="PENDING")
+    skip_reason: Mapped[str | None] = mapped_column(Text)
+    execution_id: Mapped[int | None] = mapped_column()
     __table_args__ = (Index("signals_ts_idx", text("ts DESC")),)
 
 
@@ -182,3 +188,114 @@ class Setting(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 1+ tables (alembic 0002)
+# ---------------------------------------------------------------------------
+
+
+class MarketResolution(Base):
+    __tablename__ = "market_resolutions"
+    condition_id: Mapped[bytes] = mapped_column(LargeBinary, primary_key=True)
+    outcome: Mapped[int] = mapped_column(SmallInteger)
+    payout_per_share: Mapped[Decimal] = mapped_column(Numeric(18, 6))
+    resolved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class Execution(Base):
+    __tablename__ = "executions"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    signal_id: Mapped[int] = mapped_column(ForeignKey("signals.id"))
+    clob_order_id: Mapped[str | None] = mapped_column(Text)
+    token_id: Mapped[Decimal] = mapped_column(Numeric(78, 0))
+    side: Mapped[int] = mapped_column(SmallInteger)
+    size_usdc: Mapped[Decimal] = mapped_column(Numeric(18, 6))
+    limit_price: Mapped[Decimal] = mapped_column(Numeric(8, 6))
+    placed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(Text)
+    filled_size: Mapped[Decimal] = mapped_column(
+        Numeric(18, 6), server_default="0"
+    )
+    filled_price: Mapped[Decimal | None] = mapped_column(Numeric(8, 6))
+    fill_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    signal_to_place_ms: Mapped[int | None] = mapped_column(Integer)
+    place_to_fill_ms: Mapped[int | None] = mapped_column(Integer)
+    error_text: Mapped[str | None] = mapped_column(Text)
+    idempotency_key: Mapped[str] = mapped_column(Text, unique=True)
+
+
+class Position(Base):
+    __tablename__ = "positions"
+    token_id: Mapped[Decimal] = mapped_column(Numeric(78, 0), primary_key=True)
+    market_label: Mapped[str | None] = mapped_column(Text)
+    side: Mapped[int] = mapped_column(SmallInteger)
+    open_size_shares: Mapped[Decimal] = mapped_column(Numeric(18, 6))
+    open_size_usdc: Mapped[Decimal] = mapped_column(Numeric(18, 6))
+    avg_price: Mapped[Decimal] = mapped_column(Numeric(8, 6))
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class TradePnl(Base):
+    __tablename__ = "trade_pnl"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    execution_id: Mapped[int] = mapped_column(ForeignKey("executions.id"))
+    token_id: Mapped[Decimal] = mapped_column(Numeric(78, 0))
+    realized_usdc: Mapped[Decimal] = mapped_column(Numeric(18, 6))
+    fees_usdc: Mapped[Decimal] = mapped_column(
+        Numeric(18, 6), server_default="0"
+    )
+    ts: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class RiskEvaluation(Base):
+    __tablename__ = "risk_evaluations"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    allow_new: Mapped[bool] = mapped_column(Boolean)
+    halted_reasons: Mapped[list | None] = mapped_column(JSONB)
+    warnings: Mapped[list | None] = mapped_column(JSONB)
+    metrics_snapshot: Mapped[dict | None] = mapped_column(JSONB)
+
+
+class ScheduledJob(Base):
+    __tablename__ = "scheduled_jobs"
+    name: Mapped[str] = mapped_column(Text, primary_key=True)
+    cron_expr: Mapped[str] = mapped_column(Text)
+    job_kind: Mapped[str] = mapped_column(Text)
+    job_params: Mapped[dict] = mapped_column(JSONB)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    enabled: Mapped[bool] = mapped_column(Boolean, server_default="true")
+
+
+class StrategyVariant(Base):
+    __tablename__ = "strategy_variants"
+    name: Mapped[str] = mapped_column(Text, primary_key=True)
+    config: Mapped[dict] = mapped_column(JSONB)
+    weight: Mapped[Decimal] = mapped_column(Numeric(3, 2))
+    enabled: Mapped[bool] = mapped_column(Boolean, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    actor: Mapped[str] = mapped_column(Text)
+    action: Mapped[str] = mapped_column(Text)
+    details: Mapped[dict] = mapped_column(JSONB)
