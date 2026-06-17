@@ -148,12 +148,15 @@ def _clear_stale_alembic_state(conn) -> None:
     conn.execute(text("DELETE FROM alembic_version"))
     # Drop new-schema tables that may have been left behind by a partial
     # earlier run, plus the enum (so the IF-NOT-EXISTS guard in 0001 has
-    # a clean slate). Anything not in this list (= old-schema tables) is
+    # a clean slate). The list is derived from the ORM metadata so that
+    # tables added by future migrations (e.g. 0002 phase1) are covered
+    # automatically — a hardcoded list silently goes stale and lets the
+    # re-run crash with "relation ... already exists". Anything not defined
+    # as an ORM model (= old-schema tables like `trade`, `wallet`) is
     # preserved for carry-over.
-    for tbl in ("jobs", "job_logs", "rpc_dead_letters", "settings",
-                "signals", "risk_events", "watchlist",
-                "wallet_stats_daily", "trades", "blocks_seen", "cursors"):
-        conn.execute(text(f"DROP TABLE IF EXISTS {tbl} CASCADE"))
+    from copytrader.db.models import Base
+    for table in reversed(Base.metadata.sorted_tables):
+        conn.execute(text(f'DROP TABLE IF EXISTS "{table.name}" CASCADE'))
     conn.execute(text("DROP TYPE IF EXISTS job_status"))
 
 
