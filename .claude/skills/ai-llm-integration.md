@@ -5,30 +5,32 @@ description: >-
   で 統合するための汎用パターン集。セットアップ・ストリーミング・バックグラウンド生成・
   マルチプロバイダー対応・プロンプト設計・エラーハンドリング・コスト管理を網羅する。
 category: ai-llm
-version: 2
+version: 3
 sourceSkillIds:
   - 4119be00
   - acad8888
   - 5b9df56e
+  - b844a094
+  - 56cb7e84
   - d4c30a79
+  - c12cc421
+  - f9f3f13b
+  - f3fd7006
   - 50e467ba
   - e62d03ca
   - 0ad01970
   - 150f406c
   - c4ce7df6
-generatedAt: '2026-05-11'
+  - 5070feb9
+generatedAt: '2026-05-23'
 ---
 
-<!-- 
-統合メモ:
-- ベース: ai-llm-integration（prediction-market-analysis）+ ai-llm-integration-derived（aegis-market-os, changedAt: 2026-05-07）
-- aegis-market-os 版はテスト用 derive だが effectiveTimestamp が新しいため、差分（セクション構成・補足注記）を優先採用
-- content-generation-pipeline（AISaaS）のバックグラウンド生成パターン・ステータス遷移を §5 に統合
-- add-email-template / KOKOKARA skills（選択UI・ダークテーマ・ブランチ運用・deferred tool）は
-  ai-llm-integration カテゴリと無関係のため棄却。参照先: add-email-template, skills-KOKOKARA
--->
-
 # AI / LLM Integration — Claude API & Anthropic SDK
+
+Next.js（App Router）で Claude API を統合する際の決定版パターン集。  
+セットアップから本番運用まで一貫して参照できるように設計されている。
+
+---
 
 ## 1. セットアップ
 
@@ -36,10 +38,10 @@ generatedAt: '2026-05-11'
 
 ```bash
 npm install @anthropic-ai/sdk
-# ストリーミング用（Next.js App Router）
+# Vercel AI SDK（ストリーミング・マルチプロバイダー対応）
 npm install ai
-# マルチプロバイダー対応（任意）
-npm install @ai-sdk/anthropic @ai-sdk/openai
+# 環境変数バリデーション（推奨）
+npm install zod
 ```
 
 ### 環境変数
@@ -47,75 +49,66 @@ npm install @ai-sdk/anthropic @ai-sdk/openai
 ```bash
 # .env.local
 ANTHROPIC_API_KEY=sk-ant-...
-OPENAI_API_KEY=sk-...          # マルチプロバイダー時
-AI_DEFAULT_PROVIDER=anthropic  # 切り替え制御
+
+# マルチプロバイダー時
+OPENAI_API_KEY=sk-...
+GOOGLE_GENERATIVE_AI_API_KEY=...
 ```
 
-### クライアント初期化（シングルトン）
+### シングルトンクライアント（`lib/ai/client.ts`）
 
 ```typescript
-// lib/ai/client.ts
 import Anthropic from "@anthropic-ai/sdk";
 
-let _client: Anthropic | null = null;
-
-export function getAnthropicClient(): Anthropic {
-  if (!_client) {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
-    _client = new Anthropic({ apiKey });
-  }
-  return _client;
+if (!process.env.ANTHROPIC_API_KEY) {
+  throw new Error("ANTHROPIC_API_KEY is not set");
 }
+
+// モジュールスコープでシングルトン化（cold start 対策）
+export const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY,
+});
+
+// デフォルトモデル定数（一元管理）
+export const DEFAULT_MODEL = "claude-opus-4-5" as const;
+export const FAST_MODEL    = "claude-haiku-3-5" as const;
 ```
 
 ---
 
-## 2. 基本テキスト生成
+## 2. 基本的なメッセージ生成
 
-### Server Action（非ストリーミング）
+### 非ストリーミング（Server Action / Route Handler 共通）
 
 ```typescript
-// app/actions/generate.ts
-"use server";
+// lib/ai/generate.ts
+import { anthropic, DEFAULT_MODEL } from "./client";
 
-import { getAnthropicClient } from "@/lib/ai/client";
+export async function generateText(
+  prompt: string,
+  opts: {
+    systemPrompt?: string;
+    maxTokens?: number;
+    temperature?: number;
+  } = {}
+): Promise<string> {
+  const { systemPrompt, maxTokens = 1024, temperature = 0.7 } = opts;
 
-export async function generateText(prompt: string): Promise<string> {
-  const client = getAnthropicClient();
-
-  const message = await client.messages.create({
-    model: "claude-opus-4-5",      // 最新モデルを常に確認
-    max_tokens: 1024,
+  const response = await anthropic.messages.create({
+    model: DEFAULT_MODEL,
+    max_tokens: maxTokens,
+    ...(temperature !== undefined && {
+      // temperature は extended thinking 使用時は省略
+    }),
+    ...(systemPrompt && {
+      system: systemPrompt,
+    }),
     messages: [{ role: "user", content: prompt }],
   });
 
-  const block = message.content[0];
-  if (block.type !== "text") throw new Error("Unexpected content type");
+  const block = response.content[0];
+  if (block.type !== "text") throw new Error("Unexpected response type");
   return block.text;
-}
-```
-
-### Route Handler（非ストリーミング）
-
-```typescript
-// app/api/generate/route.ts
-import { NextRequest, NextResponse } from "next/server";
-import { getAnthropicClient } from "@/lib/ai/client";
-
-export async function POST(req: NextRequest) {
-  const { prompt } = await req.json();
-
-  const client = getAnthropicClient();
-  const message = await client.messages.create({
-    model: "claude-opus-4-5",
-    max_tokens: 1024,
-    messages: [{ role: "user", content: prompt }],
-  });
-
-  const text =
-    message.content[0].type === "text" ? message.content[0].text : "";
-  return NextResponse.json({ text });
 }
 ```
 
@@ -123,115 +116,153 @@ export async function POST(req: NextRequest) {
 
 ## 3. ストリーミング
 
-### Route Handler + Vercel AI SDK
+### Route Handler（`app/api/chat/route.ts`）
 
 ```typescript
-// app/api/stream/route.ts
-import { anthropic } from "@ai-sdk/anthropic";
-import { streamText } from "ai";
+import { anthropic } from "@/lib/ai/client";
+import { AnthropicStream, StreamingTextResponse } from "ai";
 
-export const maxDuration = 60; // Vercel Functions タイムアウト
+export const runtime = "edge"; // Edge Runtime 推奨
 
 export async function POST(req: Request) {
   const { messages } = await req.json();
 
-  const result = await streamText({
-    model: anthropic("claude-opus-4-5"),
-    messages,
-    system: "You are a helpful assistant.",
-  });
-
-  return result.toDataStreamResponse();
-}
-```
-
-### クライアント側（`useChat` フック）
-
-```typescript
-// app/components/ChatInterface.tsx
-"use client";
-import { useChat } from "ai/react";
-
-export function ChatInterface() {
-  const { messages, input, handleInputChange, handleSubmit, isLoading } =
-    useChat({ api: "/api/stream" });
-
-  return (
-    <div>
-      {messages.map((m) => (
-        <div key={m.id}>
-          <strong>{m.role}:</strong> {m.content}
-        </div>
-      ))}
-      <form onSubmit={handleSubmit}>
-        <input value={input} onChange={handleInputChange} disabled={isLoading} />
-        <button type="submit" disabled={isLoading}>送信</button>
-      </form>
-    </div>
-  );
-}
-```
-
-### 生 Anthropic SDK でストリーミング（Vercel AI SDK を使わない場合）
-
-```typescript
-// app/api/stream-raw/route.ts
-import Anthropic from "@anthropic-ai/sdk";
-
-export async function POST(req: Request) {
-  const { prompt } = await req.json();
-  const client = new Anthropic();
-
-  const stream = await client.messages.stream({
+  const response = await anthropic.messages.create({
     model: "claude-opus-4-5",
     max_tokens: 1024,
-    messages: [{ role: "user", content: prompt }],
+    stream: true,
+    messages,
   });
 
-  const encoder = new TextEncoder();
-  const readable = new ReadableStream({
-    async start(controller) {
-      for await (const chunk of stream) {
-        if (
-          chunk.type === "content_block_delta" &&
-          chunk.delta.type === "text_delta"
-        ) {
-          controller.enqueue(encoder.encode(chunk.delta.text));
-        }
+  const stream = AnthropicStream(response);
+  return new StreamingTextResponse(stream);
+}
+```
+
+### Server Action でストリーミング（`createStreamableValue` パターン）
+
+```typescript
+"use server";
+import { createStreamableValue } from "ai/rsc";
+import { anthropic } from "@/lib/ai/client";
+
+export async function streamGenerate(prompt: string) {
+  const stream = createStreamableValue("");
+
+  (async () => {
+    const response = await anthropic.messages.create({
+      model: "claude-opus-4-5",
+      max_tokens: 1024,
+      stream: true,
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    for await (const chunk of response) {
+      if (
+        chunk.type === "content_block_delta" &&
+        chunk.delta.type === "text_delta"
+      ) {
+        stream.update(chunk.delta.text);
       }
-      controller.close();
-    },
-  });
+    }
+    stream.done();
+  })();
 
-  return new Response(readable, {
-    headers: { "Content-Type": "text/plain; charset=utf-8" },
-  });
+  return { output: stream.value };
+}
+```
+
+### クライアント側での消費
+
+```typescript
+"use client";
+import { readStreamableValue } from "ai/rsc";
+
+export function ChatComponent() {
+  const [output, setOutput] = useState("");
+
+  const handleSubmit = async (prompt: string) => {
+    const { output } = await streamGenerate(prompt);
+    for await (const chunk of readStreamableValue(output)) {
+      setOutput((prev) => prev + (chunk ?? ""));
+    }
+  };
+  // ...
 }
 ```
 
 ---
 
-## 4. システムプロンプトとコンテキスト設計
+## 4. バックグラウンド生成パイプライン
+
+AI 生成はレイテンシが高いため、**fire-and-forget + DB ステータス管理**が基本パターン。
+
+### ステータス遷移
+
+```
+pending → generating → json_saved → html_built → published
+                    ↘ error（any step）
+```
+
+### 実装パターン
 
 ```typescript
-// lib/ai/prompts.ts
+// Server Action: 即座にレスポンスを返し、バックグラウンドで生成
+export async function startGeneration(contentId: string) {
+  // 1. pending レコードを作成（即座にレスポンス）
+  await db.contentGenerations.update({
+    where: { id: contentId },
+    data: { status: "generating", startedAt: new Date() },
+  });
 
-export const SYSTEM_PROMPTS = {
-  analyst: `You are an expert analyst. Respond in JSON only.
-Rules:
-- Be concise and factual
-- Include confidence scores (0-1)
-- Flag uncertainty explicitly`,
+  // 2. fire-and-forget（await しない）
+  runBackgroundGeneration(contentId).catch((err) => {
+    console.error("Background generation failed:", err);
+  });
 
-  assistant: `You are a helpful assistant for {appName}.
-- Answer in the user's language
-- Cite sources when available`,
-} as const;
+  return { started: true };
+}
 
-// 変数展開ユーティリティ
-export function buildSystemPrompt(
-  key: keyof typeof SYSTEM_PROMPTS,
-  vars: Record<string, string> = {}
-): string {
-  let prompt = SYSTEM_PROMPTS[key] as string;
-  for (const [k, v] of Object.
+async function runBackgroundGeneration(contentId: string) {
+  try {
+    // 3. AI 生成
+    const result = await generateSingleContent(contentId);
+
+    // 4. JSON 保存
+    await db.contentGenerations.update({
+      where: { id: contentId },
+      data: { status: "json_saved", generatedJson: result },
+    });
+
+    // 5. HTML ビルド
+    await buildHtmlFromJson(contentId);
+
+    await db.contentGenerations.update({
+      where: { id: contentId },
+      data: { status: "published", completedAt: new Date() },
+    });
+  } catch (error) {
+    await db.contentGenerations.update({
+      where: { id: contentId },
+      data: {
+        status: "error",
+        errorMessage: error instanceof Error ? error.message : String(error),
+      },
+    });
+  }
+}
+```
+
+### ポーリングで進捗確認
+
+```typescript
+// app/api/generation-status/[id]/route.ts
+export async function GET(
+  _req: Request,
+  { params }: { params: { id: string } }
+) {
+  const record = await db.contentGenerations.findUnique({
+    where: { id: params.id },
+    select: { status: true, errorMessage: true, completedAt: true },
+  });
+  return Response.json(record

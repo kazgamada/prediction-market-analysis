@@ -1,18 +1,25 @@
 ---
 name: database-migration-pattern
 description: >-
-  Supabase/PostgreSQL/TypeScriptプロジェクトにおけるDBスキーマ設計・マイグレーション・RLS・ロール管理・型安全クエリパターンの包括的ガイド。テーブル設計の原則からRLSポリシー実装、Supabase型生成、ロール階層管理、冪等マイグレーション、スキーマ適応クエリまで一貫した実装パターンを提供する。あらゆる規模のSaaSアプリケーションで再利用可能。
+  Supabase/PostgreSQL/TypeScriptプロジェクトにおけるDBスキーマ設計・マイグレーション・RLS・ロール管理・型安全クエリパターンの包括的ガイド。
+  テーブル設計の原則からRLSポリシー実装、Supabase型生成、ロール階層管理、冪等マイグレーション、スキーマ適応クエリ、
+  外部API同期、Webhook統合、セキュリティレビューまで一貫した実装パターンを提供する。 本番DBへのマイグレーション適用手順・列不在時のServer
+  Component安全処理も含む。 あらゆる規模のSaaSアプリケーションで再利用可能。
 category: database
+version: 3
+effectiveTimestamp: '2026-05-27T13:30:00.000Z'
 sourceSkillIds:
   - a4ed7a36
   - a8640f40
   - 12ba1851
+  - 2db98959
   - '35616135'
   - 91d394af
   - 82eca7f0
   - ea609157
   - a2d648e3
   - b7f939a7
+  - add2c175
   - 46cf8d7e
   - edc9c129
   - daf97aca
@@ -33,169 +40,176 @@ sourceSkillIds:
   - '89024666'
   - a3e04bbe
   - 41f175ef
-  - 16966ace
+  - ddf22374
   - bc81c831
   - 85eeda05
   - 8e4316ac
+  - 033f390d
   - 8598329c
-generatedAt: '2026-05-11'
+generatedAt: '2026-06-17'
 ---
 
 # database-migration-pattern
 
-Supabase / PostgreSQL / TypeScript プロジェクトにおける DB 設計・マイグレーション・RLS・ロール管理・型安全クエリの包括的実装ガイド。
+Supabase / PostgreSQL / TypeScript プロジェクトにおける
+DB スキーマ設計・マイグレーション・RLS・型安全クエリ・外部連携の包括ガイド。
 
 ---
 
 ## 目次
 
 1. [テーブル設計の原則](#1-テーブル設計の原則)
-2. [冪等マイグレーションパターン](#2-冪等マイグレーションパターン)
+2. [冪等マイグレーション](#2-冪等マイグレーション)
 3. [RLS ポリシー実装](#3-rls-ポリシー実装)
 4. [ロール階層管理](#4-ロール階層管理)
-5. [Supabase クライアント使い分け](#5-supabase-クライアント使い分け)
-6. [型安全クエリパターン](#6-型安全クエリパターン)
-7. [スキーマ適応クエリ（列存在チェック）](#7-スキーマ適応クエリ列存在チェック)
-8. [月次セキュリティレビューチェックリスト](#8-月次セキュリティレビューチェックリスト)
+5. [Supabase 型生成・型安全クエリ](#5-supabase-型生成型安全クエリ)
+6. [Drizzle ORM クエリパターン](#6-drizzle-orm-クエリパターン)
+7. [スキーマ適応クエリ（列不在対応）](#7-スキーマ適応クエリ列不在対応)
+8. [外部 API 同期パターン](#8-外部-api-同期パターン)
+9. [Webhook 統合パターン](#9-webhook-統合パターン)
+10. [月次セキュリティレビュー](#10-月次セキュリティレビュー)
+11. [本番 DB マイグレーション適用手順](#11-本番-db-マイグレーション適用手順)
 
 ---
 
 ## 1. テーブル設計の原則
 
-### 基本構造
+### 基本規約
+
+| 項目 | 規約 |
+|------|------|
+| PK | `uuid` (default `gen_random_uuid()`) |
+| タイムスタンプ | `created_at`, `updated_at` (timezone付き) |
+| 論理削除 | `deleted_at TIMESTAMPTZ` — 物理削除禁止 |
+| 外部キー | `ON DELETE RESTRICT` をデフォルト、CASCADE は明示的に |
+| カラム命名 | `snake_case` |
+| インデックス | 外部キー・検索列には必ず付与 |
+
+### テンプレート
 
 ```sql
--- 全テーブル共通の基底構造
-CREATE TABLE IF NOT EXISTS public.{table_name} (
-  id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-  created_at  timestamptz NOT NULL DEFAULT now(),
-  updated_at  timestamptz NOT NULL DEFAULT now()
+-- supabase/migrations/YYYYMMDDHHMMSS_create_<table>.sql
+CREATE TABLE IF NOT EXISTS public.<table_name> (
+  id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  -- ↓ ドメイン固有カラム
+  name        TEXT        NOT NULL,
+  status      TEXT        NOT NULL DEFAULT 'active'
+                          CHECK (status IN ('active', 'archived')),
+  metadata    JSONB       DEFAULT '{}'::jsonb,
+  -- ↓ 監査カラム（全テーブル共通）
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  deleted_at  TIMESTAMPTZ
 );
 
--- updated_at 自動更新トリガー（プロジェクト全体で共有）
-CREATE OR REPLACE FUNCTION public.set_updated_at()
-RETURNS TRIGGER AS $$
-BEGIN
-  NEW.updated_at = now();
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+-- updated_at 自動更新トリガー
+CREATE OR REPLACE TRIGGER set_updated_at
+  BEFORE UPDATE ON public.<table_name>
+  FOR EACH ROW EXECUTE FUNCTION moddatetime(updated_at);
 
-CREATE TRIGGER trg_{table_name}_updated_at
-  BEFORE UPDATE ON public.{table_name}
-  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+-- インデックス
+CREATE INDEX IF NOT EXISTS <table_name>_status_idx
+  ON public.<table_name> (status)
+  WHERE deleted_at IS NULL;
 ```
 
-### 設計チェックリスト
+### SaaS テナント分離パターン
 
-| 項目 | 確認内容 |
-|------|----------|
-| PK | `uuid` + `gen_random_uuid()` を使用（連番は避ける） |
-| タイムスタンプ | `created_at` / `updated_at` を全テーブルに付与 |
-| soft delete | 必要なら `deleted_at timestamptz` を追加（物理削除は最後の手段） |
-| 外部キー | `ON DELETE` 動作を明示（`CASCADE` / `SET NULL` / `RESTRICT`） |
-| インデックス | 検索条件・結合キーに必ず作成 |
-| RLS | 全テーブルで `ENABLE ROW LEVEL SECURITY` を宣言 |
+```sql
+-- organizations テーブル（マルチテナントの基点）
+CREATE TABLE IF NOT EXISTS public.organizations (
+  id          UUID  PRIMARY KEY DEFAULT gen_random_uuid(),
+  slug        TEXT  NOT NULL UNIQUE,
+  name        TEXT  NOT NULL,
+  plan        TEXT  NOT NULL DEFAULT 'free'
+                   CHECK (plan IN ('free', 'pro', 'enterprise')),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- テナント所属テーブルの共通パターン
+CREATE TABLE IF NOT EXISTS public.<resource> (
+  id              UUID  PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id UUID  NOT NULL REFERENCES public.organizations(id)
+                        ON DELETE RESTRICT,
+  -- ...
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS <resource>_org_idx
+  ON public.<resource> (organization_id);
+```
 
 ---
 
-## 2. 冪等マイグレーションパターン
+## 2. 冪等マイグレーション
 
-既存デプロイを壊さずに列・インデックス・テーブルを追加する。  
-`IF NOT EXISTS` / `IF EXISTS` を必ず付け、何度実行しても安全にする。
+本番環境に **何度実行しても壊れない** SQL を書く。
+
+### カラム追加
 
 ```sql
--- ✅ 列を追加（冪等）
-ALTER TABLE public.users
-  ADD COLUMN IF NOT EXISTS display_name text,
-  ADD COLUMN IF NOT EXISTS avatar_url   text,
-  ADD COLUMN IF NOT EXISTS role         text NOT NULL DEFAULT 'member';
+-- IF NOT EXISTS で冪等性を保証
+ALTER TABLE public.<table_name>
+  ADD COLUMN IF NOT EXISTS <column_name> TEXT;
 
--- ✅ インデックスを追加（冪等）
-CREATE INDEX IF NOT EXISTS idx_users_role
-  ON public.users (role);
-
-CREATE INDEX IF NOT EXISTS idx_orders_user_created
-  ON public.orders (user_id, created_at DESC);
-
--- ✅ テーブルを追加（冪等）
-CREATE TABLE IF NOT EXISTS public.org_members (
-  id         uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-  org_id     uuid        NOT NULL REFERENCES public.orgs(id) ON DELETE CASCADE,
-  user_id    uuid        NOT NULL REFERENCES auth.users(id)  ON DELETE CASCADE,
-  role       text        NOT NULL DEFAULT 'member',
-  created_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (org_id, user_id)
-);
-
--- ✅ 列削除（冪等）
-ALTER TABLE public.orders
-  DROP COLUMN IF EXISTS legacy_column;
-
--- ✅ ENUM 値追加（冪等 — PostgreSQL 12+）
-DO $$
-BEGIN
-  ALTER TYPE public.status_enum ADD VALUE IF NOT EXISTS 'archived';
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+-- NOT NULL + DEFAULT のセット（既存行対応）
+ALTER TABLE public.<table_name>
+  ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
 ```
 
-### `/api/setup` エンドポイントパターン（Prisma 非使用プロジェクト）
+### インデックス追加
+
+```sql
+CREATE INDEX IF NOT EXISTS <index_name>
+  ON public.<table_name> (<column>);
+```
+
+### テーブル削除（ロールバック用）
+
+```sql
+DROP TABLE IF EXISTS public.<table_name>;
+```
+
+### /api/setup エンドポイントパターン（Prisma 非使用プロジェクト）
 
 ```typescript
 // app/api/setup/route.ts
-import { createAdminClient } from '@/lib/supabase/admin';
-import { NextResponse } from 'next/server';
+import { createClient } from "@/lib/supabase/server";
+import { NextResponse } from "next/server";
 
-const MIGRATION_SQL = /* sql */`
-  ALTER TABLE public.users ADD COLUMN IF NOT EXISTS display_name text;
-  CREATE INDEX IF NOT EXISTS idx_users_display_name ON public.users (display_name);
-`;
+// 本番では Authorization ヘッダーで保護すること
+export async function POST(req: Request) {
+  const supabase = createClient();
 
-export async function POST(request: Request) {
-  // 本番では認証ヘッダーやシークレットで保護すること
-  const authHeader = request.headers.get('authorization');
-  if (authHeader !== `Bearer ${process.env.SETUP_SECRET}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const migrations: Array<{ name: string; sql: string }> = [
+    {
+      name: "add_metadata_to_users",
+      sql: `ALTER TABLE public.users
+              ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;`,
+    },
+    {
+      name: "create_audit_logs",
+      sql: `CREATE TABLE IF NOT EXISTS public.audit_logs (
+              id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              user_id    UUID REFERENCES auth.users(id),
+              action     TEXT NOT NULL,
+              payload    JSONB,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );`,
+    },
+  ];
+
+  const results: Record<string, string> = {};
+
+  for (const m of migrations) {
+    const { error } = await supabase.rpc("exec_sql", { query: m.sql });
+    results[m.name] = error ? `ERROR: ${error.message}` : "OK";
   }
 
-  const admin = createAdminClient();
-  const { error } = await admin.rpc('exec_sql', { sql: MIGRATION_SQL });
-  // ※ exec_sql は社内定義の PostgreSQL 関数。直接 supabase.rpc を使う場合は
-  //   postgres.js / pg ドライバ経由で実行する
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ results });
 }
 ```
 
----
-
-## 3. RLS ポリシー実装
-
-### 基本パターン
-
-```sql
--- RLS を有効化（テーブル作成直後に必ず実行）
-ALTER TABLE public.posts ENABLE ROW LEVEL SECURITY;
-
--- ① 本人のみ読み書き可能
-CREATE POLICY "users: own rows"
-  ON public.posts
-  FOR ALL
-  USING  (auth.uid() = user_id)
-  WITH CHECK (auth.uid() = user_id);
-
--- ② 認証済みユーザーは SELECT のみ
-CREATE POLICY "posts: authenticated read"
-  ON public.posts
-  FOR SELECT
-  USING (auth.role() = 'authenticated');
-
--- ③ 組織メンバーのみアクセス（サブクエリ）
-CREATE POLICY "org_items: member access"
-  ON public.org_items
-  FOR ALL
-  USING (
-    EXISTS
+>

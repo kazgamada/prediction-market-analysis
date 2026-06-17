@@ -1,7 +1,13 @@
 ---
+name: api-route-patterns
+description: >-
+  Next.js App Router の API ルート実装パターン。認証・認可ガード、Zod
+  バリデーション、エラーハンドリング、フィルタ共有、プラン制限、Webhook 署名検証、tRPC 型安全まで網羅。新規 API
+  ルート追加・既存ルート修正・型エラー解消時にトリガー。
 category: api-router
 sourceSkillIds:
   - 3b8b6f3f
+  - 31e942d4
   - fd774bbd
   - '17e52886'
   - fe4fd046
@@ -18,182 +24,199 @@ sourceSkillIds:
   - ce339f24
   - a6ff5932
   - 1e5aa1a3
-generatedAt: '2026-05-19'
+  - 4b1ba739
+  - 203130a7
+generatedAt: '2026-05-23'
 ---
-```yaml
+
+# API Route Patterns — Next.js / TypeScript / Zod
+
+## 0. 思想・原則
+
+| 原則 | 内容 |
+|------|------|
+| **Guard First** | 認証・認可は関数の冒頭で完結させ、ビジネスロジックと混在させない |
+| **Single Source of Filter** | 一覧 GET と一括 DELETE はフィルタ述語を共有し、「表示件数 ≠ 削除件数」事故を防ぐ |
+| **Zod at the Boundary** | 外部入力（Request body / query / env）は必ず Zod でパース。型は `z.infer` から生成 |
+| **Consistent Error Shape** | 全ルートで同一の `{ error, code, details? }` JSON を返す |
+| **Plan Gate Before Write** | リソース作成系エンドポイントはプラン上限チェックを書き込みより前に実行 |
+
 ---
-name: api-route-patterns
-description: >
-  Next.js App Router の API ルート実装パターン集。認可ガード・Zod バリデーション・
-  エラーハンドリング・フィルタ共有・プラン制限・セキュリティ監査まで、
-  新規 API ルート追加時に参照する包括的ガイド。
-  「API を追加する」「ルートを保護する」「バリデーションを追加する」
-  「一括削除を実装する」「プラン制限を掛ける」と言及したときにトリガー。
-category: API・ルーター
----
+
+## 1. ルート分類フローチャート
+
+```
+新しい API ルートを追加する
+        │
+        ├─ 外部 Webhook（Stripe / GitHub 等）?
+        │       → §2-A: 署名検証ガード
+        │
+        ├─ Cron / バックグラウンドジョブ?
+        │       → §2-B: Cron Secret ガード
+        │
+        ├─ 管理者専用?
+        │       → §2-C: Admin ガード（session + role）
+        │
+        ├─ テナント/組織スコープの書き込み?
+        │       → §2-D: 認証 + プラン制限ガード
+        │
+        ├─ 認証済みユーザーの読み取り?
+        │       → §2-E: Session ガード のみ
+        │
+        └─ Public（認証不要）?
+                → §2-F: レート制限のみ推奨
 ```
 
-# API ルートパターン — Next.js / TypeScript / Zod
+---
 
-## 1. 認可ガードの分類と選択
+## 2. ガードパターン実装
 
-新規 API ルートを追加するときは、必ず以下 **6 分類** のいずれかに割り当て、
-対応するガードを **ハンドラ冒頭** に配置する。
+### 2-A. Webhook 署名検証
 
-```
-新しい API ルート
-   │
-   ├─ Webhook（Stripe など外部から）?
-   │     → プロバイダ側の署名検証を実装
-   │     → Raw body を必ず読み取ること（json() を先に呼ぶと壊れる）
-   │
-   ├─ Vercel Cron / Inngest から呼ばれる?
-   │     → CRON_SECRET / Inngest の署名を検証
-   │
-   ├─ 公開エンドポイント（認証不要）?
-   │     → Rate-limit のみ適用（例: /api/health, public OGP）
-   │
-   ├─ 認証済みユーザー全員が使える?
-   │     → セッション検証のみ（例: getCurrentUser()）
-   │
-   ├─ 特定ロール必須（admin / owner）?
-   │     → セッション検証 + ロールチェック
-   │
-   └─ テナント間データ分離が必要?
-         → セッション検証 + tenantId フィルタを必ず WHERE 句に含める
-```
+```typescript
+// app/api/webhooks/stripe/route.ts
+import { headers } from "next/headers";
+import Stripe from "stripe";
 
-### 基本ガードの実装例
+export async function POST(req: Request) {
+  const body = await req.text(); // JSON.parse 前に取得
+  const sig = headers().get("stripe-signature") ?? "";
 
-```ts
-// app/api/example/route.ts
-import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
-import { getCurrentUser } from "@/lib/auth";          // セッション取得
-import { requireRole } from "@/lib/api-guard";        // ロール検証
-import { ApiError, handleApiError } from "@/lib/api-error"; // 統一エラー
-
-export async function GET(req: NextRequest) {
+  let event: Stripe.Event;
   try {
-    // ① 認証
-    const user = await getCurrentUser();
-    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
-    // ② ロール（admin 専用の場合）
-    await requireRole(user, "admin"); // 失敗時は ApiError を throw
-
-    // ③ ビジネスロジック
-    const data = await fetchSomething(user.tenantId);
-    return NextResponse.json(data);
-  } catch (err) {
-    return handleApiError(err); // ApiError → 適切な status, それ以外 → 500
+    event = stripe.webhooks.constructEvent(body, sig, process.env.STRIPE_WEBHOOK_SECRET!);
+  } catch {
+    return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
   }
+
+  switch (event.type) {
+    case "customer.subscription.updated":
+      await handleSubscriptionUpdate(event.data.object);
+      break;
+    // ...
+  }
+  return NextResponse.json({ received: true });
 }
 ```
 
----
+### 2-B. Cron Secret ガード
 
-## 2. Zod バリデーション — リクエスト入力を型安全に検証
-
-### 2-A. Body バリデーション（POST / PUT / PATCH）
-
-```ts
-const CreateItemSchema = z.object({
-  name:     z.string().min(1).max(100),
-  price:    z.number().positive(),
-  tags:     z.array(z.string()).max(10).default([]),
-  startsAt: z.string().datetime().optional(),
-});
-
-export async function POST(req: NextRequest) {
-  try {
-    const user = await getCurrentUser();
-    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
-    const body = await req.json();
-    const parsed = CreateItemSchema.safeParse(body);
-    if (!parsed.success) {
-      return NextResponse.json(
-        { error: "Validation failed", issues: parsed.error.flatten() },
-        { status: 400 }
-      );
-    }
-    const { name, price, tags, startsAt } = parsed.data;
-    // ... DB 書き込み
-  } catch (err) {
-    return handleApiError(err);
+```typescript
+// app/api/cron/daily-report/route.ts
+export async function GET(req: Request) {
+  const auth = req.headers.get("authorization");
+  if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  // --- ジョブ本体 ---
 }
 ```
 
-### 2-B. SearchParams バリデーション（GET）
+> **Inngest を使う場合**: `inngest.createFunction` でラップし、
+> `lib/inngest-functions.ts` にまとめる（cron/event-driven 両対応）。
 
-```ts
-const ListQuerySchema = z.object({
-  search:  z.string().optional(),
-  page:    z.coerce.number().int().positive().default(1),
-  limit:   z.coerce.number().int().min(1).max(100).default(20),
-  from:    z.string().date().optional(),
-  to:      z.string().date().optional(),
-});
+```typescript
+// lib/inngest-functions.ts
+import { inngest } from "./inngest";
 
-export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-  const parsed = ListQuerySchema.safeParse(Object.fromEntries(searchParams));
-  if (!parsed.success) {
-    return NextResponse.json({ error: "Invalid query", issues: parsed.error.flatten() }, { status: 400 });
+export const dailyReport = inngest.createFunction(
+  { id: "daily-report", name: "Daily Report" },
+  { cron: "0 9 * * *" },
+  async ({ step }) => {
+    await step.run("generate", async () => { /* ... */ });
   }
-  const { search, page, limit, from, to } = parsed.data;
+);
+```
+
+### 2-C. Admin ガード
+
+```typescript
+// lib/api-guard.ts
+import { auth } from "@/lib/auth";
+import { NextResponse } from "next/server";
+
+export async function requireAdmin() {
+  const session = await auth();
+  if (!session?.user) {
+    return { error: NextResponse.json({ error: "Unauthenticated", code: "AUTH_REQUIRED" }, { status: 401 }) };
+  }
+  if (session.user.role !== "admin") {
+    return { error: NextResponse.json({ error: "Forbidden", code: "INSUFFICIENT_ROLE" }, { status: 403 }) };
+  }
+  return { session };
+}
+
+// 使用例
+export async function DELETE(req: Request) {
+  const guard = await requireAdmin();
+  if ("error" in guard) return guard.error;
+  const { session } = guard;
+  // ...
+}
+```
+
+### 2-D. 認証 + プラン制限ガード（書き込み系）
+
+```typescript
+// app/api/employees/route.ts
+import { requireSession } from "@/lib/api-guard";
+import { checkPlanLimit } from "@/lib/plan-limits";
+
+export async function POST(req: Request) {
+  // 1. 認証
+  const guard = await requireSession();
+  if ("error" in guard) return guard.error;
+  const { session } = guard;
+
+  // 2. プラン制限（書き込み前に必ず実行）
+  const limitCheck = await checkPlanLimit(session.user.tenantId, "aiEmployees");
+  if (!limitCheck.allowed) {
+    return NextResponse.json(
+      { error: "Plan limit reached", code: "PLAN_LIMIT_EXCEEDED", limit: limitCheck.limit },
+      { status: 402 }
+    );
+  }
+
+  // 3. バリデーション
+  const body = EmployeeCreateSchema.safeParse(await req.json());
+  if (!body.success) {
+    return NextResponse.json({ error: "Validation failed", details: body.error.flatten() }, { status: 422 });
+  }
+
+  // 4. ビジネスロジック
   // ...
 }
 ```
 
 ---
 
-## 3. フィルタ共有パターン — GET と DELETE で述語を統一
+## 3. Zod バリデーションパターン
 
-> **なぜ重要か**: 一覧 API と一括削除 API でフィルタ述語がずれると
-> 「画面上 4,249 件」→「削除は 4,300 件」という事故が起こる。
-> **単一の `applyFilters()` を共有** することで構造的に防ぐ。
+### 3-A. Request Body
 
-```ts
-// lib/filters/sales-filters.ts
-export interface SalesFilters {
-  search?: string;
-  product?: string;
-  from?: string | null;
-  to?: string | null;
+```typescript
+import { z } from "zod";
+
+const CreateItemSchema = z.object({
+  name:      z.string().min(1).max(100),
+  price:     z.number().positive(),
+  category:  z.enum(["food", "drink", "other"]).optional(),
+  tags:      z.array(z.string()).default([]),
+});
+type CreateItemInput = z.infer<typeof CreateItemSchema>;
+
+// ルート内
+const parsed = CreateItemSchema.safeParse(await req.json());
+if (!parsed.success) {
+  return NextResponse.json(
+    { error: "Validation failed", code: "INVALID_INPUT", details: parsed.error.flatten() },
+    { status: 422 }
+  );
 }
-
-/** Prisma の where 句に変換する純関数（GroupBy など特殊クエリを除く） */
-export function buildSalesWhere(f: SalesFilters): Prisma.SaleWhereInput {
-  return {
-    ...(f.search  && { OR: [{ id: { contains: f.search } }, { customerName: { contains: f.search } }] }),
-    ...(f.product && { productId: f.product }),
-    ...(f.from || f.to) && {
-      createdAt: {
-        ...(f.from && { gte: new Date(f.from) }),
-        ...(f.to   && { lte: new Date(f.to)   }),
-      },
-    },
-  };
-}
+const data: CreateItemInput = parsed.data;
 ```
 
-```ts
-// app/api/admin/sales/route.ts
-import { buildSalesWhere, SalesFilters } from "@/lib/filters/sales-filters";
+### 3-B. Query Parameters
 
-const FilterSchema = z.object({
-  search:  z.string().optional(),
-  product: z.string().optional(),
-  from:    z.string().optional(),
-  to:      z.string().optional(),
-});
-
-// GET — 一覧
-export async function GET(req: NextRequest) {
-  const parsed = FilterSchema.safeParse(Object.fromEntries(new URL(req.url).searchParams));
-  if (!parsed.success) return NextResponse.json({ error: "Invalid query" }, { status: 400 });
-
-  const where = buildSalesWhere(parsed.data);   // 
+```typescript
+const ListQuerySchema

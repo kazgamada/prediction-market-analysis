@@ -1,9 +1,10 @@
 ---
 name: auth-complete-flow
 description: >-
-  Next.js (App Router) / Supabase / TypeScript
-  プロジェクトにおける認証フロー全般（OAuth・メール確認・マジックリンク・パスワードリセット・NextAuth v5
-  カスタムエラー）の実装・修復・監査・デバッグを行う包括的スキル。認証追加・セッション不具合・権限チェック漏れ・HTTPS本番バグ・環境変数確認が必要なときに起動する。
+  Next.js (App Router) / Supabase / TypeScript プロジェクトにおける認証フロー全般
+  （OAuth・メール確認・マジックリンク・パスワードリセット・NextAuth v5 カスタムエラー・セッション検証・HTTPS本番バグ）
+  の実装・修復・監査・デバッグを行う包括的スキル。
+  認証追加・セッション不具合・権限チェック漏れ・HTTPS本番バグ・環境変数確認・OAuthコールバック失敗が必要なときに起動する。
 category: auth
 sourceSkillIds:
   - 2f74dbd8
@@ -13,6 +14,8 @@ sourceSkillIds:
   - 2012789c
   - ec487531
   - 785232c6
+  - 74925ad6
+  - 34f57810
   - b5913cce
   - a2254dbd
   - 9ef22ce0
@@ -39,195 +42,193 @@ sourceSkillIds:
   - eb90b4bf
   - 59c4daae
   - 07c6c38e
-  - 1e5aa1a3
   - 07206c63
   - f1cba622
   - 9a8598b4
   - 30d6d26c
   - b1d03195
-generatedAt: '2026-05-11'
+generatedAt: '2026-06-17'
 ---
 
-# auth-complete-flow — 認証フロー完全実装スキル
+# auth-complete-flow
 
-## いつこのスキルを使うか
+Next.js App Router + Supabase + TypeScript における認証フロー全般を実装・修復・監査する包括的スキル。
 
-| トリガー | 例 |
-|----------|----|
-| 認証機能の新規追加 | OAuth / Magic Link / メール確認 / パスワードリセット を追加したい |
-| セッション・リダイレクト不具合 | ログイン後に 404、無限リダイレクト、クッキーが消える |
-| 権限チェック漏れ | middleware / layout で未認証ユーザーを通してしまう |
-| 本番だけ壊れる | HTTPS 環境で `__Secure-` クッキーが読めない |
-| 環境変数疑い | `.env.local` と Vercel 設定の不一致 |
-| NextAuth カスタムエラー | `email-not-verified` / `account-locked` を UI に出したい |
+## 🗺️ 認証方式マップ
+
+| 方式 | 主なユースケース | トリガーワード |
+|------|----------------|--------------|
+| **Supabase OAuth** | Google / GitHub ソーシャルログイン | "OAuthを追加" "Googleログイン" |
+| **Magic Link** | パスワードレスメール認証 | "マジックリンク" "メールでログイン" |
+| **Email OTP / Token Hash** | メール確認・パスワードリセット | "メール確認" "パスワードリセット" |
+| **NextAuth v5 Credentials** | メール+パスワード (DB照合) | "ログインフォーム" "カスタム認証" |
+| **NextAuth v5 OAuth** | 外部IdP + NextAuth セッション | "NextAuth Google" |
+| **JWT セッション検証** | SSRでのセッション確認 | "セッションが保持されない" "未認証状態" |
 
 ---
 
-## Part 1 — Supabase 認証フロー
-
-### 1-1. Supabase クライアント 3 種の役割分担
+## 📁 必須ファイル構成
 
 ```
-lib/supabase/
-  server.ts      # Server Components / Route Handlers / Server Actions 用
-  client.ts      # Client Components 用（ブラウザ）
-  middleware.ts  # Edge Middleware 専用（セッション更新）
+src/
+├── app/
+│   ├── auth/
+│   │   ├── callback/route.ts          # Supabase OAuth/Magic Link コールバック
+│   │   ├── confirm/route.ts           # OTP token-hash 確認
+│   │   └── error/page.tsx             # 認証エラー表示
+│   ├── (auth)/
+│   │   ├── login/page.tsx
+│   │   └── signup/page.tsx
+│   └── api/auth/[...nextauth]/route.ts # NextAuth v5 (使用時)
+├── lib/
+│   ├── supabase/
+│   │   ├── server.ts                  # createServerClient (cookies())
+│   │   ├── client.ts                  # createBrowserClient
+│   │   └── middleware.ts              # createServerClient (request/response)
+│   ├── auth.ts                        # NextAuth v5 config (使用時)
+│   └── session.ts                     # verifySession / getSession ヘルパー
+├── middleware.ts                       # セッションリフレッシュ + ルート保護
+└── types/
+    └── auth.ts                        # 認証関連型定義
 ```
 
-#### `lib/supabase/server.ts`
+---
+
+## 🔧 実装パターン集
+
+### 1. Supabase クライアント 3種セットアップ
 
 ```typescript
-import { createServerClient } from "@supabase/ssr";
-import { cookies } from "next/headers";
-import type { Database } from "@/types/database";
+// lib/supabase/server.ts
+import { createServerClient } from '@supabase/ssr'
+import { cookies } from 'next/headers'
+import type { Database } from '@/types/database'
 
 export function createClient() {
-  const cookieStore = cookies();
+  const cookieStore = cookies()
   return createServerClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        getAll: () => cookieStore.getAll(),
-        setAll: (cookiesToSet) => {
+        getAll() { return cookieStore.getAll() },
+        setAll(cookiesToSet) {
           try {
             cookiesToSet.forEach(({ name, value, options }) =>
               cookieStore.set(name, value, options)
-            );
-          } catch {
-            // Server Component から呼ばれた場合は書き込み不可 — 無視してよい
-          }
+            )
+          } catch {} // Server Component では無視
         },
       },
     }
-  );
+  )
 }
 ```
 
-#### `lib/supabase/client.ts`
-
 ```typescript
-import { createBrowserClient } from "@supabase/ssr";
-import type { Database } from "@/types/database";
+// lib/supabase/client.ts
+import { createBrowserClient } from '@supabase/ssr'
+import type { Database } from '@/types/database'
 
 export function createClient() {
   return createBrowserClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
+  )
 }
 ```
 
-#### `middleware.ts`（プロジェクトルート）
-
 ```typescript
-import { createServerClient } from "@supabase/ssr";
-import { NextResponse, type NextRequest } from "next/server";
+// lib/supabase/middleware.ts
+import { createServerClient } from '@supabase/ssr'
+import { NextResponse, type NextRequest } from 'next/server'
 
-export async function middleware(request: NextRequest) {
-  let supabaseResponse = NextResponse.next({ request });
-
+export async function updateSession(request: NextRequest) {
+  let supabaseResponse = NextResponse.next({ request })
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        getAll: () => request.cookies.getAll(),
-        setAll: (cookiesToSet) => {
+        getAll() { return request.cookies.getAll() },
+        setAll(cookiesToSet) {
           cookiesToSet.forEach(({ name, value }) =>
             request.cookies.set(name, value)
-          );
-          supabaseResponse = NextResponse.next({ request });
+          )
+          supabaseResponse = NextResponse.next({ request })
           cookiesToSet.forEach(({ name, value, options }) =>
             supabaseResponse.cookies.set(name, value, options)
-          );
+          )
         },
       },
     }
-  );
+  )
+  // セッションリフレッシュ（必須）
+  const { data: { user } } = await supabase.auth.getUser()
 
-  // ⚠️ 重要: getUser() を必ず呼ぶ（セッション更新のため）
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  // 保護ルートへの未認証アクセスをリダイレクト
-  const protectedPaths = ["/dashboard", "/settings", "/api/protected"];
-  const isProtected = protectedPaths.some((p) =>
-    request.nextUrl.pathname.startsWith(p)
-  );
-
-  if (isProtected && !user) {
-    const url = request.nextUrl.clone();
-    url.pathname = "/login";
-    url.searchParams.set("redirectTo", request.nextUrl.pathname);
-    return NextResponse.redirect(url);
+  // ルート保護
+  const isProtected = request.nextUrl.pathname.startsWith('/dashboard')
+  if (!user && isProtected) {
+    return NextResponse.redirect(new URL('/login', request.url))
   }
 
-  return supabaseResponse;
+  return supabaseResponse
 }
-
-export const config = {
-  matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
-  ],
-};
 ```
 
 ---
 
-### 1-2. OTP / トークンハッシュ方式のメール認証
-
-Supabase はメールリンクに `token_hash` を付与する。  
-**`/auth/confirm` ルートでのみ処理し、他のページで OTP を直接検証しない。**
+### 2. OAuth フロー
 
 ```typescript
-// app/auth/confirm/route.ts
-import { createClient } from "@/lib/supabase/server";
-import { type EmailOtpType } from "@supabase/supabase-js";
-import { type NextRequest, NextResponse } from "next/server";
+// app/(auth)/login/page.tsx — OAuth ボタン
+'use client'
+import { createClient } from '@/lib/supabase/client'
 
-export async function GET(request: NextRequest) {
-  const { searchParams } = new URL(request.url);
-  const token_hash = searchParams.get("token_hash");
-  const type = searchParams.get("type") as EmailOtpType | null;
-  const next = searchParams.get("next") ?? "/dashboard";
+export default function LoginPage() {
+  const supabase = createClient()
 
-  if (token_hash && type) {
-    const supabase = createClient();
-    const { error } = await supabase.auth.verifyOtp({ type, token_hash });
-
-    if (!error) {
-      return NextResponse.redirect(new URL(next, request.url));
-    }
+  const handleOAuth = async (provider: 'google' | 'github') => {
+    await supabase.auth.signInWithOAuth({
+      provider,
+      options: {
+        redirectTo: `${location.origin}/auth/callback`,
+        scopes: provider === 'google' ? 'openid email profile' : undefined,
+      },
+    })
   }
 
-  // エラー時は dedicated エラーページへ
-  return NextResponse.redirect(new URL("/auth/auth-code-error", request.url));
+  return (
+    <button onClick={() => handleOAuth('google')}>
+      Google でログイン
+    </button>
+  )
 }
 ```
 
-#### メール種別ごとのフロー
-
-| type 値 | 用途 | 送信トリガー |
-|---------|------|-------------|
-| `signup` | メールアドレス確認 | `signUp()` |
-| `recovery` | パスワードリセット | `resetPasswordForEmail()` |
-| `magiclink` | Magic Link ログイン | `signInWithOtp({ email })` |
-| `email_change` | メール変更確認 | `updateUser({ email })` |
-
-#### Magic Link ログイン（クライアント側）
-
 ```typescript
-const { error } = await supabase.auth.signInWithOtp({
-  email,
-  options: {
-    emailRedirectTo: `${location.origin}/auth/confirm?next=/dashboard`,
-  },
-});
+// app/auth/callback/route.ts
+import { createClient } from '@/lib/supabase/server'
+import { NextResponse } from 'next/server'
+
+export async function GET(request: Request) {
+  const { searchParams, origin } = new URL(request.url)
+  const code = searchParams.get('code')
+  const next = searchParams.get('next') ?? '/dashboard'
+
+  if (code) {
+    const supabase = createClient()
+    const { error } = await supabase.auth.exchangeCodeForSession(code)
+    if (!error) {
+      // ✅ HTTPS本番対応: origin をそのまま使う（hardcode しない）
+      return NextResponse.redirect(`${origin}${next}`)
+    }
+  }
+
+  return NextResponse.redirect(`${origin}/auth/error?error=callback_failed`)
+}
 ```
 
-#### パスワードリセット
+---
 
-```typescript
-// Step 1:
+### 3. Email
