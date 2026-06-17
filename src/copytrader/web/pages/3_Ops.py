@@ -14,12 +14,10 @@ from copytrader.db.engine import get_session
 from copytrader.db.models import Cursor, Job, RiskEvent, RpcDeadLetter, Trade
 from copytrader.indexer.backfill import CURSOR_NAME
 from copytrader.web.auth import require_password
-from copytrader.web.theme import (
-    ACCENT_CYAN, ACCENT_GREEN, ACCENT_RED, ACCENT_YELLOW,
-    LIVE_LAYOUT, LIVE_PALETTE, STATIC_LAYOUT, STATIC_PALETTE,
-    TILE_BG, inject_theme,
-)
 from copytrader.web.format import fmt_ago
+from copytrader.web.theme import (
+    inject_theme,
+)
 
 st.set_page_config(page_title="Ops", layout="wide",
                    initial_sidebar_state="collapsed")

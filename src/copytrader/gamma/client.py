@@ -44,7 +44,7 @@ class GammaClient:
     async def aclose(self) -> None:
         await self._http.aclose()
 
-    async def __aenter__(self) -> "GammaClient":
+    async def __aenter__(self) -> GammaClient:
         return self
 
     async def __aexit__(self, *_exc: Any) -> None:

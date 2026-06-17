@@ -11,7 +11,6 @@ import asyncio
 import logging
 import os
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
 
 import httpx
 from sqlalchemy import func, select
@@ -19,7 +18,6 @@ from sqlalchemy import func, select
 from copytrader.db import settings_table
 from copytrader.db.engine import get_session
 from copytrader.db.models import AuditLog, Position, TradePnl
-from copytrader.telegram.notifier import notify
 
 log = logging.getLogger("telegram.commands")
 

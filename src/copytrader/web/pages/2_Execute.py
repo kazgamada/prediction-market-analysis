@@ -14,12 +14,15 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from copytrader.db.engine import get_session
 from copytrader.db.models import Job, Watchlist
 from copytrader.web.auth import require_password
-from copytrader.web.theme import (
-    ACCENT_CYAN, ACCENT_GREEN, ACCENT_RED, ACCENT_YELLOW,
-    LIVE_LAYOUT, LIVE_PALETTE, STATIC_LAYOUT, STATIC_PALETTE,
-    TILE_BG, inject_theme,
-)
 from copytrader.web.format import fmt_ago, short_addr
+from copytrader.web.theme import (
+    ACCENT_GREEN,
+    ACCENT_RED,
+    ACCENT_YELLOW,
+    LIVE_LAYOUT,
+    TILE_BG,
+    inject_theme,
+)
 
 st.set_page_config(page_title="Execute", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -152,26 +155,15 @@ rng = np.random.default_rng(7)
 # ---------------------------------------------------------------------------
 
 from copytrader.db import settings_table as _st  # noqa: E402
-from copytrader.db.models import (  # noqa: E402
-    Execution as ExecModel,
-)
-from copytrader.db.models import (
-    Position as PosModel,
-)
-from copytrader.db.models import (
-    RiskEvaluation,
-)
-from copytrader.db.models import (
-    Signal as SigModel,
-)
-from copytrader.db.models import (
-    TradePnl as TPModel,
-)
+from copytrader.db.models import Execution as ExecModel  # noqa: E402
+from copytrader.db.models import Position as PosModel  # noqa: E402
+from copytrader.db.models import RiskEvaluation  # noqa: E402
+from copytrader.db.models import Signal as SigModel  # noqa: E402
+from copytrader.db.models import TradePnl as TPModel  # noqa: E402
 
 
 @st.cache_data(ttl=5)
 def _real_metrics() -> dict:
-    from datetime import UTC, datetime, timedelta
 
     from sqlalchemy import func, select
 

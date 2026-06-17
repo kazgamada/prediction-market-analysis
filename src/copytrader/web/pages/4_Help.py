@@ -10,9 +10,7 @@ import streamlit as st
 
 from copytrader.web.auth import require_password
 from copytrader.web.theme import (
-    ACCENT_CYAN, ACCENT_GREEN, ACCENT_RED, ACCENT_YELLOW,
-    LIVE_LAYOUT, LIVE_PALETTE, STATIC_LAYOUT, STATIC_PALETTE,
-    TILE_BG, inject_theme,
+    inject_theme,
 )
 
 st.set_page_config(page_title="Help", layout="wide",
@@ -497,7 +495,7 @@ with tabs[0]:
             with st.expander(title, expanded=True):
                 st.markdown(body)
     else:
-        for i, (title, body) in enumerate(SETUP_STEPS):
+        for title, body in SETUP_STEPS:
             # First 2 steps + immediate action expanded by default
             expanded = (
                 title.startswith("Step 0")
@@ -508,7 +506,7 @@ with tabs[0]:
                 st.markdown(body)
 
 # Glossary tabs (rest)
-for (label, items), tab in zip(GLOSSARY.items(), tabs[1:], strict=False):
+for (_label, items), tab in zip(GLOSSARY.items(), tabs[1:], strict=False):
     with tab:
         rows = items
         if search:

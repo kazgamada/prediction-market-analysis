@@ -286,7 +286,7 @@ def compute_wallet_equity_curves(
             daily_pnl[taker][day] += delta
 
     # Build dense daily series ordered by date
-    from datetime import date as _date, timedelta as _td
+    from datetime import timedelta as _td
     end_day = datetime.now(UTC).date()
     days = [end_day - _td(days=i) for i in range(points - 1, -1, -1)]
 

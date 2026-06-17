@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -14,12 +13,12 @@ from copytrader.db.engine import get_session
 from copytrader.db.models import Job
 from copytrader.jobs.queue import enqueue
 from copytrader.web.auth import require_password
-from copytrader.web.theme import (
-    ACCENT_CYAN, ACCENT_GREEN, ACCENT_RED, ACCENT_YELLOW,
-    LIVE_LAYOUT, LIVE_PALETTE, STATIC_LAYOUT, STATIC_PALETTE,
-    TILE_BG, inject_theme,
-)
 from copytrader.web.format import fmt_ago
+from copytrader.web.theme import (
+    STATIC_LAYOUT,
+    STATIC_PALETTE,
+    inject_theme,
+)
 
 st.set_page_config(page_title="Strategy", layout="wide",
                    initial_sidebar_state="collapsed")

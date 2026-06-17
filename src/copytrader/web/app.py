@@ -4,21 +4,16 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import numpy as np
-import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
 from copytrader.web.auth import require_password
 from copytrader.web.theme import (
     ACCENT_CYAN,
-    ACCENT_GREEN,
     ACCENT_RED,
     ACCENT_YELLOW,
     LIVE_LAYOUT,
     LIVE_PALETTE,
-    STATIC_LAYOUT,
-    STATIC_PALETTE,
     TILE_BG,
     inject_theme,
 )
@@ -75,7 +70,6 @@ def tile_header(title: str, page_path: str, icon: str, help_text: str) -> None:
 # Real-data accessors (cached 5s). All-empty defaults if DB has no rows.
 @st.cache_data(ttl=5)
 def _real_home_metrics() -> dict:
-    from datetime import UTC, datetime, timedelta
 
     from sqlalchemy import desc, func, select
 

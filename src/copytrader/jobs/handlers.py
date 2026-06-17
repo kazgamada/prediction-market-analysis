@@ -263,11 +263,13 @@ def handle_watchlist_rotate(handle: JobHandle) -> None:
 
 def handle_daily_summary_telegram(handle: JobHandle) -> None:
     """Send daily Telegram summary (fail-soft if bot not configured)."""
-    from datetime import UTC, datetime, timedelta
+    from datetime import UTC, datetime
+
     from sqlalchemy import func, select
+
+    from copytrader.db import settings_table as _st
     from copytrader.db.engine import get_session
     from copytrader.db.models import Position, TradePnl
-    from copytrader.db import settings_table as _st
     from copytrader.telegram import notify_daily_summary
 
     midnight = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
