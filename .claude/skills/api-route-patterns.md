@@ -1,16 +1,23 @@
 ---
+name: api-route-patterns
+description: >-
+  Next.js App Router の API ルート実装パターン集。認証・認可ガード、Zod バリデーション、エラーハンドリング、
+  プラン制限、Webhook 署名検証、tRPC 型安全、バックグラウンドジョブ（Inngest）、AI プロバイダー抽象化まで網羅。 新規 API
+  ルート追加・既存ルート修正・型エラー解消・スケジュールジョブ追加・プラン制限実装時にトリガー。
 category: api-router
 sourceSkillIds:
   - 3b8b6f3f
+  - 054208d0
+  - 31e942d4
   - fd774bbd
   - '17e52886'
   - fe4fd046
   - '79047663'
   - eb5b5790
   - bb56451a
+  - 4119be00
   - 8c491bd3
   - 4c1e226f
-  - 054208d0
   - 8c38bbfc
   - e79eb2df
   - e3dcdb7e
@@ -18,182 +25,207 @@ sourceSkillIds:
   - ce339f24
   - a6ff5932
   - 1e5aa1a3
-generatedAt: '2026-05-19'
+  - 4b1ba739
+  - 203130a7
+generatedAt: '2026-06-17'
+integrationStrategy: latest-first
+latestSourceTimestamp: '2026-06-17T23:01:56+09:00'
+adoptedFromArchive:
+  - archive/skills/api-route-patterns.md
+  - archive/skills/claude-api-spec-gen.md
+  - archive/skills/add-email-template.md
+  - archive/skills/calendar.md
+  - archive/skills/deploy.md
+  - archive/skills/gmail-auto-sync.md
+  - archive/skills/inngest-scheduled-function.md
+  - archive/skills/plan-limits-enforcement.md
+  - archive/skills/ai-integration.md
+  - archive/skills/api-bundle-rebuild.md
 ---
-```yaml
----
-name: api-route-patterns
-description: >
-  Next.js App Router の API ルート実装パターン集。認可ガード・Zod バリデーション・
-  エラーハンドリング・フィルタ共有・プラン制限・セキュリティ監査まで、
-  新規 API ルート追加時に参照する包括的ガイド。
-  「API を追加する」「ルートを保護する」「バリデーションを追加する」
-  「一括削除を実装する」「プラン制限を掛ける」と言及したときにトリガー。
-category: API・ルーター
----
+
+# api-route-patterns — Next.js / TypeScript / Zod 汎用 API パターン集
+
+## 0. 適用判断フローチャート
+
+```
+新規 API エンドポイント追加
+  ├─ App Router Route Handler？  → § 1
+  ├─ tRPC procedure？            → § 2
+  ├─ Webhook 受信？              → § 3
+  ├─ プラン制限が必要？          → § 4
+  ├─ バックグラウンドジョブ？    → § 5
+  └─ AI プロバイダー呼び出し？  → § 6
 ```
 
-# API ルートパターン — Next.js / TypeScript / Zod
+---
 
-## 1. 認可ガードの分類と選択
+## 1. Route Handler 基本骨格
 
-新規 API ルートを追加するときは、必ず以下 **6 分類** のいずれかに割り当て、
-対応するガードを **ハンドラ冒頭** に配置する。
+### 1-1. GET（クエリパラメータ + 認証）
 
-```
-新しい API ルート
-   │
-   ├─ Webhook（Stripe など外部から）?
-   │     → プロバイダ側の署名検証を実装
-   │     → Raw body を必ず読み取ること（json() を先に呼ぶと壊れる）
-   │
-   ├─ Vercel Cron / Inngest から呼ばれる?
-   │     → CRON_SECRET / Inngest の署名を検証
-   │
-   ├─ 公開エンドポイント（認証不要）?
-   │     → Rate-limit のみ適用（例: /api/health, public OGP）
-   │
-   ├─ 認証済みユーザー全員が使える?
-   │     → セッション検証のみ（例: getCurrentUser()）
-   │
-   ├─ 特定ロール必須（admin / owner）?
-   │     → セッション検証 + ロールチェック
-   │
-   └─ テナント間データ分離が必要?
-         → セッション検証 + tenantId フィルタを必ず WHERE 句に含める
-```
-
-### 基本ガードの実装例
-
-```ts
-// app/api/example/route.ts
+```typescript
+// app/api/items/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { getCurrentUser } from "@/lib/auth";          // セッション取得
-import { requireRole } from "@/lib/api-guard";        // ロール検証
-import { ApiError, handleApiError } from "@/lib/api-error"; // 統一エラー
+import { getServerSession } from "@/lib/auth"; // プロジェクト共通ヘルパー
+
+const querySchema = z.object({
+  page:   z.coerce.number().int().min(1).default(1),
+  limit:  z.coerce.number().int().min(1).max(100).default(20),
+  status: z.enum(["active", "archived"]).optional(),
+});
 
 export async function GET(req: NextRequest) {
+  // 1. 認証
+  const session = await getServerSession();
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // 2. バリデーション
+  const parsed = querySchema.safeParse(
+    Object.fromEntries(req.nextUrl.searchParams)
+  );
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: "Invalid query", details: parsed.error.flatten() },
+      { status: 400 }
+    );
+  }
+  const { page, limit, status } = parsed.data;
+
+  // 3. ビジネスロジック
   try {
-    // ① 認証
-    const user = await getCurrentUser();
-    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
-    // ② ロール（admin 専用の場合）
-    await requireRole(user, "admin"); // 失敗時は ApiError を throw
-
-    // ③ ビジネスロジック
-    const data = await fetchSomething(user.tenantId);
-    return NextResponse.json(data);
+    const items = await db.item.findMany({
+      where: { tenantId: session.tenantId, ...(status && { status }) },
+      skip: (page - 1) * limit,
+      take: limit,
+    });
+    return NextResponse.json({ items, page, limit });
   } catch (err) {
-    return handleApiError(err); // ApiError → 適切な status, それ以外 → 500
+    console.error("[GET /api/items]", err);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
 ```
 
----
+### 1-2. POST（ボディバリデーション + 認可）
 
-## 2. Zod バリデーション — リクエスト入力を型安全に検証
-
-### 2-A. Body バリデーション（POST / PUT / PATCH）
-
-```ts
-const CreateItemSchema = z.object({
-  name:     z.string().min(1).max(100),
-  price:    z.number().positive(),
-  tags:     z.array(z.string()).max(10).default([]),
-  startsAt: z.string().datetime().optional(),
+```typescript
+// app/api/items/route.ts（続き）
+const createSchema = z.object({
+  title:       z.string().min(1).max(255),
+  description: z.string().max(1000).optional(),
+  tags:        z.array(z.string()).max(10).default([]),
 });
 
 export async function POST(req: NextRequest) {
-  try {
-    const user = await getCurrentUser();
-    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const session = await getServerSession();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const body = await req.json();
-    const parsed = CreateItemSchema.safeParse(body);
-    if (!parsed.success) {
-      return NextResponse.json(
-        { error: "Validation failed", issues: parsed.error.flatten() },
-        { status: 400 }
-      );
-    }
-    const { name, price, tags, startsAt } = parsed.data;
-    // ... DB 書き込み
+  // 権限チェック（ロールベース）
+  if (!session.permissions.includes("item:create")) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  const body = await req.json().catch(() => null);
+  const parsed = createSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: "Validation failed", details: parsed.error.flatten() },
+      { status: 422 }
+    );
+  }
+
+  try {
+    const item = await db.item.create({
+      data: { ...parsed.data, tenantId: session.tenantId },
+    });
+    return NextResponse.json(item, { status: 201 });
   } catch (err) {
-    return handleApiError(err);
+    console.error("[POST /api/items]", err);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
 ```
 
-### 2-B. SearchParams バリデーション（GET）
+### 1-3. 共通エラーハンドラーラッパー
 
-```ts
-const ListQuerySchema = z.object({
-  search:  z.string().optional(),
-  page:    z.coerce.number().int().positive().default(1),
-  limit:   z.coerce.number().int().min(1).max(100).default(20),
-  from:    z.string().date().optional(),
-  to:      z.string().date().optional(),
-});
+繰り返しを減らすためのユーティリティ：
 
-export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-  const parsed = ListQuerySchema.safeParse(Object.fromEntries(searchParams));
-  if (!parsed.success) {
-    return NextResponse.json({ error: "Invalid query", issues: parsed.error.flatten() }, { status: 400 });
-  }
-  const { search, page, limit, from, to } = parsed.data;
-  // ...
+```typescript
+// lib/api/handler.ts
+import { NextRequest, NextResponse } from "next/server";
+import { getServerSession } from "@/lib/auth";
+
+type Handler = (req: NextRequest, session: Session) => Promise<NextResponse>;
+
+export function withAuth(handler: Handler) {
+  return async (req: NextRequest) => {
+    try {
+      const session = await getServerSession();
+      if (!session) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      }
+      return await handler(req, session);
+    } catch (err) {
+      console.error("[API Error]", err);
+      return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    }
+  };
 }
+
+// 使用例
+// export const GET = withAuth(async (req, session) => { ... });
 ```
 
 ---
 
-## 3. フィルタ共有パターン — GET と DELETE で述語を統一
+## 2. tRPC — 型安全 Router パターン
 
-> **なぜ重要か**: 一覧 API と一括削除 API でフィルタ述語がずれると
-> 「画面上 4,249 件」→「削除は 4,300 件」という事故が起こる。
-> **単一の `applyFilters()` を共有** することで構造的に防ぐ。
+### 2-1. 基本 procedure
 
-```ts
-// lib/filters/sales-filters.ts
-export interface SalesFilters {
-  search?: string;
-  product?: string;
-  from?: string | null;
-  to?: string | null;
-}
+```typescript
+// server/routers/item.ts
+import { z } from "zod";
+import { router, protectedProcedure, publicProcedure } from "@/server/trpc";
+import { TRPCError } from "@trpc/server";
 
-/** Prisma の where 句に変換する純関数（GroupBy など特殊クエリを除く） */
-export function buildSalesWhere(f: SalesFilters): Prisma.SaleWhereInput {
-  return {
-    ...(f.search  && { OR: [{ id: { contains: f.search } }, { customerName: { contains: f.search } }] }),
-    ...(f.product && { productId: f.product }),
-    ...(f.from || f.to) && {
-      createdAt: {
-        ...(f.from && { gte: new Date(f.from) }),
-        ...(f.to   && { lte: new Date(f.to)   }),
-      },
-    },
-  };
-}
-```
+export const itemRouter = router({
+  list: protectedProcedure
+    .input(z.object({
+      cursor: z.string().optional(),
+      limit:  z.number().min(1).max(100).default(20),
+    }))
+    .query(async ({ ctx, input }) => {
+      const items = await ctx.db.item.findMany({
+        where:   { tenantId: ctx.session.tenantId },
+        take:    input.limit + 1,
+        cursor:  input.cursor ? { id: input.cursor } : undefined,
+        orderBy: { createdAt: "desc" },
+      });
 
-```ts
-// app/api/admin/sales/route.ts
-import { buildSalesWhere, SalesFilters } from "@/lib/filters/sales-filters";
+      const hasMore = items.length > input.limit;
+      return {
+        items:      hasMore ? items.slice(0, -1) : items,
+        nextCursor: hasMore ? items[items.length - 2].id : undefined,
+      };
+    }),
 
-const FilterSchema = z.object({
-  search:  z.string().optional(),
-  product: z.string().optional(),
-  from:    z.string().optional(),
-  to:      z.string().optional(),
-});
+  create: protectedProcedure
+    .input(z.object({
+      title:       z.string().min(1).max(255),
+      description: z.string().max(1000).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      // プラン制限チェック（§4 参照）
+      await enforcePlanLimit(ctx.session.tenantId, "items");
 
-// GET — 一覧
-export async function GET(req: NextRequest) {
-  const parsed = FilterSchema.safeParse(Object.fromEntries(new URL(req.url).searchParams));
-  if (!parsed.success) return NextResponse.json({ error: "Invalid query" }, { status: 400 });
+      return ctx.db.item.create({
+        data: { ...input, tenantId: ctx.session.tenantId },
+      });
+    }),
 
-  const where = buildSalesWhere(parsed.data);   // 
+  delete: protectedProcedure
+    .input(z.object({ id: z.string().cuid() }))
+    .mutation(

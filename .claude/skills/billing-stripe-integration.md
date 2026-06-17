@@ -2,11 +2,17 @@
 name: billing-stripe-integration
 description: >-
   Stripe課金連携の設計・実装・設定・トラブルシュートの包括的ガイド。Checkout Session / Customer Portal /
-  Webhook処理のパターンと、Next.js/TypeScriptでの実装例を提供する。あらゆるSaaSプロジェクトで再利用できる汎用テンプレート。
+  Webhook処理 / 料金プラン管理のパターンと、Next.js/TypeScriptでの実装例を提供する。
+  あらゆるSaaSプロジェクトで再利用できる汎用テンプレート。プラン追加・編集・削除・トライアル設定・Stripe連携・フロントエンド反映の一連の作業も包含する。
 category: billing
 sourceSkillIds:
   - b6b9d18f
-generatedAt: '2026-05-11'
+  - '33202335'
+generatedAt: '2026-06-17'
+integrationStrategy: latest-first
+adoptedFromArchive:
+  - archive/skills/billing-stripe-integration.md
+  - archive/skills/plan-config.md
 ---
 
 # Stripe課金連携 — 包括的実装ガイド
@@ -14,72 +20,63 @@ generatedAt: '2026-05-11'
 ## 概要・適用範囲
 
 このSkillはStripe + Next.js + TypeScriptで課金機能を実装するすべてのプロジェクトに適用する。
-SaaS月額課金・従量課金・ワンタイム決済のいずれにも対応し、Checkout Session / Customer Portal / Webhookの3本柱を軸に設計する。
+SaaS月額課金・従量課金・ワンタイム決済・料金プラン管理まで、設計から運用までを網羅する。
+
+**統合元Skill:**
+- `billing-stripe-integration`（aegis-market-os）⭐ 代表進化版 — Checkout/Portal/Webhook の包括実装
+- `plan-config`（BlackZero）⭐ 代表進化版 — 料金プラン設定変更プロセス
 
 ---
 
 ## 1. アーキテクチャ全体像
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  Next.js App                                        │
-│  ┌──────────────┐   ┌──────────────────────────┐   │
-│  │  Client      │   │  API Routes / Route Handler│  │
-│  │  Components  │──▶│  /api/billing/checkout    │   │
-│  │              │   │  /api/billing/portal      │   │
-│  │              │   │  /api/billing/webhook     │   │
-│  └──────────────┘   └────────────┬─────────────┘   │
-└───────────────────────────────── │ ────────────────┘
-                                   │ Stripe SDK
-                          ┌────────▼────────┐
-                          │   Stripe API    │
-                          │  ・Customers    │
-                          │  ・Subscriptions│
-                          │  ・Prices       │
-                          │  ・Webhooks     │
-                          └─────────────────┘
-                                   │ Events
-                          ┌────────▼────────┐
-                          │   Database      │
-                          │  (Supabase/     │
-                          │   Prisma/etc.)  │
-                          └─────────────────┘
-```
-
-### 状態遷移
-
-```
-未課金 ──[Checkout Session]──▶ active
-active ──[Customer Portal]──▶ canceled / past_due
-past_due ──[支払い成功]──▶ active
-canceled ──[再購読]──▶ active (新セッション)
+┌─────────────────────────────────────────────────────────────┐
+│                          Frontend                           │
+│  PricingPage → CheckoutButton → SuccessPage / CancelPage   │
+│  AccountPage → CustomerPortalButton                         │
+└────────────────────┬───────────────────────────────────────┘
+                     │ API Routes (Next.js App Router)
+┌────────────────────▼───────────────────────────────────────┐
+│  /api/stripe/checkout-session   POST                        │
+│  /api/stripe/customer-portal    POST                        │
+│  /api/stripe/webhook            POST  (Stripe → Server)     │
+│  /api/plans                     GET/POST/PUT/DELETE         │
+└────────────────────┬───────────────────────────────────────┘
+                     │
+┌────────────────────▼───────────────────────────────────────┐
+│              Stripe Dashboard / Stripe SDK                  │
+│  Products / Prices / Customers / Subscriptions              │
+└────────────────────┬───────────────────────────────────────┘
+                     │ Webhook Events
+┌────────────────────▼───────────────────────────────────────┐
+│              Database (Supabase / Prisma / any)             │
+│  users / subscriptions / plans / invoices                   │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 2. 環境設定
+## 2. 環境変数・初期設定
 
-### 2-1. 必要パッケージ
-
-```bash
-npm install stripe @stripe/stripe-js
-```
-
-### 2-2. 環境変数
+### 必須環境変数
 
 ```env
 # .env.local
-STRIPE_SECRET_KEY=sk_live_...          # または sk_test_...
-NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_live_...
-STRIPE_WEBHOOK_SECRET=whsec_...
-NEXT_PUBLIC_APP_URL=https://yourapp.com
+STRIPE_SECRET_KEY=sk_test_...          # Stripe シークレットキー
+STRIPE_PUBLISHABLE_KEY=pk_test_...     # Stripe 公開キー
+STRIPE_WEBHOOK_SECRET=whsec_...        # Webhook 署名シークレット
 
-# オプション: Price ID を環境変数で管理
-STRIPE_PRICE_ID_BASIC=price_xxx
-STRIPE_PRICE_ID_PRO=price_yyy
+# プラン別 Price ID（Stripe Dashboard で取得）
+STRIPE_PRICE_FREE=price_...
+STRIPE_PRICE_PRO=price_...
+STRIPE_PRICE_ENTERPRISE=price_...
+
+# アプリURL
+NEXT_PUBLIC_APP_URL=https://your-app.com
 ```
 
-### 2-3. Stripe クライアント初期化
+### Stripe クライアント初期化
 
 ```typescript
 // lib/stripe.ts
@@ -90,120 +87,89 @@ if (!process.env.STRIPE_SECRET_KEY) {
 }
 
 export const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
-  apiVersion: '2024-06-20', // 常に明示的に固定
+  apiVersion: '2024-06-20', // 最新の安定版に固定
   typescript: true,
 });
+
+// フロントエンド用（クライアントサイド）
+export const getStripeJs = async () => {
+  const { loadStripe } = await import('@stripe/stripe-js');
+  return loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
+};
 ```
 
 ---
 
-## 3. Checkout Session の実装
+## 3. 料金プラン設定
 
-### 3-1. API Route（App Router）
-
-```typescript
-// app/api/billing/checkout/route.ts
-import { NextRequest, NextResponse } from 'next/server';
-import { stripe } from '@/lib/stripe';
-import { getServerSession } from 'next-auth'; // または任意の認証ライブラリ
-import { authOptions } from '@/lib/auth';
-
-export async function POST(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.email) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const { priceId, planName } = await req.json();
-
-  if (!priceId) {
-    return NextResponse.json({ error: 'priceId is required' }, { status: 400 });
-  }
-
-  try {
-    // 既存 Customer を再利用 or 新規作成
-    const customerId = await getOrCreateStripeCustomer(
-      session.user.email,
-      session.user.id
-    );
-
-    const checkoutSession = await stripe.checkout.sessions.create({
-      customer: customerId,
-      mode: 'subscription',           // 'payment' for one-time
-      payment_method_types: ['card'],
-      line_items: [{ price: priceId, quantity: 1 }],
-      success_url: `${process.env.NEXT_PUBLIC_APP_URL}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.NEXT_PUBLIC_APP_URL}/billing/cancel`,
-      metadata: {
-        userId: session.user.id,
-        planName: planName ?? '',
-      },
-      subscription_data: {
-        metadata: { userId: session.user.id },
-      },
-      // 日本向け設定
-      locale: 'ja',
-      // 税率を自動計算する場合
-      // automatic_tax: { enabled: true },
-    });
-
-    return NextResponse.json({ url: checkoutSession.url });
-  } catch (err) {
-    console.error('[checkout] Stripe error:', err);
-    return NextResponse.json(
-      { error: 'Failed to create checkout session' },
-      { status: 500 }
-    );
-  }
-}
-
-/** DB から stripeCustomerId を取得し、なければ Stripe に作成して保存 */
-async function getOrCreateStripeCustomer(
-  email: string,
-  userId: string
-): Promise<string> {
-  // ── プロジェクトの DB クライアントに合わせて実装 ──
-  // 例: Prisma
-  // const user = await prisma.user.findUnique({ where: { id: userId } });
-  // if (user?.stripeCustomerId) return user.stripeCustomerId;
-
-  const customer = await stripe.customers.create({
-    email,
-    metadata: { userId },
-  });
-
-  // await prisma.user.update({
-  //   where: { id: userId },
-  //   data: { stripeCustomerId: customer.id },
-  // });
-
-  return customer.id;
-}
-```
-
-### 3-2. クライアント側
+### 3-1. プラン定義ファイル（中央集権管理）
 
 ```typescript
-// components/UpgradeButton.tsx
-'use client';
+// config/plans.ts
+export type PlanId = 'free' | 'pro' | 'enterprise';
+export type BillingInterval = 'month' | 'year';
 
-import { useState } from 'react';
-
-interface Props {
-  priceId: string;
-  planName: string;
-  label?: string;
+export interface Plan {
+  id: PlanId;
+  name: string;
+  description: string;
+  stripePriceId: Record<BillingInterval, string | null>;
+  price: Record<BillingInterval, number>;  // 円 or USD cents
+  currency: string;
+  features: string[];
+  limits: {
+    seats?: number;
+    storage?: number;   // GB
+    apiCalls?: number;  // per month
+    [key: string]: number | undefined;
+  };
+  trialDays?: number;
+  isPopular?: boolean;
+  isEnterprise?: boolean;
 }
 
-export function UpgradeButton({ priceId, planName, label = 'アップグレード' }: Props) {
-  const [loading, setLoading] = useState(false);
+export const PLANS: Record<PlanId, Plan> = {
+  free: {
+    id: 'free',
+    name: 'Free',
+    description: '個人・小規模利用向け',
+    stripePriceId: { month: null, year: null }, // 無料プランはIDなし
+    price: { month: 0, year: 0 },
+    currency: 'jpy',
+    features: ['基本機能', '1ユーザー', '1GBストレージ'],
+    limits: { seats: 1, storage: 1, apiCalls: 1000 },
+  },
+  pro: {
+    id: 'pro',
+    name: 'Pro',
+    description: '成長中のチーム向け',
+    stripePriceId: {
+      month: process.env.STRIPE_PRICE_PRO_MONTHLY ?? '',
+      year: process.env.STRIPE_PRICE_PRO_YEARLY ?? '',
+    },
+    price: { month: 2980, year: 29800 },
+    currency: 'jpy',
+    features: ['全機能', '10ユーザー', '100GBストレージ', '優先サポート'],
+    limits: { seats: 10, storage: 100, apiCalls: 100000 },
+    trialDays: 14,
+    isPopular: true,
+  },
+  enterprise: {
+    id: 'enterprise',
+    name: 'Enterprise',
+    description: '大規模組織向け',
+    stripePriceId: {
+      month: process.env.STRIPE_PRICE_ENTERPRISE_MONTHLY ?? '',
+      year: process.env.STRIPE_PRICE_ENTERPRISE_YEARLY ?? '',
+    },
+    price: { month: 9800, year: 98000 },
+    currency: 'jpy',
+    features: ['全機能', '無制限ユーザー', '無制限ストレージ', '専任サポート', 'SLA保証'],
+    limits: { seats: Infinity, storage: Infinity, apiCalls: Infinity },
+    isEnterprise: true,
+  },
+};
 
-  const handleClick = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch('/api/billing/checkout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ priceId, planName }),
-      });
-      const data = await res
+export const getPlanById = (id: PlanId): Plan => PLANS[id];
+export const getStripePriceId = (id: PlanId, interval: BillingInterval): string | null =>
+  PLANS[id].stripePriceId[interval

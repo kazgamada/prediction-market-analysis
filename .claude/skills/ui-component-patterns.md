@@ -1,8 +1,4 @@
 ---
-name: ui-component-patterns
-description: >-
-  Next.js/Tailwind CSS/TypeScript プロジェクトにおける UI
-  コンポーネント設計・実装パターンの統合ガイド。ページ追加、ナビゲーション構成、管理画面レイアウト、フォーム規約、コンポーネント分類を含む。「ページを追加したい」「ナビにリンクを追加」「管理画面を作りたい」「フォームを実装したい」と言及したときにトリガー。
 category: ui-component
 sourceSkillIds:
   - 64a324c6
@@ -14,6 +10,7 @@ sourceSkillIds:
   - 85dcabfc
   - 7ee36646
   - edc407e2
+  - 8322f98c
   - 9dde8e3a
   - 3d7e0994
   - 96b3e3af
@@ -35,197 +32,180 @@ sourceSkillIds:
   - b4487d87
   - e0972bf4
   - 3f3245b3
-generatedAt: '2026-05-19'
+generatedAt: '2026-06-17'
+integrationStrategy: latest-first
+latestSourceTimestamp: '2026-05-21T10:00:00.000Z'
+adoptedFromArchive:
+  - archive/skills/mobile-ui-spec.md
+  - archive/skills/add-admin-api-route.md
+  - archive/skills/add-admin-page.md
+  - archive/skills/add-dashboard-page.md
+  - archive/skills/add-nav-item.md
+  - archive/skills/add-self-service-ui.md
+  - archive/skills/add-tenant-api-route.md
+  - archive/skills/build-check.md
+  - archive/skills/frozen-scope-guard.md
+  - archive/skills/japanese-business-ui.md
+---
+```markdown
+---
+name: ui-component-patterns
+description: >-
+  Next.js / Tailwind CSS / TypeScript プロジェクトで再利用できる UI コンポーネント実装パターンの完全ガイド。
+  レスポンシブレイアウト（ボトムナビ・ドロワー・サイドバー）、モバイル操作（スワイプ・長押し・Pull-to-Refresh）、
+  ページテンプレート（ダッシュボード・管理画面・アカウント設定）、ナビゲーション設計、日本語業務フォーム、
+  iOS Safari 対応（safe-area・viewport）、フィードバック UI（スナックバー・Undo・Toast）、
+  アクセシビリティ、ビルド検証フローを網羅。
+  「スマホ UI」「モバイル対応」「ボトムナビ」「ハンバーガー」「safe-area」「スワイプ削除」
+  「Pull-to-Refresh」「Undo」「長押し」「ダッシュボードページ追加」「管理画面」「ナビ追加」
+  「日本語フォーム」「業務画面」「住所入力」「帳票」と言及したときにトリガー。
+category: ui-component
+version: 1
 ---
 
-# UI Component Patterns
+# UI Component Patterns — 汎用実装ガイド
 
-## 概要
+## 目次
 
-Next.js App Router + Tailwind CSS + TypeScript プロジェクトにおける、UI コンポーネントの設計・実装パターン集。  
-ページ追加・ナビゲーション構成・管理画面・フォーム・削除操作など、頻出ユースケースのパターンを提供する。
+1. [設計原則](#1-設計原則)
+2. [レイアウト・ナビゲーション構造](#2-レイアウトナビゲーション構造)
+3. [レスポンシブ & モバイル UI](#3-レスポンシブ--モバイル-ui)
+4. [ページテンプレート](#4-ページテンプレート)
+5. [インタラクション & フィードバック UI](#5-インタラクション--フィードバック-ui)
+6. [日本語業務フォーム規約](#6-日本語業務フォーム規約)
+7. [iOS Safari 対応](#7-ios-safari-対応)
+8. [アクセシビリティ](#8-アクセシビリティ)
+9. [ビルド検証フロー](#9-ビルド検証フロー)
+10. [チェックリスト](#10-チェックリスト)
 
 ---
 
-## 1. ディレクトリ構成の原則
+## 1. 設計原則
 
-```
-src/
-├── app/                        # App Router (Next.js)
-│   ├── (auth)/                 # 認証グループ（URL に現れない）
-│   ├── (admin)/                # 管理者グループ
-│   │   └── admin/
-│   │       ├── layout.tsx      # 管理レイアウト（AdminSidebar 含む）
-│   │       └── [resource]/
-│   │           └── page.tsx
-│   ├── (app)/                  # 一般ユーザーグループ
-│   │   └── [feature]/
-│   │       └── page.tsx
-│   └── api/
-│       └── admin/
-│           └── [resource]/
-│               └── route.ts
-├── components/
-│   ├── ui/                     # 汎用プリミティブ（Button, Input, Badge…）
-│   ├── layout/                 # Sidebar, Header, PageWrapper
-│   ├── admin/                  # 管理画面専用
-│   └── [feature]/              # 機能別コンポーネント
-└── lib/
-    └── nav.ts                  # ナビゲーション定義（単一ソース）
-```
-
-### ルーティングルール
-
-- **App Router のみ**使用。`pages/` ディレクトリは作らない。
-- ルートグループ `(group)` でレイアウトを分離し、URL には現れない。
-- 動的セグメントは `[id]` 形式。
-- Next.js 15 以降: `params` / `searchParams` は **Promise** で受け取る。
+| 原則 | 内容 |
+|------|------|
+| **モバイルファースト** | `base` → `md:` → `lg:` の順に記述 |
+| **単一責務** | 1 コンポーネント = 1 役割。状態管理・表示・スタイルを分離 |
+| **型安全** | Props は必ず `interface` / `type` で定義。`any` 禁止 |
+| **アクセシビリティ** | WCAG 2.1 AA 準拠。`aria-*` 属性・フォーカス管理を必須実装 |
+| **Tailwind 優先** | カスタム CSS は最終手段。`cn()` / `clsx` でクラス合成 |
+| **ロケール考慮** | 日本語 UI では全角・和暦・敬語規約を遵守（§6 参照）|
 
 ```ts
-// app/admin/users/[id]/page.tsx
-export default async function UserDetailPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
-  const { id } = await params;
-  // ...
+// cn() ユーティリティ（tailwind-merge + clsx）
+import { clsx, type ClassValue } from "clsx";
+import { twMerge } from "tailwind-merge";
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
 }
 ```
 
 ---
 
-## 2. ページ追加パターン
+## 2. レイアウト・ナビゲーション構造
 
-### 2-1. 基本ページテンプレート
+### 2-1. ブレークポイント運用
+
+```
+< 768px  → モバイル: ボトムナビ + ハンバーガードロワー
+768px〜  → タブレット/PC: サイドバー常時表示
+```
+
+```ts
+// tailwind.config.ts
+theme: {
+  screens: {
+    sm:  "640px",
+    md:  "768px",   // モバイル/デスクトップの境界
+    lg:  "1024px",
+    xl:  "1280px",
+    "2xl": "1536px",
+  },
+}
+```
+
+### 2-2. サイドバーレイアウト（デスクトップ）
 
 ```tsx
-// app/(app)/[feature]/page.tsx
-import { Suspense } from "react";
-import { Loader2 } from "lucide-react";
-import { FeatureList } from "@/components/[feature]/FeatureList";
+// components/layout/AppLayout.tsx
+interface AppLayoutProps {
+  children: React.ReactNode;
+  sidebar: React.ReactNode;
+}
 
-export const metadata = { title: "機能名 | AppName" };
-
-export default function FeaturePage() {
+export function AppLayout({ children, sidebar }: AppLayoutProps) {
   return (
-    <div className="space-y-6 p-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold tracking-tight">機能名</h1>
-      </div>
-      <Suspense fallback={<Loader2 className="animate-spin" />}>
-        <FeatureList />
-      </Suspense>
+    <div className="flex h-screen overflow-hidden bg-background">
+      {/* デスクトップのみサイドバー表示 */}
+      <aside className="hidden md:flex md:w-64 md:flex-col border-r">
+        {sidebar}
+      </aside>
+      <main className="flex-1 overflow-y-auto">
+        {children}
+      </main>
     </div>
   );
 }
 ```
 
-### 2-2. 認証必須ページ（tRPC 使用例）
-
-```tsx
-// components/[feature]/FeatureList.tsx
-"use client";
-
-import { trpc } from "@/lib/trpc";
-import { Loader2 } from "lucide-react";
-
-export function FeatureList() {
-  const { data, isLoading } = trpc.feature.list.useQuery();
-
-  if (isLoading) {
-    return (
-      <div className="flex justify-center py-12">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
-
-  return (
-    <ul className="divide-y rounded-lg border">
-      {data?.map((item) => (
-        <li key={item.id} className="flex items-center gap-4 p-4">
-          <span>{item.name}</span>
-        </li>
-      ))}
-    </ul>
-  );
-}
-```
-
----
-
-## 3. ナビゲーション構成
-
-### 3-1. ナビ定義ファイル（単一ソース）
+### 2-3. ナビゲーション設定の追加手順
 
 ```ts
-// lib/nav.ts
-import {
-  LayoutDashboard,
-  Users,
-  Settings,
-  ShieldCheck,
-  type LucideIcon,
-} from "lucide-react";
-
-export type NavSection = "main" | "settings" | "admin";
-
+// config/navigation.ts — ナビ項目の一元管理
 export interface NavItem {
-  label: string;
-  href: string;
-  icon: LucideIcon;
-  section: NavSection;
-  badge?: string;          // "NEW" などの任意バッジ
-  requiredRole?: "admin";  // ロールゲート
+  label: string;        // 表示テキスト（日本語可）
+  href: string;         // ルートパス
+  icon: LucideIcon;     // lucide-react アイコン
+  section: "main" | "settings" | "admin";
+  badge?: number;       // 未読カウント等
+  requireRole?: "admin" | "tenant";
 }
 
 export const NAV_ITEMS: NavItem[] = [
   { label: "ダッシュボード", href: "/dashboard", icon: LayoutDashboard, section: "main" },
-  { label: "ユーザー管理",   href: "/users",     icon: Users,           section: "main" },
-  { label: "設定",           href: "/settings",  icon: Settings,        section: "settings" },
-  { label: "管理者",         href: "/admin",     icon: ShieldCheck,     section: "admin", requiredRole: "admin" },
+  { label: "設定",          href: "/settings",  icon: Settings,         section: "settings" },
 ];
 ```
 
-### 3-2. ナビアイテム追加時の手順
+**ナビ追加時の手順:**
 
-1. `lib/nav.ts` の `NAV_ITEMS` 配列に追記する（**他ファイルを直接編集しない**）。
-2. Sidebar / Header コンポーネントは `NAV_ITEMS` を `section` でフィルタして描画する。
-3. `requiredRole: "admin"` を付与するとロールチェック後にのみ表示される。
+1. `config/navigation.ts` に `NavItem` を追記
+2. `section` に応じて Sidebar / BottomNav が自動反映（後述）
+3. `requireRole` でアクセス制御
+4. ビルド検証（§9）を実行
+
+### 2-4. Sidebar コンポーネント
 
 ```tsx
-// components/layout/Sidebar.tsx（抜粋）
-import { NAV_ITEMS } from "@/lib/nav";
+// components/layout/Sidebar.tsx
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { NAV_ITEMS, type NavItem } from "@/config/navigation";
 
-const mainItems = NAV_ITEMS.filter((i) => i.section === "main");
+interface SidebarProps {
+  userRole?: "admin" | "tenant";
+}
 
-export function Sidebar() {
+export function Sidebar({ userRole }: SidebarProps) {
+  const pathname = usePathname();
+
+  const filtered = NAV_ITEMS.filter(
+    (item) => !item.requireRole || item.requireRole === userRole
+  );
+
   return (
-    <nav className="flex flex-col gap-1 p-3">
-      {mainItems.map((item) => (
-        <SidebarLink key={item.href} item={item} />
+    <nav className="flex flex-col gap-1 p-4" aria-label="メインナビゲーション">
+      {filtered.map((item) => (
+        <SidebarItem key={item.href} item={item} isActive={pathname === item.href} />
       ))}
     </nav>
   );
 }
-```
 
----
-
-## 4. 管理画面パターン
-
-### 4-1. 管理レイアウト
-
-```tsx
-// app/(admin)/admin/layout.tsx
-import { redirect } from "next/navigation";
-import { requireAdmin } from "@/lib/auth";
-import { AdminSidebar } from "@/components/admin/AdminSidebar";
-
-export default async function AdminLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  const session = await requireAdmin();      // 未認証 or
+function SidebarItem({ item, isActive }: { item: NavItem; isActive: boolean }) {
+  const Icon = item.icon;
+  return (
+    <Link
+      href={item.href}
+      aria-current={
