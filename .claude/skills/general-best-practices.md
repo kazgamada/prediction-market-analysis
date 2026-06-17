@@ -5,7 +5,6 @@ sourceSkillIds:
   - 4c20b5c7
   - b8b6e2c7
   - af1353e3
-  - b6bf62e3
   - 9805f577
   - e679a935
   - a0cd9eec
@@ -22,130 +21,101 @@ sourceSkillIds:
   - 350b3fe4
   - 6d68ad95
   - cd3cafd4
+  - b6bf62e3
   - 3acf4ab3
   - 11134f28
   - 9db6a344
   - b2127f6a
   - a6958a08
   - 0707f500
-generatedAt: '2026-05-26'
+generatedAt: '2026-06-17'
+integrationStrategy: latest-first
+adoptedFromArchive:
+  - archive/skills/account-system.md
+  - archive/skills/add-admin-alert.md
+  - archive/skills/analytics-engine.md
+  - archive/skills/csv-parser.md
+  - archive/skills/google-drive-bridge.md
+  - archive/skills/guest-mode.md
+  - archive/skills/line-bot.md
+  - archive/skills/ocr-receipt.md
+  - archive/skills/08-destructive-action-ux.md
+  - archive/skills/15-planning-with-todos.md
 ---
 ```markdown
 ---
 name: general-best-practices
-description: >-
-  Next.js/TypeScriptプロジェクト全般に適用できるベストプラクティス集。
-  UX・型安全・セキュリティ・状態管理・進捗トラッキング・アナリティクス・通知の実装パターンを網羅する汎用ガイドライン。
-  デモモード（isDemo）パターン・楽観的UI更新（Optimistic Update）・破壊的操作UX・オープンリダイレクト対策・
-  キーボードナビゲーションデバッグ・TodoWrite進捗トラッキングのベストプラクティスを含む。
-category: other
-version: 3
-effectiveTimestamp: '2026-05-22T00:00:00.000Z'
+description: Next.js/TypeScriptプロジェクト全般に適用できるベストプラクティス集。破壊的操作のUX・進捗トラッキング・アラート設計・アカウント/ロール設計・分析エンジン・CSV/OCR取込・外部連携・ゲストモード・マルチテナント分離の汎用パターンを網羅。
+category: その他
+user-invocable: true
+argument-hint: "[トピック: ux|todo|alert|account|analytics|csv|ocr|guest|integration|tenant]"
+allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 ---
 
-# General Best Practices — Next.js / TypeScript
+# 汎用ベストプラクティス — Next.js / TypeScript
 
-あらゆる Next.js / TypeScript プロジェクトで再利用できる実装パターン集。
-各セクションは独立しているため、必要な箇所だけ参照してください。
+トピック: **$ARGUMENTS**
+
+> 省略時はすべてのセクションを参照してください。
 
 ---
 
 ## 目次
 
-1. [型安全・コード品質](#1-型安全コード品質)
-2. [破壊的操作の UX](#2-破壊的操作の-ux)
-3. [楽観的 UI 更新（Optimistic Update）](#3-楽観的-ui-更新optimistic-update)
-4. [デモモード（isDemo）パターン](#4-デモモードisdemo-パターン)
-5. [セキュリティ — オープンリダイレクト対策](#5-セキュリティ--オープンリダイレクト対策)
-6. [状態管理の指針](#6-状態管理の指針)
-7. [進捗トラッキング（TodoWrite）](#7-進捗トラッキングtodowrite)
-8. [アナリティクス・通知の設計指針](#8-アナリティクス通知の設計指針)
-9. [キーボードナビゲーションのデバッグパターン](#9-キーボードナビゲーションのデバッグパターン)
-10. [開発サーバー・CI の基本](#10-開発サーバーci-の基本)
+| # | トピック | キーワード |
+|---|---|---|
+| 1 | 破壊的操作の UX | `ux` |
+| 2 | TodoWrite 進捗トラッキング | `todo` |
+| 3 | 管理者アラート設計 | `alert` |
+| 4 | アカウント・ロール・プラン設計 | `account` |
+| 5 | 分析・集計エンジン | `analytics` |
+| 6 | CSV 取込パターン | `csv` |
+| 7 | OCR レシート・請求書処理 | `ocr` |
+| 8 | ゲストモード・デモデータ | `guest` |
+| 9 | 外部サービス連携 (Drive / LINE / etc.) | `integration` |
+| 10 | マルチテナント分離 | `tenant` |
 
 ---
 
-## 1. 型安全・コード品質
-
-### 1.1 `unknown` を使って型を絞り込む
-
-```typescript
-// ❌ any は型エラーを隠す
-function parseConfig(raw: any) { return raw.timeout; }
-
-// ✅ unknown + 型ガードで安全に扱う
-function parseConfig(raw: unknown): number {
-  if (
-    typeof raw === "object" && raw !== null &&
-    "timeout" in raw && typeof (raw as Record<string, unknown>).timeout === "number"
-  ) {
-    return (raw as { timeout: number }).timeout;
-  }
-  throw new Error("Invalid config");
-}
-```
-
-### 1.2 API レスポンスの型定義
-
-```typescript
-// 共通レスポンス型
-export type ApiResponse<T> =
-  | { ok: true;  data: T }
-  | { ok: false; error: string; status: number };
-
-// 使用例
-async function fetchUser(id: string): Promise<ApiResponse<User>> {
-  const res = await fetch(`/api/users/${id}`);
-  if (!res.ok) {
-    const json = await res.json().catch(() => ({}));
-    return { ok: false, error: json.error ?? "Unknown error", status: res.status };
-  }
-  return { ok: true, data: await res.json() };
-}
-```
-
-### 1.3 `satisfies` 演算子で型推論を保持しつつ検証
-
-```typescript
-const ROUTES = {
-  home:    "/",
-  profile: "/profile",
-  admin:   "/admin",
-} satisfies Record<string, `/${string}`>;
-
-// ROUTES.home は string ではなく "/" として推論される
-```
-
----
-
-## 2. 破壊的操作の UX
+## 1. 破壊的操作の UX (`ux`)
 
 ### 原則
 
-| # | 原則 | 理由 |
-|---|------|------|
-| 1 | **取消不能を明示** | 「削除します」だけでなく「この操作は取り消せません」を含める |
-| 2 | **件数を必ず表示** | `${count} 件のデータを削除します`（0件・1件でも崩れない文言） |
-| 3 | **進行中はボタン無効化 + 表示変更** | 二重送信防止 |
-| 4 | **成功後は再フェッチ** | 楽観的削除を**しない**（整合性ズレを防ぐ） |
-| 5 | **失敗時はエラー理由を表示** | `alert(\`削除に失敗しました: ${json.error ?? res.status}\`)` |
+1. **取消不能を明示する** — 「削除します」だけでなく「この操作は取り消せません」を必ず入れる。
+2. **件数を表示する** — `${count} 件のデータを削除します`。0 件・1 件でも崩れない文言にする。
+3. **進行中はボタンを無効化 + ラベル変更** — 再クリックによる二重実行を防止。
+4. **成功後はサーバーから再取得** — 楽観的削除は整合性ずれの原因になる。
+5. **失敗時は理由を表示** — `alert(\`削除に失敗しました: ${json.error ?? res.status}\`)`。
 
 ### 最小テンプレート
 
-```tsx
+```typescript
+// components/BulkDeleteButton.tsx
 const [deleting, setDeleting] = useState(false);
 
 async function handleDelete() {
-  if (!confirm(`${count} 件のデータを削除します。この操作は取り消せません。`)) return;
+  if (
+    !confirm(
+      `${count} 件のデータを削除します。この操作は取り消せません。続けますか？`
+    )
+  )
+    return;
+
   setDeleting(true);
   try {
-    const res = await fetch("/api/items", { method: "DELETE", body: JSON.stringify({ ids }) });
+    const res = await fetch("/api/admin/items", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: selectedIds }),
+    });
+    const json = await res.json();
+
     if (!res.ok) {
-      const json = await res.json().catch(() => ({}));
       alert(`削除に失敗しました: ${json.error ?? res.status}`);
       return;
     }
-    await refetch(); // ✅ 楽観的削除せず再取得
+
+    await refetch(); // ← サーバーから再取得
   } finally {
     setDeleting(false);
   }
@@ -158,37 +128,99 @@ return (
 );
 ```
 
----
+### API 側ガイドライン
 
-## 3. 楽観的 UI 更新（Optimistic Update）
+```typescript
+// app/api/admin/items/route.ts
+export async function DELETE(req: Request) {
+  const { ids } = await req.json();
 
-### いつ使うか
-
-| 操作 | 推奨アプローチ |
-|------|---------------|
-| **破壊的操作**（削除・一括変更） | 楽観的更新 **禁止** → 再フェッチ（§2 参照） |
-| **軽量な状態トグル**（いいね・既読・並び替え） | 楽観的更新 **OK** + 失敗時リバート |
-| **フォーム送信**（新規作成・編集） | ケースバイケース（データ量と UX による） |
-
-### 失敗時リバートパターン
-
-```tsx
-const [items, setItems] = useState<Item[]>(initialItems);
-
-async function handleToggleLike(id: string) {
-  // 1. 楽観的に更新
-  const prev = items;
-  setItems(items.map(i => i.id === id ? { ...i, liked: !i.liked } : i));
-
-  // 2. API 呼び出し
-  const res = await fetch(`/api/items/${id}/like`, { method: "POST" });
-
-  // 3. 失敗時はリバート
-  if (!res.ok) {
-    setItems(prev);
-    toast.error("操作に失敗しました。再試行してください。");
+  // 1. 権限チェック (管理者のみ)
+  const session = await getServerSession();
+  if (session?.user?.role !== "admin") {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
+
+  // 2. ids 検証
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return NextResponse.json({ error: "ids required" }, { status: 400 });
+  }
+
+  // 3. トランザクションで削除
+  const { count } = await db.item.deleteMany({ where: { id: { in: ids } } });
+
+  return NextResponse.json({ deleted: count });
 }
 ```
 
-> **Note**: 削除・一括操作では失敗時リバート
+---
+
+## 2. TodoWrite 進捗トラッキング (`todo`)
+
+### 使う条件
+
+- **3 ステップ以上**のタスク
+- 並列に見える作業を順序付けて実施したい
+- ユーザーが複数の依頼を同時に出した
+- セッション中に新しいタスクが発見された
+
+> 1〜2 ステップで完結するなら**使わない**（表示ノイズになる）。
+
+### 書き方の規約
+
+```
+content:    "Add DELETE endpoint to /api/admin/sales for bulk delete"
+activeForm: "Adding DELETE endpoint for bulk delete"
+status:     pending | in_progress | completed
+```
+
+- `content` は **命令形**、`activeForm` は **進行形 / 現在分詞**。
+- 1 タスク = 1 責務。粒度が大きすぎる場合はサブタスクに分割する。
+- `in_progress` は同時に **1 件だけ** にする（並列実行の可視化を正確に保つ）。
+- 完了後は即 `completed` に更新し、次の `pending` を `in_progress` へ移行する。
+
+### ステータス遷移
+
+```
+pending → in_progress → completed
+                      ↘ (blocked: コメントに理由を記載)
+```
+
+---
+
+## 3. 管理者アラート設計 (`alert`)
+
+### 通知チャネル
+
+| チャネル | 用途 | ライブラリ例 |
+|---|---|---|
+| メール | 日次サマリ・重大インシデント | `nodemailer` / Resend |
+| Slack | リアルタイムスパイク検知 | `@slack/web-api` |
+| in-app | ダッシュボード内バナー | DB フラグ + polling |
+
+### 実装パターン（スパイク検知）
+
+```typescript
+// server/services/admin-alerts.ts
+
+export interface SpikeStats {
+  windowMinutes: number;
+  count: number;
+  threshold: number;
+}
+
+/** 直近 N 分のイベント件数を取得 */
+export async function fetchRecentCount(
+  eventType: string,
+  windowMinutes: number
+): Promise<number> {
+  const since = new Date(Date.now() - windowMinutes * 60_000);
+  return db.event.count({
+    where: { type: eventType, createdAt: { gte: since } },
+  });
+}
+
+/** スパイク判定 → 超過時に通知 */
+export async function checkSpike(params: SpikeStats & { eventType: string }) {
+  const { eventType, windowMinutes, threshold } = params;
+  const count =

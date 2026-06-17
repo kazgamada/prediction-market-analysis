@@ -4,152 +4,187 @@ description: >-
   バグ・不具合報告を受けたときに厳守すべき修正ワークフロー。 Next.js/TypeScript
   プロジェクト全般（API連携・DB・表示不具合など）に適用する。 「動かない」報告を受けたら必ずこのスキルを参照してからコードに触れること。
 category: debugging
-version: 3
-effectiveTimestamp: '2026-05-26T00:00:00.000Z'
+version: 4
+effectiveTimestamp: '2026-05-27T00:00:00.000Z'
 sourceSkillIds:
   - a50bbc64
   - f6371710
-generatedAt: '2026-05-27'
+generatedAt: '2026-06-17'
+integrationStrategy: latest-first
+latestSourceTimestamp: '2026-05-25T00:00:00.000Z'
+adoptedFromArchive:
+  - archive/skills/troubleshoot-supabase-shopify.md
+  - archive/skills/debugging.md
 ---
 
 # デバッグ修正ワークフロー（厳守）
 
 > **このワークフローは省略不可。コードに触れる前に必ず全ステップを実行すること。**
 >
-> 適用範囲: Next.js/TypeScript プロジェクト全般  
-> （REST/GraphQL API 連携・DB クエリ・表示不具合・外部サービス連携 等）
+> 適用範囲: Next.js / TypeScript プロジェクト全般
+> （API 連携・DB クエリ・外部サービス連携・表示不具合など）
 
 ---
 
-## STEP 0 — このスキルを開く（前提確認）
+## 統合方針メモ
 
-バグ・不具合報告を受けたら **最初にこのファイルを開き**、以下を確認する。
-
-| 確認項目 | OK? |
-|---|---|
-| 再現手順を口頭またはテキストで説明できる | ☐ |
-| 影響範囲（画面/API/DB）を1行で言える | ☐ |
-| 「たぶんこれが原因」という仮説を一旦棚上げした | ☐ |
+- `aegis-market-os / debugging`（effectiveTimestamp: 2026-05-26）を主軸として採用
+- `glabaffil / troubleshoot-supabase-shopify`（changedAt: 2026-05-25）の Supabase / Shopify 固有パターンを「よくある根本原因」セクションに吸収
+- 両者の「ワークフロー主体」方針は一致しているため衝突なし
+- Supabase / Shopify 固有の用語は「外部サービス連携」として抽象化し、汎用性を維持
 
 ---
 
-## STEP 1 — 事実の収集（仮説より先に証拠を集める）
-
-### 1-1. エラーメッセージ・ログを取得する
-
-```bash
-# ブラウザコンソール / Node プロセスログをそのままコピー
-# スタックトレースは末尾まで省略しない
-```
-
-確認すべき場所:
-
-- ブラウザ DevTools → Console / Network タブ
-- Next.js サーバーログ（`next dev` / `next start` の標準出力）
-- 外部サービス管理画面のログ（Supabase Logs, Shopify Partners, Vercel Functions 等）
-- DB クライアントのクエリログ・スロークエリログ
-
-### 1-2. 再現条件を特定する
+## フェーズ 0 — 報告受領（コードに触れる前）
 
 ```
-再現率: 常に / 特定操作後のみ / 稀に
-環境:   local / staging / production
-ユーザー: 全員 / 特定ロール / 特定ID
+1. 症状を一行で言語化する
+   例: "商品一覧が 0 件表示される"
+
+2. 再現条件を確定する
+   - 環境（local / staging / production）
+   - 操作手順（URL / ボタン / API コール）
+   - 発生頻度（常時 / 特定条件のみ）
+
+3. 期待値と実際値を並べる
+   期待: 商品 42 件表示
+   実際: 0 件表示
 ```
 
-### 1-3. 「最後に動いていた状態」を確認する
+> ⛔ この 3 点が揃う前にコードを変更してはならない。
 
-```bash
-git log --oneline -20        # 直近の変更履歴
-git diff HEAD~1 HEAD -- <疑わしいファイル>
+---
+
+## フェーズ 1 — 仮説を立てる（原因を絞る）
+
+### 1-1. 症状レイヤーの特定
+
+```
+UI 表示崩れ
+  └─ CSS / 条件分岐 / null 安全
+データ件数の不一致
+  └─ DB クエリ条件 / フィルタ / ページネーション
+API エラー
+  └─ 認証 / レート制限 / スキーマ不一致
+型エラー / ランタイムエラー
+  └─ TypeScript 型 / undefined アクセス / 非同期漏れ
+```
+
+### 1-2. よくある根本原因（パターン集）
+
+**DB / ORM クエリ系**
+```typescript
+// ❌ フィルタ条件の抜け（Supabase例）
+const { data } = await supabase.from('products').select('*')
+// ↑ status = 'active' フィルタが抜けると全件または0件になる
+
+// ✅ 条件を明示
+const { data, error } = await supabase
+  .from('products')
+  .select('*')
+  .eq('status', 'active')
+  .order('created_at', { ascending: false })
+
+// 確認コマンド（汎用）
+// → DB クライアントで同じクエリを直接実行して件数を比較する
+```
+
+**外部 API 連携系**
+```typescript
+// ❌ エラーハンドリング漏れ（Shopify等のREST/GraphQL API）
+const response = await fetch(apiUrl, { headers })
+const data = await response.json() // エラーレスポンスを素通し
+
+// ✅ ステータスコードを必ず確認
+const response = await fetch(apiUrl, { headers })
+if (!response.ok) {
+  const errorBody = await response.text()
+  throw new Error(`API ${response.status}: ${errorBody}`)
+}
+const data = await response.json()
+```
+
+**Next.js キャッシュ / revalidate 系**
+```typescript
+// ❌ fetch キャッシュが古いデータを返す
+const res = await fetch(url) // デフォルトは force-cache
+
+// ✅ 動的データは明示的に no-store
+const res = await fetch(url, { cache: 'no-store' })
+
+// または revalidate を設定
+const res = await fetch(url, { next: { revalidate: 60 } })
+```
+
+**TypeScript / null 安全系**
+```typescript
+// ❌ undefined アクセス
+const name = user.profile.name // profile が null の場合クラッシュ
+
+// ✅ オプショナルチェーンでガード
+const name = user?.profile?.name ?? '未設定'
+```
+
+**非同期処理系**
+```typescript
+// ❌ await 漏れ
+const data = fetchData() // Promise のまま使用してしまう
+
+// ✅ 必ず await
+const data = await fetchData()
 ```
 
 ---
 
-## STEP 2 — 仮説の列挙と優先付け
+## フェーズ 2 — ログ収集（変更前）
 
-証拠が揃ったら初めて仮説を立てる。**3つ以上**挙げてから絞る。
-
-| # | 仮説 | 根拠（ログ/コード行） | 確認コスト |
-|---|---|---|---|
-| 1 | | | 低/中/高 |
-| 2 | | | 低/中/高 |
-| 3 | | | 低/中/高 |
-
-> **アンチパターン**: 最初に浮かんだ仮説だけを追いかけてコードを書き換える。
-> 必ず複数仮説を並列検討してから手を動かす。
-
----
-
-## STEP 3 — 最小再現と仮説検証
-
-### 3-1. 最小再現ケースを作る
-
-- 影響範囲を **1ファイル / 1エンドポイント / 1コンポーネント** まで絞る
-- 外部依存（API・DB）を可能な限りモックして切り離す
+```
+確認順序（上から順に）:
+1. ブラウザ DevTools → Console / Network タブ
+2. サーバーログ（next dev の標準出力 / Vercel Functions ログ）
+3. 外部サービスダッシュボード（API ログ・DB ログ等）
+4. 型チェック: npx tsc --noEmit
+5. Lint:      npx eslint . --ext .ts,.tsx
+```
 
 ```typescript
-// 例: API 呼び出しを切り離して UI ロジックだけ確認
-const mockData = { id: 1, status: "active" } satisfies Product;
+// デバッグ用ログの挿入パターン
+console.log('[DEBUG][コンポーネント名]', {
+  入力値: input,
+  クエリ結果件数: data?.length,
+  エラー: error,
+  timestamp: new Date().toISOString(),
+})
 ```
 
-### 3-2. 追加ログで仮説を検証する
-
-```typescript
-// 削除前提のデバッグログは TODO コメントで明示
-// TODO: debug - remove before merge
-console.log("[DEBUG] fetchProducts response:", JSON.stringify(res, null, 2));
-```
-
-### 3-3. よくある原因チェックリスト
-
-#### API / ネットワーク
-
-- [ ] レスポンスの HTTP ステータスを確認した（200 以外の扱い）
-- [ ] ページネーション・レート制限に引っかかっていないか
-- [ ] 環境変数（`NEXT_PUBLIC_*` / サーバーサイド専用）の混在がないか
-- [ ] キャッシュ（fetch cache / CDN / ブラウザキャッシュ）が古い状態を返していないか
-
-#### DB / クエリ
-
-- [ ] フィルタ・JOIN 条件が意図どおりか（実際のクエリをログ出力して確認）
-- [ ] NULL 値・空配列の扱いが意図どおりか
-- [ ] トランザクション境界・楽観的ロックの競合がないか
-- [ ] インデックスが効いているか（EXPLAIN / EXPLAIN ANALYZE）
-
-#### TypeScript / 型
-
-- [ ] `as` キャストや `!` 非 null アサーションで型エラーを隠していないか
-- [ ] `unknown` / `any` の境界で実行時エラーが起きていないか
-- [ ] Zod 等のランタイムバリデーションが期待どおり動いているか
-
-#### Next.js 特有
-
-- [ ] Server Component / Client Component の境界が正しいか（`"use client"` の有無）
-- [ ] `getServerSideProps` / `getStaticProps` / Server Actions のデータが古くないか
-- [ ] Route Handler の `dynamic = "force-dynamic"` / `revalidate` 設定が意図どおりか
-- [ ] Middleware でリクエストが意図せず書き換えられていないか
+> ✅ ログで「どこまでは正しいか」を確定してから次へ進む。
 
 ---
 
-## STEP 4 — 修正と影響範囲の確認
-
-### 4-1. 修正方針を決める（コードを書く前に）
+## フェーズ 3 — 最小再現を作る
 
 ```
-修正方針: <1〜2行で記述>
-変更ファイル: <変更予定ファイルのリスト>
-リグレッションリスク: 低 / 中（理由: ）/ 高（理由: ）
+目的: 関係ないコードを排除し、原因を一点に絞る
+
+手順:
+1. 疑わしい処理を単独で実行できるか確認
+   - API ハンドラ → curl / Postman で直接叩く
+   - DB クエリ   → クライアントツールで直接実行
+   - コンポーネント → Storybook / 単体テスト
+
+2. ダミーデータに差し替えて UI が正しく動くか確認
+   → YES: データ取得層が原因
+   → NO : 表示層が原因
+
+3. 最小再現ができたらコメントに記録
+   // 再現: products が [] のとき CardList が null を返す
 ```
 
-### 4-2. 修正を実装する
+---
 
-- **1つの仮説につき1つのコミット** を目安にする
-- デバッグ用 `console.log` は必ず削除してからコミット
-- 型を緩める方向（`any` 化・キャスト追加）の修正は **最終手段**
+## フェーズ 4 — 修正する
 
-```typescript
-// NG: 型エラーを隠す
-const data = response as SomeType;
+### 修正の原則
 
-// OK: 実行時バ
+```
+1. 一度に変更するファイルは 1〜2 ファイ

@@ -22,13 +22,43 @@ sourceSkillIds:
   - 150f406c
   - c4ce7df6
   - 5070feb9
-generatedAt: '2026-05-23'
+generatedAt: '2026-06-17'
+integrationStrategy: latest-first
+latestSourceTimestamp: '2026-05-07T02:35:32.508Z'
+adoptedFromArchive:
+  - archive/skills/ai-llm-integration-derived.md
+  - archive/skills/add-email-template.md
+  - archive/skills/ai-llm-integration.md
+  - archive/skills/ai-operations.md
+  - archive/skills/approval-workflow.md
+  - archive/skills/content-generation-pipeline.md
+  - archive/skills/daily-report.md
+  - archive/skills/gmail-sync-debug.md
+  - archive/skills/ingest-pipeline.md
+  - archive/skills/07-admin-list-selection-ui.md
 ---
 
 # AI / LLM Integration — Claude API & Anthropic SDK
 
-Next.js（App Router）で Claude API を統合する際の決定版パターン集。  
-セットアップから本番運用まで一貫して参照できるように設計されている。
+> **対象スタック**: Claude API · Anthropic SDK · Next.js App Router · TypeScript  
+> **統合元**: aegis-market-os（ai-llm-integration v2 + derived v1）· AISaaS（content-generation-pipeline）· BlackZero（ai-operations · ingest-pipeline）
+
+---
+
+## 目次
+
+1. [セットアップ](#1-セットアップ)
+2. [基本的な呼び出しパターン](#2-基本的な呼び出しパターン)
+3. [ストリーミング](#3-ストリーミング)
+4. [バックグラウンド生成パイプライン](#4-バックグラウンド生成パイプライン)
+5. [Server Actions での統合](#5-server-actions-での統合)
+6. [Route Handler での統合](#6-route-handler-での統合)
+7. [プロンプト設計パターン](#7-プロンプト設計パターン)
+8. [マルチプロバイダー対応](#8-マルチプロバイダー対応)
+9. [エラーハンドリング](#9-エラーハンドリング)
+10. [コスト管理・モニタリング](#10-コスト管理モニタリング)
+11. [AI モジュール分類パターン（BlackZero 由来）](#11-ai-モジュール分類パターン)
+12. [よくある落とし穴と修正パターン](#12-よくある落とし穴と修正パターン)
 
 ---
 
@@ -37,11 +67,14 @@ Next.js（App Router）で Claude API を統合する際の決定版パターン
 ### 依存関係
 
 ```bash
+# Anthropic SDK（必須）
 npm install @anthropic-ai/sdk
-# Vercel AI SDK（ストリーミング・マルチプロバイダー対応）
+
+# Vercel AI SDK（ストリーミング・Next.js App Router 向け）
 npm install ai
-# 環境変数バリデーション（推奨）
-npm install zod
+
+# OpenAI 互換フォールバックが必要な場合
+npm install openai
 ```
 
 ### 環境変数
@@ -50,65 +83,135 @@ npm install zod
 # .env.local
 ANTHROPIC_API_KEY=sk-ant-...
 
-# マルチプロバイダー時
+# マルチプロバイダー構成
 OPENAI_API_KEY=sk-...
-GOOGLE_GENERATIVE_AI_API_KEY=...
+GOOGLE_AI_API_KEY=...
+
+# コスト管理用（任意）
+AI_BUDGET_USD_DAILY=10.00
+AI_BUDGET_USD_MONTHLY=200.00
 ```
 
-### シングルトンクライアント（`lib/ai/client.ts`）
+### クライアントシングルトン
 
 ```typescript
+// lib/ai/client.ts
 import Anthropic from "@anthropic-ai/sdk";
 
-if (!process.env.ANTHROPIC_API_KEY) {
-  throw new Error("ANTHROPIC_API_KEY is not set");
+let _client: Anthropic | null = null;
+
+export function getAnthropicClient(): Anthropic {
+  if (!_client) {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
+    _client = new Anthropic({ apiKey });
+  }
+  return _client;
 }
+```
 
-// モジュールスコープでシングルトン化（cold start 対策）
-export const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
+### モデル定数
 
-// デフォルトモデル定数（一元管理）
-export const DEFAULT_MODEL = "claude-opus-4-5" as const;
-export const FAST_MODEL    = "claude-haiku-3-5" as const;
+```typescript
+// lib/ai/models.ts
+export const AI_MODELS = {
+  // 高性能・高コスト
+  CLAUDE_OPUS: "claude-opus-4-5",
+  // バランス型（推奨デフォルト）
+  CLAUDE_SONNET: "claude-sonnet-4-5",
+  // 高速・低コスト
+  CLAUDE_HAIKU: "claude-haiku-4-5",
+} as const;
+
+export type AIModel = (typeof AI_MODELS)[keyof typeof AI_MODELS];
+
+/** タスク種別ごとの推奨モデル */
+export const MODEL_ROUTING: Record<string, AIModel> = {
+  chat: AI_MODELS.CLAUDE_SONNET,
+  classify: AI_MODELS.CLAUDE_HAIKU,
+  summarize: AI_MODELS.CLAUDE_HAIKU,
+  generate: AI_MODELS.CLAUDE_SONNET,
+  analyze: AI_MODELS.CLAUDE_OPUS,
+};
 ```
 
 ---
 
-## 2. 基本的なメッセージ生成
+## 2. 基本的な呼び出しパターン
 
-### 非ストリーミング（Server Action / Route Handler 共通）
+### シンプルなメッセージ生成
 
 ```typescript
 // lib/ai/generate.ts
-import { anthropic, DEFAULT_MODEL } from "./client";
+import { getAnthropicClient } from "./client";
+import { AI_MODELS } from "./models";
+
+interface GenerateOptions {
+  system?: string;
+  prompt: string;
+  model?: string;
+  maxTokens?: number;
+  temperature?: number;
+}
+
+interface GenerateResult {
+  content: string;
+  inputTokens: number;
+  outputTokens: number;
+}
 
 export async function generateText(
-  prompt: string,
-  opts: {
-    systemPrompt?: string;
-    maxTokens?: number;
-    temperature?: number;
-  } = {}
-): Promise<string> {
-  const { systemPrompt, maxTokens = 1024, temperature = 0.7 } = opts;
+  opts: GenerateOptions
+): Promise<GenerateResult> {
+  const client = getAnthropicClient();
 
-  const response = await anthropic.messages.create({
-    model: DEFAULT_MODEL,
-    max_tokens: maxTokens,
-    ...(temperature !== undefined && {
-      // temperature は extended thinking 使用時は省略
-    }),
-    ...(systemPrompt && {
-      system: systemPrompt,
-    }),
-    messages: [{ role: "user", content: prompt }],
+  const response = await client.messages.create({
+    model: opts.model ?? AI_MODELS.CLAUDE_SONNET,
+    max_tokens: opts.maxTokens ?? 1024,
+    system: opts.system,
+    messages: [{ role: "user", content: opts.prompt }],
   });
 
-  const block = response.content[0];
-  if (block.type !== "text") throw new Error("Unexpected response type");
-  return block.text;
+  const content = response.content
+    .filter((b) => b.type === "text")
+    .map((b) => b.text)
+    .join("");
+
+  return {
+    content,
+    inputTokens: response.usage.input_tokens,
+    outputTokens: response.usage.output_tokens,
+  };
+}
+```
+
+### JSON 構造化出力
+
+```typescript
+// lib/ai/structured.ts
+export async function generateJSON<T>(opts: {
+  system?: string;
+  prompt: string;
+  schema: string; // JSON Schema の説明文
+  model?: string;
+}): Promise<T> {
+  const { content } = await generateText({
+    ...opts,
+    system: [
+      opts.system,
+      "必ず有効な JSON のみを返してください。マークダウンコードブロックは不要です。",
+      `期待するスキーマ: ${opts.schema}`,
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
+  });
+
+  // JSON ブロックを抽出（```json ... ``` を含む場合に対応）
+  const jsonMatch = content.match(/```json\s*([\s\S]*?)\s*```/) ||
+    content.match(/```\s*([\s\S]*?)\s*```/);
+  const jsonStr = jsonMatch ? jsonMatch[1] : content.trim();
+
+  return JSON.parse(jsonStr) as T;
 }
 ```
 
@@ -116,153 +219,28 @@ export async function generateText(
 
 ## 3. ストリーミング
 
-### Route Handler（`app/api/chat/route.ts`）
+### Route Handler（App Router）
 
 ```typescript
-import { anthropic } from "@/lib/ai/client";
-import { AnthropicStream, StreamingTextResponse } from "ai";
+// app/api/chat/route.ts
+import { StreamingTextResponse, streamText } from "ai";
+import Anthropic from "@anthropic-ai/sdk";
 
-export const runtime = "edge"; // Edge Runtime 推奨
+const client = new Anthropic();
 
 export async function POST(req: Request) {
-  const { messages } = await req.json();
+  const { messages, systemPrompt } = await req.json();
 
-  const response = await anthropic.messages.create({
-    model: "claude-opus-4-5",
-    max_tokens: 1024,
-    stream: true,
+  const stream = await client.messages.stream({
+    model: "claude-sonnet-4-5",
+    max_tokens: 2048,
+    system: systemPrompt,
     messages,
   });
 
-  const stream = AnthropicStream(response);
-  return new StreamingTextResponse(stream);
-}
-```
-
-### Server Action でストリーミング（`createStreamableValue` パターン）
-
-```typescript
-"use server";
-import { createStreamableValue } from "ai/rsc";
-import { anthropic } from "@/lib/ai/client";
-
-export async function streamGenerate(prompt: string) {
-  const stream = createStreamableValue("");
-
-  (async () => {
-    const response = await anthropic.messages.create({
-      model: "claude-opus-4-5",
-      max_tokens: 1024,
-      stream: true,
-      messages: [{ role: "user", content: prompt }],
-    });
-
-    for await (const chunk of response) {
-      if (
-        chunk.type === "content_block_delta" &&
-        chunk.delta.type === "text_delta"
-      ) {
-        stream.update(chunk.delta.text);
-      }
-    }
-    stream.done();
-  })();
-
-  return { output: stream.value };
-}
-```
-
-### クライアント側での消費
-
-```typescript
-"use client";
-import { readStreamableValue } from "ai/rsc";
-
-export function ChatComponent() {
-  const [output, setOutput] = useState("");
-
-  const handleSubmit = async (prompt: string) => {
-    const { output } = await streamGenerate(prompt);
-    for await (const chunk of readStreamableValue(output)) {
-      setOutput((prev) => prev + (chunk ?? ""));
-    }
-  };
-  // ...
-}
-```
-
----
-
-## 4. バックグラウンド生成パイプライン
-
-AI 生成はレイテンシが高いため、**fire-and-forget + DB ステータス管理**が基本パターン。
-
-### ステータス遷移
-
-```
-pending → generating → json_saved → html_built → published
-                    ↘ error（any step）
-```
-
-### 実装パターン
-
-```typescript
-// Server Action: 即座にレスポンスを返し、バックグラウンドで生成
-export async function startGeneration(contentId: string) {
-  // 1. pending レコードを作成（即座にレスポンス）
-  await db.contentGenerations.update({
-    where: { id: contentId },
-    data: { status: "generating", startedAt: new Date() },
-  });
-
-  // 2. fire-and-forget（await しない）
-  runBackgroundGeneration(contentId).catch((err) => {
-    console.error("Background generation failed:", err);
-  });
-
-  return { started: true };
-}
-
-async function runBackgroundGeneration(contentId: string) {
-  try {
-    // 3. AI 生成
-    const result = await generateSingleContent(contentId);
-
-    // 4. JSON 保存
-    await db.contentGenerations.update({
-      where: { id: contentId },
-      data: { status: "json_saved", generatedJson: result },
-    });
-
-    // 5. HTML ビルド
-    await buildHtmlFromJson(contentId);
-
-    await db.contentGenerations.update({
-      where: { id: contentId },
-      data: { status: "published", completedAt: new Date() },
-    });
-  } catch (error) {
-    await db.contentGenerations.update({
-      where: { id: contentId },
-      data: {
-        status: "error",
-        errorMessage: error instanceof Error ? error.message : String(error),
-      },
-    });
-  }
-}
-```
-
-### ポーリングで進捗確認
-
-```typescript
-// app/api/generation-status/[id]/route.ts
-export async function GET(
-  _req: Request,
-  { params }: { params: { id: string } }
-) {
-  const record = await db.contentGenerations.findUnique({
-    where: { id: params.id },
-    select: { status: true, errorMessage: true, completedAt: true },
-  });
-  return Response.json(record
+  // Vercel AI SDK の StreamingTextResponse を利用
+  const textStream = new ReadableStream({
+    async start(controller) {
+      for await (const chunk of stream) {
+        if (
+          
