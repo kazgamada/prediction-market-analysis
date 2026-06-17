@@ -34,7 +34,8 @@ def fresh_db():  # noqa: ANN201
     engine_mod.get_engine.cache_clear()
     engine_mod._session_factory.cache_clear()
 
-    from copytrader.db.engine import get_engine
+    from copytrader.db.engine import get_engine, run_migrations
+    from copytrader.db.models import Base
 
     eng = get_engine()
     # Verify reachable, else skip the whole integration suite.
@@ -44,17 +45,24 @@ def fresh_db():  # noqa: ANN201
     except Exception as e:  # noqa: BLE001
         pytest.skip(f"no test postgres available: {e}")
 
+    # Drop any legacy-schema artifacts from prior tests *before* migrating
+    # so the self-heal carry-over doesn't pull stale rows. (Tests that need
+    # a fresh legacy schema recreate it explicitly.)
     with eng.begin() as c:
-        c.execute(text(
-            "TRUNCATE jobs, job_logs, trades, blocks_seen, cursors, "
-            "wallet_stats_daily, watchlist, signals, risk_events, "
-            "rpc_dead_letters, settings RESTART IDENTITY CASCADE"
-        ))
-        # Drop any legacy-schema artifacts from prior tests to avoid
-        # cross-test pollution. (Tests that need a fresh legacy schema
-        # recreate it explicitly.)
         for tbl in ("trade", "wallet", "market", "token_index",
                     "ingest_cursor", "signal", '"order"', "position",
                     "risk_event"):
             c.execute(text(f"DROP TABLE IF EXISTS {tbl} CASCADE"))
+
+    # Guarantee a full head schema for every test. The migration self-heal
+    # tests deliberately mutate the schema (drop tables, clear
+    # alembic_version), so a TRUNCATE-only fixture would cascade ERRORs into
+    # later tests. run_migrations() restores head from any partial state.
+    run_migrations()
+
+    # Empty every ORM-managed table. Derived from metadata so new tables are
+    # covered automatically.
+    table_list = ", ".join(f'"{t.name}"' for t in Base.metadata.sorted_tables)
+    with eng.begin() as c:
+        c.execute(text(f"TRUNCATE {table_list} RESTART IDENTITY CASCADE"))
     yield

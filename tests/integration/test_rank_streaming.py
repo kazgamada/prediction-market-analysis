@@ -15,6 +15,10 @@ from sqlalchemy import text
 from copytrader.db.engine import get_session
 from copytrader.db.models import Trade
 
+# Anchor seeded trades to ~1 day ago so they reliably fall within the
+# default rank/pnl window (window_days >= 7) regardless of the wall clock.
+_SEED_BASE_TS = datetime.now(UTC) - timedelta(days=1)
+
 
 def _seed(s, *, idx: int, taker: bytes, side: int, price: str,
           shares: str, token_id: int = 1) -> None:
@@ -25,8 +29,11 @@ def _seed(s, *, idx: int, taker: bytes, side: int, price: str,
                        (idx >> 8) & 0xff, idx & 0xff]) * 8,
         log_index=idx,
         block_number=1000 + idx,
-        # idx ascending → ts ascending (so BUY at smaller idx precedes SELL)
-        ts=datetime(2026, 5, 12, 0, 0, 0, tzinfo=UTC) + timedelta(seconds=idx),
+        # idx ascending → ts ascending (so BUY at smaller idx precedes SELL).
+        # Anchored to "now" so the rows always fall inside the rank/pnl
+        # window_days filter (`ts >= now() - window`); a hardcoded absolute
+        # date silently drifts out of the window and breaks the test later.
+        ts=_SEED_BASE_TS + timedelta(seconds=idx),
         exchange="ctf",
         order_hash=b"\xbb" * 32,
         maker=b"\x11" * 20,

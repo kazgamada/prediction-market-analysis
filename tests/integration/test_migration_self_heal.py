@@ -47,23 +47,27 @@ def test_clear_stale_alembic_when_jobs_missing(fresh_db) -> None:
     from copytrader.db.engine import get_engine, run_migrations
     eng = get_engine()
 
-    # Setup: simulate stale state from prior repo
+    # Capture the real head so the test stays correct as new migrations
+    # are added (it used to hardcode '0001' and broke when 0002 landed).
+    with eng.begin() as c:
+        head = c.execute(text("SELECT version_num FROM alembic_version")).scalar()
+    assert head is not None
+
+    # Setup: simulate stale state from prior repo — alembic_version present
+    # but the new `jobs` table is gone.
     with eng.begin() as c:
         c.execute(text("DROP TABLE IF EXISTS job_logs CASCADE"))
         c.execute(text("DROP TABLE IF EXISTS jobs CASCADE"))
-        # alembic_version still says '0001'
-        ver = c.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert ver == "0001"
         assert c.execute(text("SELECT to_regclass('public.jobs')")).scalar() is None
 
     # Run self-heal
     run_migrations()
 
-    # Verify: jobs exists, alembic_version is back at '0001'
+    # Verify: jobs exists, alembic_version is back at head
     with eng.begin() as c:
         assert c.execute(text("SELECT to_regclass('public.jobs')")).scalar() is not None
         ver = c.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert ver == "0001"
+        assert ver == head
 
 
 def test_legacy_trade_data_is_carried_over(fresh_db) -> None:
