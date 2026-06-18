@@ -60,6 +60,14 @@ Polymarket コピートレードボットである。したがって以下のよ
 
 実装済み。詳細は `docs/AUDIT_REPORT.md` §4。
 
+0. **二重発注の防止（実害バグ / P0・敵対的査読で検出）**
+   indexer の catchup ループと live WS stream が同一 OrderFilled ログを観測すると、1 つのコピー元
+   トレードから signals が 2 行生成され、コピー注文が 2 回発生する（二重支出）。`maybe_record_signal`
+   に DB レベルの重複排除が無く、`persist.py` のコメントが約束していた「executor の de-dup」は
+   実在しなかった。→ `signals` に originating trade identity（`tx_hash`, `log_index`）を追加し
+   （migration `0003`）、部分 unique index + `ON CONFLICT DO NOTHING` で**レースセーフに冪等化**。
+   回帰テスト `tests/integration/test_signal_dedup.py`（3 本）を追加。
+
 1. **マイグレーション自己修復の本番クラッシュ（実害バグ / P1）**
    `src/copytrader/db/engine.py` の `_clear_stale_alembic_state` が DROP するテーブルを
    ハードコード列挙しており、`0002`（phase1）で追加された `market_resolutions` 等が漏れていた。
@@ -113,6 +121,13 @@ Polymarket コピートレードボットである。したがって以下のよ
 
 ### P1（リリース前に必須）
 
+- **E-6. kill switch / halt のレース（要設計判断）** — risk 評価→claim→SKIP の順序で tick 内の
+  リスク変化が無視され、halt 中に claim された signal が EXECUTING で孤児化する（`executor.py:199-209`）。
+- **E-7. backfill の取りこぼし（要設計判断）** — 失敗チャンクを dead-letter に逃がしつつカーソルを
+  単調前進させるため、dead-letter retry が失敗するとコピー元トレードを永久に取りこぼす
+  （`backfill.py:65-118` / `cursor.py:46`）。
+  > E-6/E-7 は資金安全に直結する P1 だが、修正に実行レイヤ/インデクサのアーキ判断を伴うため、
+  > 本書では証拠付きで報告し修正方針を提示するに留めた（推測で実装しない原則）。要ユーザー判断。
 - **B-1. Docker / Fly.io ビルドの実証** — 本監査環境では Docker daemon 不在のため
   `docker build` を未実行。CI（`.github/workflows`）でのビルド成功を要確認。
 - **B-2. 本番環境変数の充足確認** — `POLYGON_RPC_HTTP/WS`、`DATABASE_URL`、（実行時）
