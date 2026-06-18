@@ -97,6 +97,22 @@ def _apply_fill(ex: Execution, filled_size: Decimal, fill_price: Decimal) -> Non
                 updated_at=now,
             ).on_conflict_do_nothing(index_elements=[Position.token_id])
             s.execute(stmt)
+        elif pos.open_size_shares <= 0:
+            # Position is flat (a prior fill closed it). Treat this as a fresh
+            # open so the side/avg_price are reset — otherwise a reopen on the
+            # opposite side hit the "close" branch against 0 shares and the new
+            # position was silently never opened.
+            s.execute(
+                update(Position).where(Position.token_id == ex.token_id)
+                .values(
+                    side=ex.side,
+                    open_size_shares=filled_size,
+                    open_size_usdc=size_usdc,
+                    avg_price=fill_price,
+                    opened_at=now,
+                    updated_at=now,
+                )
+            )
         else:
             if int(ex.side) == int(pos.side):
                 # Same direction: average up
