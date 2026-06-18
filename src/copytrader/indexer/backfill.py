@@ -46,7 +46,21 @@ async def backfill_range(
     chunks_empty = 0
     chunks_failed = 0
     ts_cache: dict[int, int] = {}
-    highest_block_seen = from_block - 1
+    # Completed (OK/EMPTY) chunks keyed by from_block. The cursor is only
+    # advanced along the *contiguous* frontier starting at `from_block`, so a
+    # FAILED chunk — or a chunk that simply hasn't arrived yet (iter_logs
+    # yields in completion order, not block order) — leaves a gap that holds
+    # the cursor back. This makes the cursor a true low-water mark ("every
+    # block <= cursor has been fully scanned"), so a crash mid-range or a
+    # dead-lettered chunk is re-scanned by the next catchup instead of being
+    # silently skipped (idempotent: trade upsert + signal de-dup).
+    completed_chunks: dict[int, int] = {}
+
+    def frontier_block() -> int:
+        cur = from_block
+        while cur in completed_chunks:
+            cur = completed_chunks[cur] + 1
+        return cur - 1
 
     async def block_ts(block: int) -> int:
         if block in ts_cache:
@@ -75,7 +89,7 @@ async def backfill_range(
                 error_text=chunk.error or "unknown",
             )
             log.warning(
-                "chunk FAILED [%d, %d] -> dead-letter: %s",
+                "chunk FAILED [%d, %d] -> dead-letter (holds cursor frontier): %s",
                 chunk.from_block, chunk.to_block, chunk.error,
             )
             continue
@@ -105,25 +119,25 @@ async def backfill_range(
                 mark_blocks_seen(blocks_in_chunk)
                 total_logs += len(decoded)
 
-        # Always advance the cursor to the end of the chunk (even if EMPTY) —
-        # we know we've inspected up to chunk.to_block.
-        if chunk.to_block > highest_block_seen:
-            highest_block_seen = chunk.to_block
+        # Mark this chunk complete and advance the cursor only as far as the
+        # contiguous confirmed frontier (never past a FAILED/missing gap).
+        completed_chunks[chunk.from_block] = chunk.to_block
+        frontier = frontier_block()
 
-        # Monotonic cursor write per chunk.
-        try:
-            cursor_mod.advance(
-                CURSOR_NAME, chunk.to_block,
-                block_ts=datetime.now(UTC),
-            )
-        except Exception:
-            log.exception("cursor.advance failed; will retry next chunk")
+        if frontier >= from_block:
+            try:
+                cursor_mod.advance(
+                    CURSOR_NAME, frontier,
+                    block_ts=datetime.now(UTC),
+                )
+            except Exception:
+                log.exception("cursor.advance failed; will retry next chunk")
 
         if progress_cb:
             progress_cb({
                 "from_block": from_block,
                 "to_block": to_block,
-                "cursor": highest_block_seen,
+                "cursor": frontier,
                 "logs": total_logs,
                 "chunks_ok": chunks_ok,
                 "chunks_empty": chunks_empty,
@@ -133,6 +147,7 @@ async def backfill_range(
     return {
         "from_block": from_block,
         "to_block": to_block,
+        "cursor": frontier_block(),
         "logs": total_logs,
         "chunks_ok": chunks_ok,
         "chunks_empty": chunks_empty,
