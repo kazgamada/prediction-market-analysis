@@ -51,6 +51,8 @@ Polymarket コピートレードボットである。したがって以下のよ
 | 統合テスト | `pytest -q`（Postgres 16） | **2 failed / 12 errors** | **66 passed** |
 | import スモーク | 全モジュール import | 53 OK（`web.app` は DB 接続のため除外） | 同左 |
 | 秘密情報 grep | `sk_live` 等 | ハードコード無し（テスト用文字列のみ） | — |
+| 依存脆弱性 | `pip-audit` | 5 件すべて venv 同梱 pip のみ（ランタイム依存は健全） | — |
+| E2E（web 実起動） | `:8501` + `:8080` 死活 | 8080 無応答（F-2 バグ） | **両ポート 200 / SIGTERM 伝播 OK** |
 
 ---
 
@@ -65,6 +67,14 @@ Polymarket コピートレードボットである。したがって以下のよ
    再マイグレーションが `relation "market_resolutions" already exists` でクラッシュし **起動不能**。
    → DROP 対象を `Base.metadata.sorted_tables` から導出し、将来のマイグレーション追加にも
    自動追従する構造に変更。
+
+1b. **ヘルスサーバが起動直後に死ぬ（実害バグ / P1）**
+   `src/copytrader/runtime/web_main.py` が Streamlit へ `os.execvp` で**プロセス置換**しており、
+   バックグラウンド（daemon）の health スレッドを道連れに kill していた。結果 UI 起動後は
+   `:8080` の `/healthz` `/readyz`（`fly.toml` の web サービス・README の死活確認）が**永久に無応答**。
+   設計意図（「migration がクラッシュしても /readyz が応答する」）が成立していなかった。
+   → 子プロセス起動（`subprocess.Popen`）+ SIGTERM/SIGINT 転送に変更。親（health スレッド）を
+   生かしたまま UI を動かす。E2E で両ポート同時応答とグレースフル停止を実証。
 
 2. **Lint 64 件（P1 / 品質ゲート）**
    未使用 import・import 順序・未使用ループ変数等。`ruff --fix` + Streamlit ページの
@@ -125,11 +135,14 @@ Polymarket コピートレードボットである。したがって以下のよ
 
 ## 5. E2E / 手動確認チェックリスト
 
-`AUDIT.md` Step 2.5 は本来ブラウザ E2E を要求するが、Streamlit + 外部 RPC/CLOB 依存のため
-自動 E2E は本監査範囲外。以下は人間による手動確認項目。
+`AUDIT.md` Step 2.5 のうち、ローカル Postgres + web 実起動で検証できた範囲は本監査で実施済み
+（`docs/AUDIT_REPORT.md` §3）: Streamlit `:8501` 応答 / health `:8080` 応答 / SIGTERM 伝播。
+外部 RPC/CLOB・本番配信に依存する以下は人間による手動確認項目。
 
-- [ ] Fly.io デプロイ後、`/readyz`（health, internal 8080）が 200 を返す
-- [ ] Streamlit UI（8501）が表示され、認証（P0 対応後）が機能する
+- [x] web 実起動で `/readyz`（health, internal 8080）が 200（migration/db 状態込み）を返す ※監査で確認
+- [x] Streamlit UI（8501）が起動応答する ※監査で確認（認証 P0 対応は別途）
+- [ ] Fly.io 本番デプロイ後にも上記 2 ポートが応答する（本番環境での再確認）
+- [ ] 認証（P0 対応後）が機能する
 - [ ] indexer が Polygon RPC に接続し backfill が進む（`Jobs` ページの live log）
 - [ ] Phase 0 を 1 周実行し result JSON が出る（README 手順）
 - [ ] kill switch ON/OFF が execution layer に反映される
