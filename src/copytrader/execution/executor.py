@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select, update
@@ -89,14 +89,33 @@ def _is_active_watchlist(addr: bytes) -> bool:
         return bool(w and w.active)
 
 
-def _execute_signal(sig: Signal, halt_reasons: list[str]) -> None:
-    """Execute one signal: risk check (already done in caller) → CLOB."""
-    # Snapshot reason if halted
-    if halt_reasons:
-        _mark_signal(sig.id, SIGNAL_SKIPPED,
-                     skip_reason=f"halted:{','.join(halt_reasons)}")
-        return
+def _recover_stale_executing(stale_seconds: int = 60) -> int:
+    """Reset signals stuck in EXECUTING back to PENDING after a crash.
 
+    A signal is claimed (PENDING→EXECUTING) in its own committed transaction;
+    the execution row + signal status update happen atomically in a *separate*
+    transaction. So the only orphan state is: claimed, then the process died
+    before the execution transaction ran → EXECUTING with no executions row.
+    Those are safe to retry (no order was placed). Signals that DO have an
+    executions row are left untouched (they really ran). Returns count reset.
+    """
+    cutoff = datetime.now(UTC) - timedelta(seconds=stale_seconds)
+    with get_session() as s:
+        result = s.execute(
+            update(Signal)
+            .where(Signal.status == SIGNAL_EXECUTING)
+            .where(Signal.execute_after < cutoff)
+            .where(~Signal.id.in_(select(Execution.signal_id)))
+            .values(status=SIGNAL_PENDING, skip_reason=None)
+        )
+        n = result.rowcount or 0
+    if n:
+        log.warning("recovered %d stale EXECUTING signals -> PENDING", n)
+    return n
+
+
+def _execute_signal(sig: Signal) -> None:
+    """Execute one signal: risk check (already done in caller) → CLOB."""
     # Re-check watchlist (might have been deactivated)
     if not _is_active_watchlist(sig.address):
         _mark_signal(sig.id, SIGNAL_SKIPPED, skip_reason="watchlist_inactive")
@@ -196,17 +215,25 @@ async def run_executor(*, tick_seconds: int = 2) -> None:
     log.info("executor: starting, tick=%ds", tick_seconds)
     while True:
         try:
+            # Recover signals orphaned in EXECUTING by a prior crash.
+            _recover_stale_executing()
+
             risk = evaluate_risk(persist=True)
+            if not risk.allow_new_orders:
+                # Kill switch / halt = PAUSE, not discard: leave PENDING signals
+                # untouched so they resume when the halt clears (matches the
+                # Help page's "溜まった signal" behaviour). Do not claim/consume.
+                log.info("executor: halted (%s); not claiming signals",
+                         risk.halted_reasons)
+                await asyncio.sleep(tick_seconds)
+                continue
+
             claimed = _claim_pending()
             if claimed:
-                log.info(
-                    "executor: %d signals claimed (allow=%s, halted=%s)",
-                    len(claimed), risk.allow_new_orders, risk.halted_reasons,
-                )
-            halt_reasons = list(risk.halted_reasons) if not risk.allow_new_orders else []
+                log.info("executor: %d signals claimed", len(claimed))
             for sig in claimed:
                 try:
-                    _execute_signal(sig, halt_reasons)
+                    _execute_signal(sig)
                 except Exception as e:  # noqa: BLE001
                     log.exception("executor failed on signal %s: %s", sig.id, e)
                     _mark_signal(sig.id, SIGNAL_REJECTED,
