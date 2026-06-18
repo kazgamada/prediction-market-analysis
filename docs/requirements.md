@@ -68,6 +68,14 @@ Polymarket コピートレードボットである。したがって以下のよ
    （migration `0003`）、部分 unique index + `ON CONFLICT DO NOTHING` で**レースセーフに冪等化**。
    回帰テスト `tests/integration/test_signal_dedup.py`（3 本）を追加。
 
+6. **backfill カーソルの取りこぼし防止（実害バグ / P1・敵対的査読を起点に検出）**
+   `iter_logs` は並行実行のチャンクを**完了順（ブロック順でない）**に yield するが、旧実装は
+   チャンクごとにカーソルを単調前進させていた。このためクラッシュ時に下位チャンクを取りこぼし、
+   また失敗チャンクを飛ばして上位チャンクがカーソルを進めると当該範囲が二度と再走査されなかった。
+   → カーソルを「`from_block` から連続して完了した区間の末尾」= 真の low-water mark に変更
+   （`backfill.py`）。失敗/未到着チャンクが frontier を堰き止め、次 catchup で再走査される（冪等）。
+   liveness 優先の dead-letter 設計は維持。回帰テスト `tests/integration/test_backfill_cursor.py`（4 本）。
+
 1. **マイグレーション自己修復の本番クラッシュ（実害バグ / P1）**
    `src/copytrader/db/engine.py` の `_clear_stale_alembic_state` が DROP するテーブルを
    ハードコード列挙しており、`0002`（phase1）で追加された `market_resolutions` 等が漏れていた。
@@ -121,13 +129,12 @@ Polymarket コピートレードボットである。したがって以下のよ
 
 ### P1（リリース前に必須）
 
-- **E-6. kill switch / halt のレース（要設計判断）** — risk 評価→claim→SKIP の順序で tick 内の
-  リスク変化が無視され、halt 中に claim された signal が EXECUTING で孤児化する（`executor.py:199-209`）。
-- **E-7. backfill の取りこぼし（要設計判断）** — 失敗チャンクを dead-letter に逃がしつつカーソルを
-  単調前進させるため、dead-letter retry が失敗するとコピー元トレードを永久に取りこぼす
-  （`backfill.py:65-118` / `cursor.py:46`）。
-  > E-6/E-7 は資金安全に直結する P1 だが、修正に実行レイヤ/インデクサのアーキ判断を伴うため、
-  > 本書では証拠付きで報告し修正方針を提示するに留めた（推測で実装しない原則）。要ユーザー判断。
+- **E-6. executor のクラッシュ復旧 / halt セマンティクス（要設計判断・未実装）** — ①claim 後〜CLOB
+  完了前のクラッシュで signal が EXECUTING のまま滞留し再処理されない。②halt 中は signal を
+  SKIPPED で破棄する実装だが Help ページの「溜まった signal」=保留と矛盾（`executor.py:54-98`）。
+  > 資金経路（執行）の復旧ロジックと halt 方針の確定を伴い、誤修正は二重発注/取りこぼしを生むため、
+  > 証拠付きで報告し未実装とした（推測で実装しない原則）。要ユーザー判断。
+  > なお E-7（backfill 取りこぼし）は §3 で修正済み。
 - **B-1. Docker / Fly.io ビルドの実証** — 本監査環境では Docker daemon 不在のため
   `docker build` を未実行。CI（`.github/workflows`）でのビルド成功を要確認。
 - **B-2. 本番環境変数の充足確認** — `POLYGON_RPC_HTTP/WS`、`DATABASE_URL`、（実行時）
