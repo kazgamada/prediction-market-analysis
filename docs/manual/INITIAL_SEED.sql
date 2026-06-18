@@ -63,5 +63,7 @@ VALUES
   ('gamma_resolve_fetch', '0 * * * *', 'gamma_resolve_fetch',
    '{}', now() + interval '5 minutes', true),
   ('daily_summary_telegram', '0 0 * * *', 'daily_summary_telegram',
-   '{}', now() + interval '3 hours', true)
+   '{}', now() + interval '3 hours', true),
+  ('balance_refresh', '@every:10m', 'balance_refresh',
+   '{}', now() + interval '2 minutes', true)
 ON CONFLICT (name) DO NOTHING;

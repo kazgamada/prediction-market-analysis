@@ -121,6 +121,10 @@ def seed_default_schedule() -> None:
          {}, now + timedelta(hours=2)),
         ("daily_summary_telegram", "0 0 * * *", "daily_summary_telegram",
          {}, now + timedelta(hours=3)),
+        # Refresh on-chain USDC/MATIC balances for the risk floors. Fail-soft
+        # when TRADER_ADDRESS / RPC are unset, so safe to always schedule.
+        ("balance_refresh", "@every:10m", "balance_refresh",
+         {}, now + timedelta(minutes=2)),
     ]
     with get_session() as s:
         for name, cron_expr, kind, params, next_run in defaults:
