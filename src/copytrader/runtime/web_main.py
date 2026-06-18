@@ -15,6 +15,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import signal
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -128,23 +130,38 @@ def main() -> None:
     # Step 2: migrate (best-effort; degraded mode if it fails).
     _run_migrations_safely()
 
-    # Step 3: hand off to streamlit.
+    # Step 3: run streamlit as a child process (NOT os.execvp).
+    # execvp replaces this process image, which would kill the daemon health
+    # thread started above — leaving /healthz /readyz on $HEALTH_PORT dead for
+    # the entire life of the UI (the 8080 service in fly.toml). Spawning a
+    # child keeps the parent (and the health server) alive while the UI runs,
+    # so observability survives boot, exactly as the module docstring promises.
     app_py = Path(__file__).parent.parent / "web" / "app.py"
-    argv = [
-        "streamlit", "run", str(app_py),
+    st_args = [
+        "run", str(app_py),
         "--server.port", os.environ.get("STREAMLIT_SERVER_PORT", "8501"),
         "--server.address", os.environ.get("STREAMLIT_SERVER_ADDRESS", "0.0.0.0"),
         "--server.headless", "true",
         "--browser.gatherUsageStats", "false",
     ]
-    log.info("exec: %s", " ".join(argv))
     try:
-        os.execvp("streamlit", argv)
+        log.info("spawn: streamlit %s", " ".join(st_args))
+        proc = subprocess.Popen(["streamlit", *st_args])
     except FileNotFoundError:
-        log.exception("streamlit not on PATH; falling back to python -m streamlit")
-        argv2 = [sys.executable, "-m", "streamlit", *argv[1:]]
-        os.execvp(sys.executable, argv2)
-    sys.exit(1)
+        log.warning("streamlit not on PATH; falling back to python -m streamlit")
+        proc = subprocess.Popen([sys.executable, "-m", "streamlit", *st_args])
+
+    # Forward termination signals so Fly's graceful shutdown reaches streamlit.
+    def _forward(signum: int, _frame: object) -> None:
+        log.info("received signal %s; forwarding to streamlit", signum)
+        proc.send_signal(signum)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, _forward)
+
+    rc = proc.wait()
+    log.info("streamlit exited with code %s", rc)
+    sys.exit(rc)
 
 
 if __name__ == "__main__":
