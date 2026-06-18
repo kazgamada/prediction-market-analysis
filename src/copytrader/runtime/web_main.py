@@ -8,7 +8,9 @@ Boots:
      responds with the failure reason. This trades a small race (between
      server-bind and migrate-start) for huge observability.
   3. alembic migration (best-effort; failure is logged but does NOT exit)
-  4. Streamlit on $STREAMLIT_SERVER_PORT (replaces the current process)
+  4. Streamlit on $STREAMLIT_SERVER_PORT as a CHILD process. The parent stays
+     alive (running the health server thread) and forwards termination signals
+     to the child, so /healthz /readyz keep answering for the life of the UI.
 """
 from __future__ import annotations
 
@@ -73,8 +75,9 @@ def _rpc_check_factory():
 
 def _start_health_in_thread() -> None:
     """Start the health server in a daemon thread so the main thread can
-    proceed to exec streamlit. The server keeps running even after main
-    threads have moved on — until execvp replaces the process image.
+    proceed to launch streamlit. The parent process is kept alive (it blocks
+    on the streamlit child), so this thread keeps answering for the life of
+    the UI.
     """
     rpc_check = _rpc_check_factory()
     health = HealthServer(settings.health_port, rpc_check)
@@ -144,22 +147,27 @@ def main() -> None:
         "--server.headless", "true",
         "--browser.gatherUsageStats", "false",
     ]
-    try:
-        log.info("spawn: streamlit %s", " ".join(st_args))
-        proc = subprocess.Popen(["streamlit", *st_args])
-    except FileNotFoundError:
-        log.warning("streamlit not on PATH; falling back to python -m streamlit")
-        proc = subprocess.Popen([sys.executable, "-m", "streamlit", *st_args])
+    # Hold a slot for the child so the signal handler (registered BEFORE the
+    # child is spawned, to avoid a TERM-in-the-gap race) can forward to it.
+    child: dict[str, subprocess.Popen | None] = {"proc": None}
 
-    # Forward termination signals so Fly's graceful shutdown reaches streamlit.
     def _forward(signum: int, _frame: object) -> None:
         log.info("received signal %s; forwarding to streamlit", signum)
-        proc.send_signal(signum)
+        proc = child["proc"]
+        if proc is not None:
+            proc.send_signal(signum)
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, _forward)
 
-    rc = proc.wait()
+    try:
+        log.info("spawn: streamlit %s", " ".join(st_args))
+        child["proc"] = subprocess.Popen(["streamlit", *st_args])
+    except FileNotFoundError:
+        log.warning("streamlit not on PATH; falling back to python -m streamlit")
+        child["proc"] = subprocess.Popen([sys.executable, "-m", "streamlit", *st_args])
+
+    rc = child["proc"].wait()
     log.info("streamlit exited with code %s", rc)
     sys.exit(rc)
 
