@@ -59,14 +59,29 @@ def get_job(job_id: int) -> Job | None:
         return row
 
 
+def heartbeat(job_id: int) -> None:
+    """Bump the job's liveness beat so the lease-expiry sweep won't kill it."""
+    with get_session() as s:
+        s.execute(
+            update(Job).where(Job.id == job_id).values(heartbeat_at=datetime.now(UTC))
+        )
+
+
 def append_log(job_id: int, message: str, level: int = 20) -> None:
     with get_session() as s:
         s.add(JobLog(job_id=job_id, message=message, level=level))
+        s.execute(
+            update(Job).where(Job.id == job_id).values(heartbeat_at=datetime.now(UTC))
+        )
 
 
 def set_progress(job_id: int, progress: dict[str, Any]) -> None:
     with get_session() as s:
-        s.execute(update(Job).where(Job.id == job_id).values(progress=progress))
+        s.execute(
+            update(Job)
+            .where(Job.id == job_id)
+            .values(progress=progress, heartbeat_at=datetime.now(UTC))
+        )
 
 
 def set_result(job_id: int, result: dict[str, Any]) -> None:
@@ -120,6 +135,11 @@ def _claim_one(s: Session, worker_id: str) -> Job | None:
     stale (worker SIGKILL'd by Fly OOM, container restart, etc.). Without
     this, jobs claimed by a now-dead worker sit at RUNNING forever and
     block the operator's understanding of queue state.
+
+    Staleness is measured from the heartbeat (bumped on every log/progress
+    write), falling back to started_at when a job has never beaten. This keeps
+    a long-but-alive job (e.g. a multi-hour backfill emitting progress) from
+    being falsely killed by a fixed started_at threshold.
     """
     s.execute(text(
         "UPDATE jobs SET status='FAILED', "
@@ -127,7 +147,7 @@ def _claim_one(s: Session, worker_id: str) -> Job | None:
         "  finished_at=NOW() "
         "WHERE status='RUNNING' "
         "  AND started_at IS NOT NULL "
-        "  AND started_at < NOW() - INTERVAL '30 minutes'"
+        "  AND COALESCE(heartbeat_at, started_at) < NOW() - INTERVAL '30 minutes'"
     ))
     s.flush()
 
@@ -146,6 +166,7 @@ def _claim_one(s: Session, worker_id: str) -> Job | None:
         .values(
             status="RUNNING",
             started_at=datetime.now(UTC),
+            heartbeat_at=datetime.now(UTC),
             worker_id=worker_id,
         )
     )

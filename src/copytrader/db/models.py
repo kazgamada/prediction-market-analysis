@@ -163,6 +163,10 @@ class Job(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Liveness beat (alembic 0004). Bumped on every log/progress write so the
+    # lease-expiry sweep distinguishes a long-but-alive job from a dead worker
+    # (a fixed started_at threshold falsely killed jobs running > the window).
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     worker_id: Mapped[str | None] = mapped_column(Text)
     __table_args__ = (Index("jobs_status_idx", "status", "created_at"),)
@@ -224,7 +228,7 @@ class MarketResolution(Base):
 class Execution(Base):
     __tablename__ = "executions"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    signal_id: Mapped[int] = mapped_column(ForeignKey("signals.id"))
+    signal_id: Mapped[int] = mapped_column(ForeignKey("signals.id", ondelete="CASCADE"))
     clob_order_id: Mapped[str | None] = mapped_column(Text)
     token_id: Mapped[Decimal] = mapped_column(Numeric(78, 0))
     side: Mapped[int] = mapped_column(SmallInteger)
@@ -260,7 +264,7 @@ class Position(Base):
 class TradePnl(Base):
     __tablename__ = "trade_pnl"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    execution_id: Mapped[int] = mapped_column(ForeignKey("executions.id"))
+    execution_id: Mapped[int] = mapped_column(ForeignKey("executions.id", ondelete="CASCADE"))
     token_id: Mapped[Decimal] = mapped_column(Numeric(78, 0))
     realized_usdc: Mapped[Decimal] = mapped_column(Numeric(18, 6))
     fees_usdc: Mapped[Decimal] = mapped_column(
