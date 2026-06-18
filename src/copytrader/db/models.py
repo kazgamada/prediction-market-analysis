@@ -111,13 +111,28 @@ class Signal(Base):
     size_usdc: Mapped[Decimal] = mapped_column(Numeric(28, 6))
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     source: Mapped[str] = mapped_column(Text)
+    # Originating trade identity (alembic 0003). De-duplicates signals at the
+    # DB level: catchup and the live WS stream can both observe the same
+    # OrderFilled log, and without this a single source trade would create two
+    # signals -> two copy orders. Nullable so manually-injected signals (no
+    # source trade) remain allowed.
+    tx_hash: Mapped[bytes | None] = mapped_column(LargeBinary)
+    log_index: Mapped[int | None] = mapped_column(Integer)
     # Phase 1 execution lifecycle columns (alembic 0002)
     detected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     execute_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(Text, server_default="PENDING")
     skip_reason: Mapped[str | None] = mapped_column(Text)
     execution_id: Mapped[int | None] = mapped_column()
-    __table_args__ = (Index("signals_ts_idx", text("ts DESC")),)
+    __table_args__ = (
+        Index("signals_ts_idx", text("ts DESC")),
+        Index(
+            "signals_src_trade_uq",
+            "tx_hash", "log_index",
+            unique=True,
+            postgresql_where=text("tx_hash IS NOT NULL"),
+        ),
+    )
 
 
 class RiskEvent(Base):

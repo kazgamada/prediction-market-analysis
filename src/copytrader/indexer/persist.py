@@ -39,9 +39,11 @@ def persist_trades(trades: Sequence[DecodedTrade]) -> int:
 
 
 def _emit_signals_for_watchlist(trades: Sequence[DecodedTrade]) -> None:
-    """For each newly-persisted trade whose taker is on the active watchlist,
-    record a signals row. Idempotent via (address, token_id, ts) uniqueness
-    is enforced by the executor's de-dup, not at the DB level here.
+    """For each trade whose taker is on the active watchlist, record a signals
+    row. Idempotent on the source trade identity (tx_hash, log_index) via a
+    partial unique index + ON CONFLICT DO NOTHING in `maybe_record_signal`,
+    so the same OrderFilled log observed by both catchup and the live stream
+    yields exactly one signal (no double-spend).
     """
     from copytrader.execution.signal_consumer import maybe_record_signal
 
@@ -54,6 +56,8 @@ def _emit_signals_for_watchlist(trades: Sequence[DecodedTrade]) -> None:
             price=row["price"],
             size_usdc=row["size_usdc"],
             trade_ts=row["ts"],
+            tx_hash=row["tx_hash"],
+            log_index=int(row["log_index"]),
         )
 
 
