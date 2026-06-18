@@ -34,8 +34,9 @@ Polymarket コピートレードボットである。したがって以下のよ
   状態は Postgres に一元化。
 - **完成度の所感**: コア（indexer / job queue / PnL / rank / risk / execution scaffolding）は実装済みで
   テストも整備されている。**リリースブロッカーはコード品質ゲートと運用前提（認証・本番設定）に集中**。
-- **リリース可否判定**: 現時点では **不可**。P0（Web UI 認証無効）と、本監査で修正した
-  品質ゲート（lint・テスト）の green 化が前提。本書の P0/P1 を消化すれば限定リリース可。
+- **リリース可否判定**: コード起因の P0〜P3 はすべて修正済み（認証・二重発注・マイグレーション・
+  health・backfill・executor・lint 等）。残るは**環境/運用依存**（Docker/Fly 実ビルド・本番 secrets・
+  CI 常時化）のみで、これらを満たせば限定リリース可。`WEB_PASSWORD` を必ず設定すること。
 
 ---
 
@@ -48,7 +49,7 @@ Polymarket コピートレードボットである。したがって以下のよ
 | 依存導入 | `pip install -e ".[dev]"` | OK | OK |
 | Lint | `ruff check src tests` | **64 errors（exit 1）** | **All checks passed（exit 0）** |
 | Unit テスト | `pytest tests/unit -q` | 42 passed | 42 passed |
-| 統合テスト | `pytest -q`（Postgres 16） | **2 failed / 12 errors** | **66 passed** |
+| 統合テスト | `pytest -q`（Postgres 16） | **2 failed / 12 errors** | **85 passed**（回帰テスト多数追加） |
 | import スモーク | 全モジュール import | 53 OK（`web.app` は DB 接続のため除外） | 同左 |
 | 秘密情報 grep | `sk_live` 等 | ハードコード無し（テスト用文字列のみ） | — |
 | 依存脆弱性 | `pip-audit` | 5 件すべて venv 同梱 pip のみ（ランタイム依存は健全） | — |
@@ -96,6 +97,21 @@ Polymarket コピートレードボットである。したがって以下のよ
    未使用 import・import 順序・未使用ループ変数等。`ruff --fix` + Streamlit ページの
    意図的な遅延 import への `# noqa: E402` 整理で解消。
 
+7. **追加で全 P0〜P3 のコード課題を解消（敵対的査読由来 + 残課題）**
+   - **A-1（P0 認証）**: `require_password()` を**セッション維持型パスワードゲート**に再実装
+     （`WEB_PASSWORD` 設定時のみ要求 / 定数時間比較 / `session_state` 保持で再認証回避）。
+     未設定時は開放（dev）。`.env.example` も実態に合わせ更新。
+   - **E-6（P1 executor）**: `_recover_stale_executing` で executions 行の無い stale EXECUTING のみ
+     PENDING に戻す（行があれば不介入＝二重発注不可）。halt を **pause** 化（claim せず PENDING 保持）。
+   - **E-8（P2 Position）**: flat 後の再建玉を新規 open 扱いに（side/avg リセット）。査読の「PK に
+     side 追加」案は close セマンティクスを壊すため不採用。
+   - **E-9（P2 jobs lease）**: `heartbeat_at`（migration 0004）追加。log/progress 書込で beat 更新、
+     失効判定を `COALESCE(heartbeat_at, started_at)` 基準にして長時間ジョブの誤殺を防止。
+   - **E-10（P3 FK）**: migration 0005 で signal→execution→trade_pnl を `ON DELETE CASCADE` 化。
+   - **D-1（P3 残高）**: `balance_client`（USDC/MATIC を RPC 取得）+ `balance_refresh` ジョブを実装。
+     risk のガードを「None=未取得→halt せず / 実値=0 含め floor 判定」に修正（安全側へ）。
+   - 各々に回帰テスト追加（executor 4 / position 2 / heartbeat 3 / auth・balance unit 3）。
+
 3. **統合テストの time-bomb（P2 / テスト健全性）**
    `tests/integration/test_rank_streaming.py` が `ts=datetime(2026,5,12)` を絶対値で seed し、
    `window_days` の相対ウィンドウ（`now()-window`）から外れて常時失敗していた。
@@ -112,46 +128,28 @@ Polymarket コピートレードボットである。したがって以下のよ
 
 ---
 
-## 4. 残課題ロードマップ（未対応 / 要判断）
+## 4. 残課題ロードマップ
 
-### P0（リリース前に必須・要ユーザー判断）
+> コード起因の P0〜P3 はすべて修正済み（§3）。残るは**デプロイ環境/運用に依存し、
+> 本リポジトリのコード変更では完結しない**項目のみ。
 
-- **A-1. Web UI の認証が無効化されている** 🔴
-  - 証拠: `src/copytrader/web/auth.py:9-10` — `require_password()` が `return` のみの no-op。
-    コメントに「頻繁な再認証要求を避けるため無効化」とある。
-  - 影響: Fly.io の公開 URL（`fly.toml` の `http_service`）に到達できれば誰でも UI を操作可能。
-    本ツールは kill switch・手動 order・watchlist 編集など **資金移動につながる操作** を持つため、
-    無認証公開は重大なアクセス制御欠如。
-  - 推奨対応: パスワードゲートの再有効化（セッション維持で再認証頻度を下げる実装）か、
-    Fly.io 側のネットワーク制限（Tailscale / basic auth proxy / IP allowlist）。
-    `.env.example` / README は依然 `WEB_PASSWORD` を案内しており実態と乖離している点も是正。
-  - **意図的に無効化された挙動のため、再有効化の方式は本書では実装せず要ユーザー判断とする。**
+### 環境・運用（要確認 / 要作業）
 
-### P1（リリース前に必須）
-
-- **E-6. executor のクラッシュ復旧 / halt セマンティクス（要設計判断・未実装）** — ①claim 後〜CLOB
-  完了前のクラッシュで signal が EXECUTING のまま滞留し再処理されない。②halt 中は signal を
-  SKIPPED で破棄する実装だが Help ページの「溜まった signal」=保留と矛盾（`executor.py:54-98`）。
-  > 資金経路（執行）の復旧ロジックと halt 方針の確定を伴い、誤修正は二重発注/取りこぼしを生むため、
-  > 証拠付きで報告し未実装とした（推測で実装しない原則）。要ユーザー判断。
-  > なお E-7（backfill 取りこぼし）は §3 で修正済み。
 - **B-1. Docker / Fly.io ビルドの実証** — 本監査環境では Docker daemon 不在のため
   `docker build` を未実行。CI（`.github/workflows`）でのビルド成功を要確認。
 - **B-2. 本番環境変数の充足確認** — `POLYGON_RPC_HTTP/WS`、`DATABASE_URL`、（実行時）
   `CLOB_API_KEY/SECRET/PASSPHRASE`・`TRADER_PRIVATE_KEY`、`TELEGRAM_*` の Fly.io secrets 設定。
   完全リストは §8。
 
-### P2（リリース後 2 週間以内）
+### 運用（推奨）
 
 - 統合テストを CI で常時実行（Postgres サービスコンテナ）。現状 time-bomb が
   すり抜けていた事実は「DB 付きテストが CI で回っていない可能性」を示唆 → 要確認。
 - `web.app` がモジュール import 時に DB 接続する設計（import スモークで顕在化）。
-  Streamlit の実行モデル上は許容だが、テスト容易性のため遅延化を検討。
+  Streamlit の実行モデル上は許容だが、テスト容易性のため遅延化を検討（任意）。
+- `balance_refresh` ジョブを scheduler（`scheduled_jobs`）に登録し定期実行（execution 有効時）。
 
-### P3（改善余地）
-
-- `risk/evaluator.py:178` の TODO（USDC/MATIC 残高フック、PR #4 連携）。
-- パフォーマンス・デッドコード整理は現時点で顕著な問題なし。
+> その他のコード課題（A-1/E-1/E-5〜E-10/F-1/F-2/D-1）は §3 ですべて修正済み。
 
 ---
 
@@ -162,9 +160,9 @@ Polymarket コピートレードボットである。したがって以下のよ
 外部 RPC/CLOB・本番配信に依存する以下は人間による手動確認項目。
 
 - [x] web 実起動で `/readyz`（health, internal 8080）が 200（migration/db 状態込み）を返す ※監査で確認
-- [x] Streamlit UI（8501）が起動応答する ※監査で確認（認証 P0 対応は別途）
+- [x] Streamlit UI（8501）が起動応答する ※監査で確認（`WEB_PASSWORD` 設定時もログインゲート付きで起動確認）
 - [ ] Fly.io 本番デプロイ後にも上記 2 ポートが応答する（本番環境での再確認）
-- [ ] 認証（P0 対応後）が機能する
+- [ ] `WEB_PASSWORD` を設定し、ログインゲートが本番で機能する
 - [ ] indexer が Polygon RPC に接続し backfill が進む（`Jobs` ページの live log）
 - [ ] Phase 0 を 1 周実行し result JSON が出る（README 手順）
 - [ ] kill switch ON/OFF が execution layer に反映される

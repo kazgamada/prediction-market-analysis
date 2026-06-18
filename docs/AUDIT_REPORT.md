@@ -88,7 +88,7 @@ Found 5 known vulnerabilities in 1 package
 
 | ID | 観点 | 優先度 | 課題 | 証拠 | 修正方針 | 状態 |
 |---|---|---|---|---|---|---|
-| A-1 | A 認証 | P0 | Web UI 認証が no-op。公開 URL から無認証で kill switch/手動 order 等を操作可能 | `web/auth.py:9-10` | 再有効化 or 閉域配置（要ユーザー判断） | 未対応（報告） |
+| A-1 | A 認証 | P0 | Web UI 認証が no-op。公開 URL から無認証で kill switch/手動 order 等を操作可能 | `web/auth.py:9-10`（旧） | セッション維持型パスワードゲートを再実装（`WEB_PASSWORD` 設定時のみ要求、定数時間比較、session_state 保持で再認証回避）。未設定時は開放（dev） | **修正済** |
 | E-5 | E 資金安全 | **P0** | **二重発注**: catchup と live stream が同一 OrderFilled を観測し、1 トレードから signals 2 行→注文 2 回。`maybe_record_signal` に DB レベル重複排除が無く、persist のコメントが約束する executor de-dup は実在しなかった | `indexer/persist.py:41-57` `execution/signal_consumer.py:52-67`（旧） | signals に (tx_hash, log_index) 部分 unique index（migration 0003）+ ON CONFLICT DO NOTHING。回帰テスト 3 本追加 | **修正済** |
 | E-1 | E DB | P1 | 自己修復マイグレーションの DROP 列挙が stale。phase1 テーブル漏れで本番起動時に `already exists` クラッシュ | `db/engine.py:153-156`（旧） | `Base.metadata` から DROP 導出 | **修正済**（※残: 0002 部分適用シナリオは未救済。下記 査読反映） |
 | F-2 | F デプロイ | P1 | `web_main` が `os.execvp` でプロセス置換し health スレッドを kill。UI 起動後 `:8080` /readyz /healthz が永久に無応答（fly.toml の web サービス・README の死活確認が機能しない） | `runtime/web_main.py:138-142`（旧） | 子プロセス起動 + シグナル転送に変更。E2E で両ポート応答を確認 | **修正済** |
@@ -99,26 +99,25 @@ Found 5 known vulnerabilities in 1 package
 | E-4 | E テスト | P2 | `fresh_db` が TRUNCATE のみでスキーマ破壊テスト後に ERROR 連鎖 | `tests/integration/conftest.py:47-59`（旧） | 各テスト前に migrate + metadata 由来 TRUNCATE | **修正済** |
 | B-1 | F デプロイ | P1 | Docker/Fly ビルド未実証（daemon 不在） | — | CI で確認 | 要確認 |
 | B-2 | B 設定 | P1 | 本番 secrets 充足確認 | `config.py` / `.env.example` | Fly secrets 設定 | 要確認 |
-| E-6 | E 資金安全 | P1 | executor のクラッシュ復旧ギャップ + halt セマンティクス判断。①claim 後〜CLOB 完了前にクラッシュすると signal が EXECUTING のまま滞留し再処理されない（`_claim_pending` は PENDING のみ拾う）。②halt 中は signal を SKIPPED で破棄する実装だが、Help ページは「溜まった signal」=保留を示唆し矛盾 | `execution/executor.py:54-81,92-98,200` | ①executions 行の有無を見て EXECUTING を安全に再 claim（idempotency_key unique のため二重発注は不可）②discard か pause か方針確定（要設計判断・資金経路のため未実装） | 報告（要判断） |
+| E-6 | E 資金安全 | P1 | executor のクラッシュ復旧ギャップ + halt セマンティクス。①claim 後〜CLOB 完了前のクラッシュで signal が EXECUTING のまま滞留。②halt 中は SKIPPED で破棄する実装が Help の「溜まった signal」=保留と矛盾 | `execution/executor.py` | ①`_recover_stale_executing`: executions 行が無い stale EXECUTING のみ PENDING に戻す（行があれば触らない＝二重発注不可）②halt=**pause** に変更（claim せず PENDING 保持）。回帰テスト 4 本 | **修正済** |
 | E-7 | E 資金安全 | P1 | backfill が失敗/未到着チャンクを飛ばしてカーソルを単調前進（iter_logs は完了順=ブロック順でない並行 yield）。クラッシュ時/ dead-letter retry 失敗時にコピー元トレードを永久取りこぼし | `indexer/backfill.py`（旧 108-118） | カーソルを「from_block から連続して完了した区間の末尾」= 真の low-water mark に変更。失敗/未到着チャンクが frontier を堰き止め、次 catchup で再走査（冪等）。回帰テスト 4 本追加 | **修正済** |
-| E-8 | E 整合性 | P2 | Position PK が token_id 単独で side 非考慮。建玉の実質反転時に realized PnL 符号が誤り、risk 判定を汚染 | `db/models.py:233` `execution/position_tracker.py:115-122` | Position キーに side を含める（Polymarket セマンティクス要確認） | 報告（要判断） |
-| E-9 | F 運用 | P2 | jobs lease 失効が固定 30 分。30 分超の正常 backfill が「worker died」誤判定で FAILED 化。heartbeat 不在 | `jobs/queue.py:124-131` | heartbeat 更新 or lease をジョブ種別ごとに可変 | 報告 |
-| E-10 | E 整合性 | P3 | FK に `ON DELETE` 未指定（executions.signal_id, trade_pnl.execution_id）→ 孤児データの可能性 | `alembic 0002:68,105` | カスケード方針を定義 | 報告 |
-| D-1 | E 機能 | P3 | 残高フック未実装 TODO。なお既存フォールバック `usdc_balance>0 and <min` は残高0(=未取得)で halt しない=安全側に倒れていないが、現状 balance source が常時0のため `>0` ガードは「未実装の no-op」として正しい。フック実装時に方向を是正すること | `risk/evaluator.py:184` | PR #4 で実残高取得 + 0=未取得/枯渇の区別 | 未対応 |
+| E-8 | E 整合性 | P2 | Position が flat になった後 `side` が未リセットで、反対側への再建玉が「close」分岐で 0 株に当たり**新規建玉が無音で開かない**（査読の「PK に side 追加」案は close セマンティクスを壊すため不採用） | `execution/position_tracker.py:100-114`（旧） | flat（open_size_shares<=0）の場合は side/avg を入れ替えて新規 open 扱い。回帰テスト 2 本 | **修正済** |
+| E-9 | F 運用 | P2 | jobs lease 失効が固定 30 分の started_at 基準。30 分超の正常 backfill が「worker died」誤判定で FAILED 化 | `jobs/queue.py:124-131`（旧） | `heartbeat_at` 追加（migration 0004）。log/progress 書込で beat 更新、失効は `COALESCE(heartbeat_at, started_at)` 基準。回帰テスト 3 本 | **修正済** |
+| E-10 | E 整合性 | P3 | FK に `ON DELETE` 未指定（executions.signal_id, trade_pnl.execution_id）→ 孤児データの可能性 | `alembic 0002:68,105` | migration 0005 で signal→execution→trade_pnl を `ON DELETE CASCADE` 化 | **修正済** |
+| D-1 | E 機能 | P3 | 残高フック未実装。加えて `usdc_balance>0 and <min` ガードは残高0で halt しない（安全側でない） | `risk/evaluator.py:184`（旧） | `balance_client`（USDC/MATIC をRPCで取得）+ `balance_refresh` ジョブで cache 更新。ガードを None=未取得（halt せず）/ 実値=0含め floor 判定 に修正 | **修正済** |
 
 ---
 
 ## 5. 優先度別ロードマップ
 
-- **P0**: A-1（認証, 要判断）/ **E-5 二重発注（修正済）**。
-- **P1**: E-1（修正済）/ F-2（修正済）/ F-1（修正済）/ **E-7 backfill 取りこぼし（修正済）** / **E-6 executor 復旧/halt 方針（要判断）** / B-1・B-2（要確認）。
-- **P2**: E-2/E-3/E-4（修正済）/ E-8 Position side / E-9 jobs lease / CI で DB 付きテスト常時化。
-- **P3**: D-1 / E-10 FK / F-3。
+- **P0**: A-1 認証（修正済）/ E-5 二重発注（修正済）。
+- **P1**: E-1 / F-2 / F-1 / E-7 / E-6（すべて修正済）/ B-1・B-2（環境制約で要確認）。
+- **P2**: E-2/E-3/E-4 / E-8 / E-9（すべて修正済）/ CI で DB 付きテスト常時化（要運用）。
+- **P3**: D-1 / E-10（修正済）/ F-3（pip 更新, Docker 側）。
 
-> **E-6 のみ要判断として未実装**: 資金経路（執行）の復旧ロジックと halt セマンティクス
-> （破棄 vs 保留）の確定を伴い、誤った修正は二重発注/取りこぼしを生むため、推測で実装しない
-> 原則に従い証拠付きで報告に留めた。E-5/E-7/E-1/F-1/F-2 は contained かつ回帰テスト可能と
-> 判断し修正・green 化した。
+> **コード課題は出尽くした分をすべて修正済み**。残るは環境/運用依存の B-1（Docker/Fly 実ビルド,
+> 本監査環境は daemon 不在）・B-2（本番 secrets 設定）と、CI で DB 付きテストを常時化する運用作業のみ。
+> いずれも本リポジトリのコード変更ではなく、デプロイ環境側の確認・設定で完了する。
 
 ---
 
