@@ -175,15 +175,18 @@ def evaluate_risk(*, persist: bool = True) -> RiskCheck:
         if lag is not None and lag > int(_get("halt_indexer_lag_seconds", 120)):
             halted.append("halt_indexer_lag_seconds")
 
-        # USDC / MATIC balance: hook for execution.balance_client (TODO PR #4)
-        # For now use settings overrides as a manual fallback
-        usdc_balance = float(_get("usdc_balance_cache", 0.0))
-        matic_balance = float(_get("matic_balance_cache", 0.0))
-        metrics["usdc_balance"] = usdc_balance
-        metrics["matic_balance"] = matic_balance
-        if usdc_balance > 0 and usdc_balance < float(_get("halt_usdc_min", 500)):
+        # USDC / MATIC balance, refreshed by the balance_refresh job
+        # (execution.balance_client). The cache is None until a reading exists:
+        # None = unknown → cannot halt (no data); a real reading (including 0,
+        # i.e. an empty wallet) → enforce the floor. The previous `> 0` guard
+        # treated an empty wallet as "fine" and never halted — not fail-safe.
+        usdc_raw = _get("usdc_balance_cache", None)
+        matic_raw = _get("matic_balance_cache", None)
+        metrics["usdc_balance"] = float(usdc_raw) if usdc_raw is not None else None
+        metrics["matic_balance"] = float(matic_raw) if matic_raw is not None else None
+        if usdc_raw is not None and float(usdc_raw) < float(_get("halt_usdc_min", 500)):
             halted.append("halt_usdc_min")
-        if matic_balance > 0 and matic_balance < float(_get("halt_matic_min", 1.0)):
+        if matic_raw is not None and float(matic_raw) < float(_get("halt_matic_min", 1.0)):
             halted.append("halt_matic_min")
 
         # Soft limits (don't block, just warn for now; executor enforces skip)

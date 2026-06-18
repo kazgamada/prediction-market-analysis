@@ -128,6 +128,15 @@ class JsonRpcClient:
         result = await self._call("eth_blockNumber", [])
         return int(result, 16)
 
+    async def get_native_balance(self, address: str) -> int:
+        """Native (MATIC/POL) balance in wei."""
+        result = await self._call("eth_getBalance", [address, "latest"])
+        return int(result, 16)
+
+    async def eth_call(self, to: str, data: str) -> str:
+        """Raw eth_call (latest). Returns the hex result string."""
+        return await self._call("eth_call", [{"to": to, "data": data}, "latest"])
+
     async def get_block_timestamp(self, block_number: int) -> int:
         result = await self._call(
             "eth_getBlockByNumber", [hex(block_number), False]

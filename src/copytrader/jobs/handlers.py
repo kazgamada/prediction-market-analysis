@@ -261,6 +261,44 @@ def handle_watchlist_rotate(handle: JobHandle) -> None:
     handle.result(_to_jsonable(summary))
 
 
+def handle_balance_refresh(handle: JobHandle) -> None:
+    """Read on-chain USDC/MATIC balances → settings cache for the risk floors.
+
+    Fail-soft: if TRADER_ADDRESS / RPC are unset, the cache stays untouched
+    (risk treats None as 'unknown' and does not halt on it).
+    """
+    import asyncio as _aio
+
+    from copytrader.chain.client import JsonRpcClient
+    from copytrader.config import settings
+    from copytrader.db import settings_table as _st
+    from copytrader.execution.balance_client import fetch_balances
+
+    if not settings.polygon_rpc_http:
+        handle.log("balance_refresh: POLYGON_RPC_HTTP unset; skipped")
+        return
+
+    async def _run():
+        client = JsonRpcClient(
+            settings.polygon_rpc_http,
+            max_parallel=settings.indexer_max_parallel,
+            max_retries=settings.indexer_max_retries,
+        )
+        try:
+            return await fetch_balances(client)
+        finally:
+            await client.aclose()
+
+    balances = _aio.run(_run())
+    if balances is None:
+        handle.log("balance_refresh: no wallet configured; skipped")
+        return
+    _st.set_("usdc_balance_cache", float(balances["usdc"]))
+    _st.set_("matic_balance_cache", float(balances["matic"]))
+    handle.log(f"balance_refresh: usdc={balances['usdc']} matic={balances['matic']}")
+    handle.result({"usdc": float(balances["usdc"]), "matic": float(balances["matic"])})
+
+
 def handle_daily_summary_telegram(handle: JobHandle) -> None:
     """Send daily Telegram summary (fail-soft if bot not configured)."""
     from datetime import UTC, datetime
@@ -312,4 +350,5 @@ HANDLERS = {
     "gamma_resolve_fetch": handle_gamma_resolve_fetch,
     "watchlist_rotate": handle_watchlist_rotate,
     "daily_summary_telegram": handle_daily_summary_telegram,
+    "balance_refresh": handle_balance_refresh,
 }
