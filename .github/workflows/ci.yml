@@ -37,3 +37,12 @@ jobs:
       - name: alembic migrate
         run: alembic upgrade head
       - run: pytest -q
+
+  docker-build:
+    # Verify the production image builds on every push/PR (B-1) so a broken
+    # Dockerfile is caught here rather than only at `flyctl deploy` time.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build --build-arg GIT_SHA=${GITHUB_SHA::7} -t copytrader:ci .

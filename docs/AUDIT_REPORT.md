@@ -97,8 +97,8 @@ Found 5 known vulnerabilities in 1 package
 | E-2 | E テスト | P2 | 統合テストが絶対時刻 seed で window 外れ常時失敗（time-bomb） | `tests/integration/test_rank_streaming.py:29`（旧） | `now()` 基準 seed | **修正済** |
 | E-3 | E テスト | P2 | `ver == "0001"` の stale 断定（head は 0002） | `tests/integration/test_migration_self_heal.py:56`（旧） | head 動的取得 | **修正済** |
 | E-4 | E テスト | P2 | `fresh_db` が TRUNCATE のみでスキーマ破壊テスト後に ERROR 連鎖 | `tests/integration/conftest.py:47-59`（旧） | 各テスト前に migrate + metadata 由来 TRUNCATE | **修正済** |
-| B-1 | F デプロイ | P1 | Docker/Fly ビルド未実証（daemon 不在） | — | CI で確認 | 要確認 |
-| B-2 | B 設定 | P1 | 本番 secrets 充足確認 | `config.py` / `.env.example` | Fly secrets 設定 | 要確認 |
+| B-1 | F デプロイ | P1 | Docker イメージのビルドが CI で未検証（deploy は Fly remote build のみ） | `.github/workflows/ci.yml` | `docker-build` ジョブを追加し push/PR で検証。Dockerfile のパース/COPY/`pip install -e .`/entrypoint import はローカル検証済（実 pull はサンドボックス網制限） | **対応済（実ビルドは CI）** |
+| B-2 | B 設定 | P1 | 本番 secrets 充足確認（外部依存） | `config.py` / `.env.example` | Fly secrets 設定（人手・本番アクセス要） | 要作業（外部） |
 | E-6 | E 資金安全 | P1 | executor のクラッシュ復旧ギャップ + halt セマンティクス。①claim 後〜CLOB 完了前のクラッシュで signal が EXECUTING のまま滞留。②halt 中は SKIPPED で破棄する実装が Help の「溜まった signal」=保留と矛盾 | `execution/executor.py` | ①`_recover_stale_executing`: executions 行が無い stale EXECUTING のみ PENDING に戻す（行があれば触らない＝二重発注不可）②halt=**pause** に変更（claim せず PENDING 保持）。回帰テスト 4 本 | **修正済** |
 | E-7 | E 資金安全 | P1 | backfill が失敗/未到着チャンクを飛ばしてカーソルを単調前進（iter_logs は完了順=ブロック順でない並行 yield）。クラッシュ時/ dead-letter retry 失敗時にコピー元トレードを永久取りこぼし | `indexer/backfill.py`（旧 108-118） | カーソルを「from_block から連続して完了した区間の末尾」= 真の low-water mark に変更。失敗/未到着チャンクが frontier を堰き止め、次 catchup で再走査（冪等）。回帰テスト 4 本追加 | **修正済** |
 | E-8 | E 整合性 | P2 | Position が flat になった後 `side` が未リセットで、反対側への再建玉が「close」分岐で 0 株に当たり**新規建玉が無音で開かない**（査読の「PK に side 追加」案は close セマンティクスを壊すため不採用） | `execution/position_tracker.py:100-114`（旧） | flat（open_size_shares<=0）の場合は side/avg を入れ替えて新規 open 扱い。回帰テスト 2 本 | **修正済** |
@@ -111,13 +111,13 @@ Found 5 known vulnerabilities in 1 package
 ## 5. 優先度別ロードマップ
 
 - **P0**: A-1 認証（修正済）/ E-5 二重発注（修正済）。
-- **P1**: E-1 / F-2 / F-1 / E-7 / E-6（すべて修正済）/ B-1・B-2（環境制約で要確認）。
-- **P2**: E-2/E-3/E-4 / E-8 / E-9（すべて修正済）/ CI で DB 付きテスト常時化（要運用）。
+- **P1**: E-1 / F-2 / F-1 / E-7 / E-6 / B-1（すべて修正・対応済）/ B-2（外部作業）。
+- **P2**: E-2/E-3/E-4 / E-8 / E-9（すべて修正済）。CI の DB 付きテストは既に常時実行されていた。
 - **P3**: D-1 / E-10（修正済）/ F-3（pip 更新, Docker 側）。
 
-> **コード課題は出尽くした分をすべて修正済み**。残るは環境/運用依存の B-1（Docker/Fly 実ビルド,
-> 本監査環境は daemon 不在）・B-2（本番 secrets 設定）と、CI で DB 付きテストを常時化する運用作業のみ。
-> いずれも本リポジトリのコード変更ではなく、デプロイ環境側の確認・設定で完了する。
+> **コード起因の課題はすべて修正済み**（A-1/E-1/E-5〜E-10/F-1/F-2/D-1）。CI には DB 付きテスト
+> （既存）に加え Docker ビルド検証（B-1, 追加）を備えた。残るは **B-2（Fly への本番 secrets 設定）の
+> みで、これは本番環境アクセスを要する人手作業**であり、本リポジトリのコード変更では完結しない。
 
 ---
 

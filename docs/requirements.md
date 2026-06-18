@@ -135,16 +135,20 @@ Polymarket コピートレードボットである。したがって以下のよ
 
 ### 環境・運用（要確認 / 要作業）
 
-- **B-1. Docker / Fly.io ビルドの実証** — 本監査環境では Docker daemon 不在のため
-  `docker build` を未実行。CI（`.github/workflows`）でのビルド成功を要確認。
+- **B-1. Docker ビルドの CI 検証（対応済み・実ビルドは要外部実行）** — `ci.yml` に `docker-build`
+  ジョブを追加し、push/PR ごとに本番イメージのビルドを検証するようにした（GitHub runner で実行）。
+  本監査環境ではレジストリ pull がネットワークポリシーで 403 となり実ビルド完走は不可だったが、
+  Dockerfile のパース・COPY 対象の存在・`pip install -e .`・3 ランタイム entrypoint の import は
+  ローカル検証済み。実ビルド完走の最終確認は CI（外部）に委譲。
 - **B-2. 本番環境変数の充足確認** — `POLYGON_RPC_HTTP/WS`、`DATABASE_URL`、（実行時）
   `CLOB_API_KEY/SECRET/PASSPHRASE`・`TRADER_PRIVATE_KEY`、`TELEGRAM_*` の Fly.io secrets 設定。
   完全リストは §8。
 
 ### 運用（推奨）
 
-- 統合テストを CI で常時実行（Postgres サービスコンテナ）。現状 time-bomb が
-  すり抜けていた事実は「DB 付きテストが CI で回っていない可能性」を示唆 → 要確認。
+- 統合テストは既に CI（`ci.yml`、Postgres サービス + alembic + pytest）で push/PR ごとに実行
+  されている（当初の「CI で回っていない可能性」は誤りで、実際は回っている。time-bomb は
+  トリガー日以降 CI を赤にしていたはずで、§3 の修正で再び green になる）。
 - `web.app` がモジュール import 時に DB 接続する設計（import スモークで顕在化）。
   Streamlit の実行モデル上は許容だが、テスト容易性のため遅延化を検討（任意）。
 - `balance_refresh` ジョブを scheduler（`scheduled_jobs`）に登録し定期実行（execution 有効時）。
@@ -223,9 +227,12 @@ open http://localhost:8501
 
 ---
 
-## 10. 要確認リスト（推測で埋めていない事項）
+## 10. 要確認リスト（外部依存・本リポジトリのコードでは閉じない事項）
 
-- CI（GitHub Actions）で integration テスト（DB 付き）が実際に回っているか
-- Docker / Fly.io 本番ビルドが現行コードで成功するか
-- Web UI 認証無効化が意図通り（運用上許容される閉域配置か）
-- `WEB_PASSWORD` を fail-fast にする README/`.env.example` の記述を実態に合わせるか
+- **B-2. 本番 secrets の設定** — Fly.io に `WEB_PASSWORD`（必須化）、`POLYGON_RPC_HTTP/WS`、
+  `DATABASE_URL`、（execution 有効時）`CLOB_*`・`TRADER_PRIVATE_KEY`・`TRADER_ADDRESS`、
+  `TELEGRAM_*` を設定する（人手・本番環境アクセスが必要）。完全リストは §8。
+- Docker 実ビルドの最終確認は `ci.yml` の `docker-build` ジョブ（GitHub runner）に委譲済み
+  （本監査環境はレジストリ pull がネットワーク制限で不可）。
+- 解決済み（参考）: CI は DB 付き統合テストを実行している（`ci.yml`）。Web UI 認証は
+  セッション維持型ゲートとして再有効化済み（`WEB_PASSWORD` 設定で有効）。`.env.example` も是正済み。
