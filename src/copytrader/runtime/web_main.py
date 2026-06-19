@@ -122,6 +122,15 @@ def main() -> None:
              settings.git_sha, settings.build_time)
     _dump_boot_env()
 
+    # Fail-fast if WEB_PASSWORD is unset (F20 requirement).
+    if not settings.web_password:
+        log.error(
+            "WEB_PASSWORD is not set. "
+            "Set WEB_PASSWORD in the environment before starting the web process. "
+            "Refusing to start an unauthenticated UI."
+        )
+        sys.exit(1)
+
     # Step 1: health server first so /readyz responds even if migrate fails.
     _start_health_in_thread()
 
