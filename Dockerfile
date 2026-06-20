@@ -26,8 +26,7 @@ COPY src ./src
 RUN pip install --upgrade pip \
  && pip install -e .
 
-ENV PATH="/app/.venv/bin:${PATH}" \
-    PORT=8501
+ENV PORT=8501
 
 EXPOSE 8501 8080
 
