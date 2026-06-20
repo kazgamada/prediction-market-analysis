@@ -91,6 +91,191 @@
 
 特に「ページ内タブを使っている画面」は、タブ名・現URL・分解後のルート構成(URL設計)まで具体的に提案すること。
 
+### 6. コンテキストヘルプ（ホバーツールチップ）
+
+初回ユーザーが直感的に操作を学べるよう、メニュー・ボタン・入力欄に **ホバー時のみ表示されるミニマニュアル** を実装する。
+知っているユーザーのクリック操作を一切邪魔しないこと、ホバーしていない状態はすっきり何も表示しないことを最優先原則とする。
+
+#### 6.1 UX原則（絶対厳守）
+
+| 原則 | 仕様 | 理由 |
+|---|---|---|
+| **表示トリガー: hover のみ** | `mouseenter` から **350ms 経過後**に表示 | 通過クリックは 350ms 未満で離脱するため表示されない |
+| **非表示: hover 離脱** | `mouseleave` から **即時（0ms）** で非表示 | すっきりした状態をデフォルトにする |
+| **クリック時は非表示** | `mousedown` イベントで表示タイマーをキャンセルし、表示中の tooltip も即時閉じる | 操作を知っているユーザーには一切表示しない |
+| **tooltip 自体はクリック不可** | `pointer-events: none` を必ず付与 | tooltip が操作を遮断しない |
+| **モバイルでは完全無効** | `@media (hover: none)` 環境では tooltip を描画しない | タッチデバイスに hover は存在しない |
+| **フォーカス時は表示しない** | キーボードフォーカスでは tooltip を開かない | スクリーンリーダーは `aria-describedby` で内容を読み上げる。視覚 tooltip と分離する |
+
+#### 6.2 コンポーネント設計
+
+**推奨**: `@radix-ui/react-tooltip`（位置計算・アクセシビリティ・viewport overflow が組み込み済み）
+
+```tsx
+// components/ui/help-tooltip.tsx
+import * as RadixTooltip from "@radix-ui/react-tooltip";
+import { TOOLTIPS } from "@/config/tooltips";
+
+type Props = {
+  id: string;                              // tooltips.ts のキー
+  side?: "right" | "top" | "bottom" | "left";  // 既定 "right"（サイドバー用）
+  children: React.ReactNode;
+};
+
+export function HelpTooltip({ id, side = "right", children }: Props) {
+  const content = TOOLTIPS[id];
+  if (!content) return <>{children}</>;    // 未定義キーは何も表示しない（エラーにしない）
+
+  return (
+    <RadixTooltip.Provider delayDuration={350} skipDelayDuration={0}>
+      <RadixTooltip.Root
+        onOpenChange={(open) => {
+          // mousedown（クリック意図）を検知して強制的に閉じる
+          if (open && typeof window !== "undefined") {
+            const cancel = () => {
+              // Radix の open を制御して閉じる（以下の controlled パターン参照）
+            };
+            window.addEventListener("mousedown", cancel, { once: true });
+          }
+        }}
+      >
+        <RadixTooltip.Trigger asChild>{children}</RadixTooltip.Trigger>
+        <RadixTooltip.Portal>
+          <RadixTooltip.Content
+            side={side}
+            sideOffset={8}
+            className="help-tooltip-content"
+            style={{ pointerEvents: "none" }}   // クリック不可
+          >
+            <p className="text-sm font-semibold">{content.title}</p>
+            <p className="text-xs mt-1">{content.body}</p>
+            {content.shortcut && (
+              <p className="text-xs mt-1 text-gray-400">⌨ {content.shortcut}</p>
+            )}
+            <RadixTooltip.Arrow />
+          </RadixTooltip.Content>
+        </RadixTooltip.Portal>
+      </RadixTooltip.Root>
+    </RadixTooltip.Provider>
+  );
+}
+```
+
+**mousedown でクリック時に閉じるための controlled パターン**:
+
+```tsx
+// クリック時の非表示を確実にするため open を state で制御する
+const [open, setOpen] = useState(false);
+
+<RadixTooltip.Root
+  open={open}
+  onOpenChange={setOpen}
+>
+  <RadixTooltip.Trigger
+    asChild
+    onMouseDown={() => setOpen(false)}   // mousedown で即時閉じる
+  >
+    {children}
+  </RadixTooltip.Trigger>
+  ...
+```
+
+#### 6.3 コンテンツ管理
+
+```ts
+// config/tooltips.ts
+export const TOOLTIPS: Record<string, {
+  title: string;   // 15文字以内
+  body: string;    // 60文字以内・「何ができるか」と「気をつけること」を1文ずつ
+  shortcut?: string; // キーボードショートカットや注意事項（任意）
+}> = {
+  // ── サイドバー ナビゲーション ──
+  "nav.skills":       { title: "スキル一覧",   body: "登録済みのスキルを確認・編集できます。スキルはAIが参照するルール集です。" },
+  "nav.archive":      { title: "アーカイブ",   body: "収集したスキル候補の保管庫。「昇格」でアクティブなスキルに追加できます。" },
+  "nav.distribute":   { title: "配布",         body: "スキルを接続済みの全ツールへ配布します。先にドライランで確認してください。" },
+  "nav.crawl":        { title: "クロール",     body: "公開リポジトリからスキル候補を自動収集します。設定した間隔で定期実行できます。" },
+  "nav.account":      { title: "アカウント",   body: "プロフィール・通知設定・プランの確認・APIトークンを管理します。" },
+
+  // ── 主要アクションボタン ──
+  "btn.dry-run":      { title: "ドライラン（試行）", body: "実際には何も変更しません。配布の影響範囲を確認する安全な試行です。" },
+  "btn.distribute":   { title: "配布を実行",   body: "接続リポジトリ全体を上書きします。ドライランで確認後に実行してください。", shortcut: "確認ダイアログあり" },
+  "btn.promote":      { title: "昇格",         body: "アーカイブのスキル候補をアクティブなスキルとして本登録します。" },
+  "btn.reject":       { title: "却下",         body: "このスキル候補を不採用にします。元に戻せません。", shortcut: "取り消し不可" },
+  "btn.generate":     { title: "生成",         body: "AIがスキル内容を自動生成します。生成後に内容を確認・編集してください。" },
+
+  // ── 管理者ページ ──
+  "admin.impersonate": { title: "なりすまり",  body: "このユーザーの画面を管理者が確認できます。操作はすべて監査ログに記録されます。", shortcut: "監査ログに記録" },
+  "admin.freeze":     { title: "凍結",         body: "ユーザーのログインとAPI利用を即時停止します。解除も管理画面から行えます。", shortcut: "即時反映" },
+};
+```
+
+**文言ルール（実装者・コンテンツ作成者が必ず守ること）**:
+
+1. `title`: 15文字以内。そのページ/機能名をそのまま書く
+2. `body`: 60文字以内。「**何ができるか**（1文）」＋「**気をつけること**（1文）」の構成。体言止め禁止（～できます。～してください。）
+3. `shortcut`: 注意・警告・キーショートカット。必要な場合のみ
+4. 存在しない `id` を渡した場合は **何も表示しない**（エラー/console.warn も不要）
+5. ツール固有のキーは `config/tooltips.local.ts` に定義し、`config/tooltips.ts` 末尾でスプレッドしてマージ: `export const TOOLTIPS = { ...BASE_TOOLTIPS, ...LOCAL_TOOLTIPS };`
+
+#### 6.4 スタイリング仕様
+
+```
+┌──────────────────────────────┐
+│ スキル一覧                    │  ← text-sm font-semibold text-white
+│ 登録済みのスキルを確認・編集   │  ← text-xs text-gray-200
+│ できます。スキルは AI が参照   │
+│ するルール集です。             │
+│ ──────────────               │  ← shortcut がある場合のみ表示
+│ ⌨ 確認ダイアログあり          │  ← text-xs text-gray-400
+└──────────────────────────────┘
+   ◀  ← caret（Radix の Arrow）
+```
+
+| プロパティ | 値 |
+|---|---|
+| 背景 | `bg-gray-900`（カラー規約に依らず固定。どの背景の上でも視認できる） |
+| 文字色 | `text-white` |
+| 最大幅 | `max-w-[220px]` |
+| 角丸 | `rounded-lg` |
+| 影 | `shadow-xl` |
+| padding | `px-3 py-2` |
+| `z-index` | `9999`（モーダル・ドロップダウンの上に表示） |
+| アニメーション | `data-[state=delayed-open]:animate-fade-in`（0.1s で表示、即時消去） |
+
+#### 6.5 アクセシビリティ要件
+
+- Radix を使う場合: `role="tooltip"` と `aria-describedby` は Radix が自動付与する
+- 独自実装の場合は必ず手動付与する（省略不可）
+- tooltip はキーボードフォーカスでは開かない（視覚ユーザー専用）
+- スクリーンリーダー向けには、対象要素に `aria-label` か `aria-describedby` で同等の説明を別途提供する
+
+#### 6.6 実装チェックリスト（観点C・UI監査に統合）
+
+- [ ] `@radix-ui/react-tooltip` を `dependencies` に追加（または独自実装）
+- [ ] `components/ui/help-tooltip.tsx` を作成
+  - [ ] `delayDuration={350}` が設定されている
+  - [ ] `mousedown` で表示タイマーキャンセル＋表示中 tooltip を即時閉じる（controlled パターン）
+  - [ ] `pointer-events: none` が tooltip 本体に付与されている
+- [ ] `config/tooltips.ts` を作成し、全メニュー・主要ボタンの文言を記述
+- [ ] `NavItem`・`NavGroup` を `HelpTooltip` でラップ（`components/nav/` 内）
+- [ ] 各ページの主要アクションボタンを `HelpTooltip` でラップ
+- [ ] `@media (hover: none)` 環境では tooltip を描画しない（Radix の場合 `Provider` を条件付きレンダリング）
+- [ ] viewport overflow テスト: サイドバー最下部の項目・右端ボタンで tooltip が画面内に収まるか確認
+
+#### 6.7 監査時のGAP分析（必須出力）
+
+| 規約項目 | 現状 | 準拠/不準拠 | 改修内容 | 工数 |
+|---|---|---|---|---|
+| HelpTooltip コンポーネント（350ms 遅延） | | | | |
+| mousedown でのクリック時キャンセル | | | | |
+| pointer-events: none | | | | |
+| tooltips.ts 一元管理・文言ルール準拠 | | | | |
+| 全ナビゲーション項目への適用 | | | | |
+| 全主要アクションボタンへの適用 | | | | |
+| モバイル（hover: none）での完全非表示 | | | | |
+| アクセシビリティ（role="tooltip" / aria） | | | | |
+| viewport overflow 防止 | | | | |
+
 ---
 
 ## 共通機能要件(全ツール必須・Billing)
