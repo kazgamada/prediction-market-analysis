@@ -95,3 +95,45 @@ def notify_daily_summary(
         f"Status: {status}"
     )
     notify(text, severity="info")
+
+
+def notify_indexer_stopped(*, last_cursor_at: str, stale_seconds: int) -> None:
+    """Indexer が長期停止していることを通知（10 分以上 cursor が更新されない場合）。"""
+    notify(
+        f"*⚠️ Indexer 停止*\n"
+        f"最終 cursor 更新: `{last_cursor_at}`\n"
+        f"停止時間: `{stale_seconds // 60}分`",
+        severity="alert",
+    )
+
+
+def notify_dead_letter_overflow(*, count: int, oldest_error: str) -> None:
+    """dead-letter が 100 件を突破したことを通知。"""
+    notify(
+        f"*⚠️ Dead-letter 上限超過*\n"
+        f"件数: `{count}`\n"
+        f"最古エラー: `{oldest_error}`",
+        severity="warn",
+    )
+
+
+def notify_backtest_divergence(
+    *, expected_roi: float, actual_roi: float, divergence_pct: float,
+) -> None:
+    """実績 ROI が backtest 期待値から 30% 以上乖離したことを通知。"""
+    notify(
+        f"*⚠️ Backtest 乖離*\n"
+        f"期待 ROI: `{expected_roi:+.1f}%`\n"
+        f"実績 ROI: `{actual_roi:+.1f}%`\n"
+        f"乖離: `{divergence_pct:.1f}%`",
+        severity="warn",
+    )
+
+
+def notify_watchlist_rotated(*, added: int, removed: int) -> None:
+    """watchlist rotation が完了したことを通知。"""
+    notify(
+        f"*🔄 Watchlist 更新完了*\n"
+        f"追加: `{added}件` / 削除: `{removed}件`",
+        severity="info",
+    )

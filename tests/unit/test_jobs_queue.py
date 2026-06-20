@@ -9,7 +9,6 @@ import pytest
 
 from copytrader.db.models import Job
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -58,7 +57,6 @@ class TestEnqueueIdempotency:
         assert result == 42
 
     def test_no_idempotency_key_creates_new(self) -> None:
-        new_job = _make_job(job_id=99)
         sess = MagicMock()
         sess.flush.return_value = None
         # add() is called; job.id is set after flush
@@ -81,8 +79,6 @@ class TestEnqueueIdempotency:
         sess = MagicMock()
         # No existing job for the key
         sess.execute.return_value.scalar_one_or_none.return_value = None
-
-        new_job = _make_job(job_id=77, idempotency_key="phase0:2026-06-02")
 
         def _add(obj: Any) -> None:
             obj.id = 77

@@ -259,6 +259,13 @@ def handle_watchlist_rotate(handle: JobHandle) -> None:
     summary = run_watchlist_rotate_job(params)
     handle.log(f"watchlist_rotate done: {summary}")
     handle.result(_to_jsonable(summary))
+    # rotation 完了を Telegram に通知（設定時のみ）
+    if not summary.get("skipped"):
+        from copytrader.telegram.notifier import notify_watchlist_rotated
+        notify_watchlist_rotated(
+            added=int(summary.get("promoted", 0)),
+            removed=int(summary.get("demoted", 0)),
+        )
 
 
 def handle_balance_refresh(handle: JobHandle) -> None:

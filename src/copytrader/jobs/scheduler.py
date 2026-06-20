@@ -89,6 +89,39 @@ def _process_due_once() -> int:
     return enqueued
 
 
+_DEAD_LETTER_ALERT_THRESHOLD = 100
+_prev_dead_letter_alerted = False
+
+
+def _check_dead_letter_overflow() -> None:
+    """dead-letter が閾値を超えたら Telegram 通知（状態変化時のみ）。"""
+    global _prev_dead_letter_alerted
+    try:
+        from sqlalchemy import func, select
+
+        from copytrader.db.models import RpcDeadLetter
+        with get_session() as s:
+            count = s.execute(
+                select(func.count()).select_from(RpcDeadLetter)
+            ).scalar_one()
+            if count >= _DEAD_LETTER_ALERT_THRESHOLD and not _prev_dead_letter_alerted:
+                oldest_row = s.execute(
+                    select(RpcDeadLetter.error_text).order_by(
+                        RpcDeadLetter.created_at.asc()
+                    ).limit(1)
+                ).scalar_one_or_none()
+                from copytrader.telegram.notifier import notify_dead_letter_overflow
+                notify_dead_letter_overflow(
+                    count=count,
+                    oldest_error=str(oldest_row or "unknown"),
+                )
+                _prev_dead_letter_alerted = True
+            elif count < _DEAD_LETTER_ALERT_THRESHOLD:
+                _prev_dead_letter_alerted = False
+    except Exception as e:  # noqa: BLE001
+        log.warning("dead_letter check failed: %s", e)
+
+
 async def run_scheduler(*, interval_seconds: int = 60) -> None:
     """Long-running coroutine: poll scheduled_jobs every interval_seconds."""
     log.info("scheduler: starting, interval=%ds", interval_seconds)
@@ -97,6 +130,10 @@ async def run_scheduler(*, interval_seconds: int = 60) -> None:
             _process_due_once()
         except Exception as e:  # noqa: BLE001
             log.exception("scheduler tick failed: %s", e)
+        try:
+            _check_dead_letter_overflow()
+        except Exception as e:  # noqa: BLE001
+            log.warning("dead_letter check tick error: %s", e)
         await asyncio.sleep(interval_seconds)
 
 

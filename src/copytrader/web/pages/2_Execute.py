@@ -530,6 +530,22 @@ with r1[2], st.container(border=True):
             st.form_submit_button("発注", type="primary",
                                   use_container_width=True, disabled=not confirm)
 
+# Rollout / 昇格条件を r2 の各ブロックで共有するため事前に計算
+try:
+    from copytrader.analysis.rollout import evaluate_promotion_criteria as _eval_promo
+    _promo_result = _eval_promo()
+    _promo_criteria = [
+        (c.label, c.ok, c.current_value)
+        for c in _promo_result.criteria
+    ]
+    _promo_ok_count = sum(1 for c in _promo_result.criteria if c.ok)
+    _promo_total = len(_promo_result.criteria)
+except Exception:  # noqa: BLE001
+    _promo_result = None
+    _promo_criteria = []
+    _promo_ok_count = 0
+    _promo_total = 7
+
 r2 = st.columns([1.5, 1, 1])
 
 with r2[0], st.container(border=True):
@@ -541,7 +557,10 @@ with r2[0], st.container(border=True):
         ("C", "Small", 56, 50, "#1d4ed8"),
         ("D", "Scale", 9999, 250, "#7c3aed"),
     ]
-    CUR, DAY = 1, 18
+    _phase_ids = [p[0] for p in PHASES]
+    _cur_phase = _promo_result.phase if _promo_result else "A"
+    CUR = _phase_ids.index(_cur_phase) if _cur_phase in _phase_ids else 0
+    DAY = _promo_result.elapsed_days if _promo_result else 0
     stp = go.Figure()
     for i, (pid, name, dur, sz, col) in enumerate(PHASES):
         if i < CUR:
@@ -574,10 +593,21 @@ with r2[0], st.container(border=True):
     )
     st.plotly_chart(stp, use_container_width=True, key="stepper")
     ac = st.columns(4)
-    ac[0].button("→ C 昇格", type="primary", use_container_width=True,
-                 disabled=True,
-                 help="昇格条件 7/7 + 停止条件 0 のときだけ活性化。"
-                      "現在: 5/7 + 1 ヒットなので不可。")
+    _next_phase = _phase_ids[CUR + 1] if CUR + 1 < len(_phase_ids) else None
+    _can_promote = (
+        _promo_result is not None and _promo_result.can_promote and _next_phase is not None
+    )
+    ac[0].button(
+        f"→ {_next_phase} 昇格" if _next_phase else "昇格不可",
+        type="primary",
+        use_container_width=True,
+        disabled=not _can_promote,
+        help=(
+            f"昇格条件 {_promo_ok_count}/{_promo_total} + 停止条件 0 の時だけ活性化。"
+            if _can_promote else
+            f"昇格条件 {_promo_ok_count}/{_promo_total} が未達。"
+        ),
+    )
     ac[1].button("継続", use_container_width=True,
                  help="何もせず現フェーズを継続。デフォルト動作。")
     ac[2].button("← A 降格", use_container_width=True,
@@ -588,22 +618,19 @@ with r2[0], st.container(border=True):
               help="全自動発注を即停止 (Kill Switch ON と同等)。")
 
 with r2[1], st.container(border=True):
-    st.markdown(f"##### 昇格条件 (5/7) {help_icon(HELP['promo'])}",
-                unsafe_allow_html=True)
-    promo = [
-        ("経過 ≥ 28d", False, "18日"),
-        ("ROI ≥ +3%", True, "+4.2%"),
-        ("DD ≤ 8%", True, "-5.1%"),
-        ("勝率 ≥ 52%", True, "56.8%"),
-        ("乖離 ≤ 20%", True, "12%"),
-        ("Latency ≤ 3000ms", False, "3,420"),
-        ("kill switch test", True, "3日前"),
-    ]
-    pdf = pd.DataFrame([
-        {"条件": c, "現在": n, " ": "✅" if ok else "⏳"}
-        for c, ok, n in promo
-    ])
-    st.dataframe(pdf, use_container_width=True, hide_index=True, height=185)
+    st.markdown(
+        f"##### 昇格条件 ({_promo_ok_count}/{_promo_total}) "
+        f"{help_icon(HELP['promo'])}",
+        unsafe_allow_html=True,
+    )
+    if _promo_criteria:
+        pdf = pd.DataFrame([
+            {"条件": c, "現在": n, " ": "✅" if ok else "⏳"}
+            for c, ok, n in _promo_criteria
+        ])
+        st.dataframe(pdf, use_container_width=True, hide_index=True, height=185)
+    else:
+        st.caption("(データ取得中…)")
 
 with r2[2], st.container(border=True):
     st.markdown(f"##### 停止条件 (1 ヒット ⚠) {help_icon(HELP['halt'])}",

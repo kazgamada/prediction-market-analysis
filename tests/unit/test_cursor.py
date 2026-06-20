@@ -1,10 +1,9 @@
 """Test cursor monotonic update and ensure_floor (T6, T9 prevention)."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Unit tests that don't require a live database — patch get_session.
@@ -71,7 +70,6 @@ class TestEnsureFloor:
 
         sess.get.side_effect = _get_side_effect
 
-        import contextlib
         ctx = MagicMock()
         ctx.__enter__ = MagicMock(return_value=sess)
         ctx.__exit__ = MagicMock(return_value=False)
@@ -89,7 +87,6 @@ class TestEnsureFloor:
         sess = MagicMock()
         sess.get.return_value = cursor_row
 
-        import contextlib
         ctx = MagicMock()
         ctx.__enter__ = MagicMock(return_value=sess)
         ctx.__exit__ = MagicMock(return_value=False)

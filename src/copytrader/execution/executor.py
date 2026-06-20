@@ -213,6 +213,9 @@ def _mark_signal(sid: int, status: str, *, skip_reason: str | None = None) -> No
 async def run_executor(*, tick_seconds: int = 2) -> None:
     """Long-running coroutine: poll signals every tick_seconds."""
     log.info("executor: starting, tick=%ds", tick_seconds)
+    # 前回 halt 状態を記録し、状態遷移時のみ通知を送る（毎 tick 通知しない）
+    _prev_halted: set[str] = set()
+
     while True:
         try:
             # Recover signals orphaned in EXECUTING by a prior crash.
@@ -225,8 +228,33 @@ async def run_executor(*, tick_seconds: int = 2) -> None:
                 # Help page's "溜まった signal" behaviour). Do not claim/consume.
                 log.info("executor: halted (%s); not claiming signals",
                          risk.halted_reasons)
+                # halt 状態が新たに発生した場合のみ Telegram 通知
+                new_reasons = set(risk.halted_reasons) - _prev_halted
+                if new_reasons:
+                    try:
+                        from copytrader.telegram.notifier import (
+                            notify_halt,
+                            notify_indexer_stopped,
+                        )
+                        notify_halt(list(new_reasons), risk.metrics)
+                        # indexer lag が halt 理由に含まれる場合は専用通知も送る
+                        if "halt_indexer_lag_seconds" in new_reasons:
+                            lag = int(risk.metrics.get(
+                                "indexer_lag_seconds") or 0)
+                            last_cursor = str(risk.metrics.get(
+                                "indexer_last_updated") or "unknown")
+                            notify_indexer_stopped(
+                                last_cursor_at=last_cursor,
+                                stale_seconds=lag,
+                            )
+                    except Exception:  # noqa: BLE001
+                        pass
+                _prev_halted = set(risk.halted_reasons)
                 await asyncio.sleep(tick_seconds)
                 continue
+
+            # halt が解除された場合は状態をリセット
+            _prev_halted = set()
 
             claimed = _claim_pending()
             if claimed:
