@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
-from copytrader.web.sidebar import render_sidebar
 
 from copytrader.web.auth import require_login
+from copytrader.web.sidebar import render_sidebar
 from copytrader.web.theme import (
     inject_theme,
 )

@@ -40,6 +40,15 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
 
+    # AI / OpenRouter（AUDIT.md 共通機能要件）。API キーは DB（app_settings）優先で、
+    # 未設定時に env をフォールバックする。OPENROUTER_MODEL を指定すると DB の
+    # 選択モデルより強制的に優先される。
+    openrouter_api_key: str = ""
+    openrouter_model: str = ""
+    anthropic_api_key: str = ""
+    # USD→JPY 換算レート（管理者ダッシュボードのコスト円換算表示用）
+    usd_jpy_rate: float = 155.0
+
     git_sha: str = "dev"
     build_time: str = "dev"
 

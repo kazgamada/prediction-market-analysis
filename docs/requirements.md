@@ -157,6 +157,53 @@ Polymarket コピートレードボットである。したがって以下のよ
 
 ---
 
+## 4.5 共通機能要件: AIモデル選択（OpenRouter）
+
+AUDIT.md に新規追加された「共通機能要件(全ツール必須・AIモデル選択)」を、本スタック
+（Streamlit / SQLAlchemy + Alembic / Postgres）向けに読み替えて実装した。Next.js の
+API Route / Supabase RLS は、それぞれ Python サービス層関数 / アプリ層 `require_admin()`
+ゲートに対応づけた。
+
+### 実装サマリー
+
+- **DB**: `alembic/versions/0009_ai_model_settings.py` で `app_settings` / `openrouter_config`
+  / `ai_usage_log` の3テーブルを追加。`openrouter_config.is_selected` は部分一意インデックス
+  （`WHERE is_selected`）で「選択は常に高々1件」を担保（AUDIT の「トリガーで1件制約」の代替）。
+- **API キー入力（A-1）**: 管理者ページ `pages/admin_ai_settings.py` に
+  「🔑 OpenRouter API キー」フォームを設置。`type="password"`・保存/削除ボタン・トースト・
+  マスク表示（`sk-or-v1-••••••••xxxx`）。値は `app_settings`（`updated_by` で監査）に永続化。
+- **モデル選択（A-2）**: OpenRouter `/models` を1時間キャッシュで取得し、プルダウン + 選択中
+  バッジ（`#2563eb`）+ コンテキスト長・プロンプト/補完単価を表示。「このモデルを使用する」で
+  `openrouter_config` に保存。到達不可時は最小フォールバック一覧で UI を維持。
+- **ユーザー側制限（B）**: モデル選択 UI は管理者メニュー配下のみ。ユーザー設定画面
+  （`settings_notifications` / `settings_billing`）にモデル選択は存在せず、`profiles`/`users` に
+  `ai_model` 等のカラムも持たない。`resolve_model()` はユーザー ID を引数に取らない。
+- **解決順（F）**: `ai/resolve_model.py` が API キーを **DB(`app_settings.openrouter_api_key`)
+  → env `OPENROUTER_API_KEY` → env `ANTHROPIC_API_KEY`** の順、モデルを **env `OPENROUTER_MODEL`
+  （強制上書き）→ DB 選択モデル** の順で解決。キーが OpenRouter 系に無ければ provider を
+  `anthropic` にフォールバック。キーはサーバ側のみで参照（クライアント非公開）。
+- **使用量ログ / コスト表示（E）**: `ai/usage.py` の `log_usage()` がトークン数・推定コストを
+  `ai_usage_log` に記録。`cost_summary(days)` が過去N日の合計（USD・円換算）・トークン・
+  モデル別内訳を返し、管理者ページの「💰 AI コスト（過去30日）」に表示。
+
+### GAP 分析（AUDIT.md H）
+
+| 機能 | 着手前 | 実装後 | 工数 |
+|---|---|---|---|
+| 管理者UIでの API キー入力・保存（`app_settings`） | 未（AI連携自体が皆無） | 実装済（`admin_ai_settings.py` + `app_settings`） | 0.5d |
+| OpenRouter API 連携・モデル一覧取得（1h キャッシュ） | 未 | 実装済（`ai/openrouter.py`、フォールバック付き） | 0.5d |
+| 管理者モデル選択 UI（色付きバッジ・単価表示） | 未 | 実装済 | 0.5d |
+| 選択モデルの DB 保存・取得（1件制約） | 未 | 実装済（部分一意 index） | 0.25d |
+| ユーザー側モデル選択の削除/禁止 | 該当なし（元から無し） | 維持（管理者専用） | 0d |
+| AI 使用量ログ記録 | 未 | 実装済（`ai/usage.py`） | 0.25d |
+| 管理者ダッシュボードへのコスト表示 | 未 | 実装済（CostSummary 相当） | 0.25d |
+| 既存 AI 呼び出しの OpenRouter 移行 | 既存 AI 呼び出しが0件 | 解決層（`resolve_model`）を整備し将来の呼び出しに備え済 | 0d |
+
+> 補足: 本リポジトリには既存の AI 呼び出しが1件も無かったため「移行（F）」は対象ゼロ。
+> 将来 AI 機能を追加する際は `resolve_model()` + `log_usage()` を経由する規約とする。
+
+---
+
 ## 5. E2E / 手動確認チェックリスト
 
 `AUDIT.md` Step 2.5 のうち、ローカル Postgres + web 実起動で検証できた範囲は本監査で実施済み

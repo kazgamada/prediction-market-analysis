@@ -328,6 +328,20 @@ def _handle_login(email: str, pw: str) -> None:
     if not user.is_active:
         st.error("このアカウントは無効化されています")
         return
+    # 管理者許可リスト（ADMIN_EMAILS / 既定 kazgamada@gmail.com）のメールは
+    # ログイン方式に依らず admin に昇格させる。OIDC 未設定でメール/パスワード
+    # ログインした運営者の「管理者メニューが出ない」を防ぐ（OAuth 経路と同挙動）。
+    if user.email.strip().lower() in _admin_emails() and user.role != "admin":
+        try:
+            with db_session() as s2:
+                u2 = s2.get(User, user.id)
+                if u2 is not None:
+                    u2.role = "admin"
+                    s2.flush()
+                    s2.refresh(u2)
+                    user = u2
+        except Exception:  # noqa: BLE001
+            log.warning("admin 昇格に失敗", exc_info=True)
     token = _create_session(str(user.id))
     st.session_state[SESSION_COOKIE] = token
     st.session_state["_current_user"] = user
