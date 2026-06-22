@@ -8,6 +8,7 @@ from copytrader.db.engine import get_session
 from copytrader.db.models import AdminAuditLog, User
 from copytrader.email.client import EmailMessage, send_email
 from copytrader.web.auth import current_user, require_admin
+from copytrader.web.forms import try_save
 from copytrader.web.sidebar import render_sidebar
 
 st.set_page_config(page_title="メール送信", layout="wide",
@@ -53,16 +54,19 @@ if st.button("送信", type="primary"):
     if not subject or not body:
         st.error("件名と本文を入力してください")
     else:
-        with st.spinner("送信中..."):
-            resolved = _resolve_targets(target)
-            for u in resolved:
-                send_email(EmailMessage(to=u.email, subject=subject, html=body))
-            with get_session() as s:
-                s.add(AdminAuditLog(
-                    actor_id=current_user().id,
-                    action="send_email",
-                    target_type="users",
-                    target_id=target,
-                    detail={"subject": subject, "count": len(resolved)},
-                ))
-        st.success(f"{len(resolved)} 件送信しました")
+        resolved = _resolve_targets(target)
+
+        def _do_send() -> None:
+            with st.spinner("送信中..."):
+                for u in resolved:
+                    send_email(EmailMessage(to=u.email, subject=subject, html=body))
+                with get_session() as s:
+                    s.add(AdminAuditLog(
+                        actor_id=current_user().id,
+                        action="send_email",
+                        target_type="users",
+                        target_id=target,
+                        detail={"subject": subject, "count": len(resolved)},
+                    ))
+
+        try_save(_do_send, f"{len(resolved)} 件に送信しました")

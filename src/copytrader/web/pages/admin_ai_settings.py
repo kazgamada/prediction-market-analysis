@@ -29,6 +29,7 @@ from copytrader.config import settings
 from copytrader.db.engine import get_session
 from copytrader.db.models import AdminAuditLog
 from copytrader.web.auth import current_user, require_admin
+from copytrader.web.forms import try_save
 from copytrader.web.sidebar import render_sidebar
 
 st.set_page_config(page_title="AI設定", layout="wide",
@@ -94,21 +95,24 @@ with st.container(border=True):
         if not new_key.strip():
             st.warning("API キーを入力してください。")
         else:
-            set_app_setting(
-                OPENROUTER_API_KEY, new_key,
-                updated_by=current_user().id,
-                description="OpenRouter API key (admin-managed)",
-            )
-            _audit("admin.setting_updated", {"key": OPENROUTER_API_KEY,
-                                             "masked": mask_secret(new_key)})
-            st.toast("OpenRouter API キーを保存しました", icon="✅")
-            st.rerun()
+            def _do_save() -> None:
+                set_app_setting(
+                    OPENROUTER_API_KEY, new_key,
+                    updated_by=current_user().id,
+                    description="OpenRouter API key (admin-managed)",
+                )
+                _audit("admin.setting_updated", {"key": OPENROUTER_API_KEY,
+                                                 "masked": mask_secret(new_key)})
+            if try_save(_do_save, "OpenRouter API キーを保存しました", toast=True):
+                st.rerun()
 
     if delete_clicked:
-        set_app_setting(OPENROUTER_API_KEY, "", updated_by=current_user().id)
-        _audit("admin.setting_updated", {"key": OPENROUTER_API_KEY, "deleted": True})
-        st.toast("API キーを削除しました（環境変数フォールバックに戻ります）", icon="🗑")
-        st.rerun()
+        def _do_delete() -> None:
+            set_app_setting(OPENROUTER_API_KEY, "", updated_by=current_user().id)
+            _audit("admin.setting_updated", {"key": OPENROUTER_API_KEY, "deleted": True})
+        if try_save(_do_delete, "API キーを削除しました（環境変数フォールバックに戻ります）",
+                    toast=True):
+            st.rerun()
 
 # ---------------------------------------------------------------------------
 # 2. モデル選択 UI
@@ -170,11 +174,12 @@ else:
 
     if st.button("✅ このモデルを使用する", type="primary",
                  disabled=is_current, key="_use_model"):
-        save_selected_config(chosen, updated_by=current_user().id)
-        _audit("admin.model_selected", {"model_id": chosen.model_id,
-                                        "model_name": chosen.name})
-        st.toast(f"モデルを {chosen.name} に設定しました", icon="🤖")
-        st.rerun()
+        def _do_select() -> None:
+            save_selected_config(chosen, updated_by=current_user().id)
+            _audit("admin.model_selected", {"model_id": chosen.model_id,
+                                            "model_name": chosen.name})
+        if try_save(_do_select, f"モデルを {chosen.name} に設定しました", toast=True):
+            st.rerun()
 
 # ---------------------------------------------------------------------------
 # 3. コスト集計（過去30日）

@@ -8,6 +8,7 @@ from sqlalchemy import select
 from copytrader.db.engine import get_session
 from copytrader.db.models import AdminAuditLog, User
 from copytrader.web.auth import current_user, require_admin
+from copytrader.web.forms import try_save
 from copytrader.web.sidebar import render_sidebar
 
 st.set_page_config(page_title="ユーザー管理", layout="wide",
@@ -69,34 +70,36 @@ if event.selection.rows:
             )
             is_active = st.checkbox("有効", value=u.is_active)
             if st.form_submit_button("保存"):
+                def _do_update() -> None:
+                    with get_session() as s:
+                        user_obj = s.get(User, u.id)
+                        if user_obj:
+                            user_obj.role = new_role
+                            user_obj.is_active = is_active
+                    with get_session() as s:
+                        s.add(AdminAuditLog(
+                            actor_id=current_user().id,
+                            action="update_user",
+                            target_type="user",
+                            target_id=str(u.id),
+                            detail={"role": new_role, "is_active": is_active},
+                        ))
+                if try_save(_do_update, "保存しました"):
+                    st.rerun()
+
+        if st.button("🚫 アカウントを凍結", type="secondary", key=f"freeze_{u.id}"):
+            def _do_freeze() -> None:
                 with get_session() as s:
                     user_obj = s.get(User, u.id)
                     if user_obj:
-                        user_obj.role = new_role
-                        user_obj.is_active = is_active
+                        user_obj.is_active = False
                 with get_session() as s:
                     s.add(AdminAuditLog(
                         actor_id=current_user().id,
-                        action="update_user",
+                        action="freeze_user",
                         target_type="user",
                         target_id=str(u.id),
-                        detail={"role": new_role, "is_active": is_active},
+                        detail={},
                     ))
-                st.success("保存しました")
+            if try_save(_do_freeze, f"{u.email} を凍結しました"):
                 st.rerun()
-
-        if st.button("🚫 アカウントを凍結", type="secondary", key=f"freeze_{u.id}"):
-            with get_session() as s:
-                user_obj = s.get(User, u.id)
-                if user_obj:
-                    user_obj.is_active = False
-            with get_session() as s:
-                s.add(AdminAuditLog(
-                    actor_id=current_user().id,
-                    action="freeze_user",
-                    target_type="user",
-                    target_id=str(u.id),
-                    detail={},
-                ))
-            st.warning(f"{u.email} を凍結しました")
-            st.rerun()
