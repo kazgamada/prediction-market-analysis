@@ -15,6 +15,9 @@ venv/
 .env.local
 .env.*.local
 
+# Streamlit secrets (auth / OIDC) — 絶対にコミットしない
+.streamlit/secrets.toml
+
 # Data / DB
 *.db
 *.sqlite

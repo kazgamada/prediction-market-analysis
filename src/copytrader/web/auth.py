@@ -93,19 +93,106 @@ def current_user():
     return st.session_state.get("_current_user")
 
 
-def require_login() -> None:
-    """未認証ならログインフォームを表示してページ描画を停止する。
+def _admin_emails() -> set[str]:
+    """管理者として扱うメールアドレス（小文字）の集合。
 
-    後方互換: WEB_PASSWORD が設定されており users テーブルが空の場合は
-    パスワードゲートにフォールバックする。
+    ADMIN_EMAILS 環境変数（カンマ区切り）で指定。既定は kazgamada@gmail.com。
+    """
+    raw = os.environ.get("ADMIN_EMAILS", "kazgamada@gmail.com")
+    return {e.strip().lower() for e in raw.split(",") if e.strip()}
+
+
+def _oauth_configured() -> bool:
+    """Streamlit ネイティブ OIDC（[auth]）が設定済みかどうか。"""
+    import streamlit as st
+    try:
+        return "auth" in st.secrets
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _unusable_password_hash() -> str:
+    """OAuth ユーザー用の、ログインに使えないランダム bcrypt ハッシュ。"""
+    import bcrypt
+    return bcrypt.hashpw(secrets.token_urlsafe(32).encode(), bcrypt.gensalt()).decode()
+
+
+def _provision_oauth_user(email: str, name: str | None = None) -> bool:
+    """Google ログイン済みユーザーを DB に get-or-create し、session に載せる。
+
+    - 既存なら取得。無ければ作成（role はメールが admin 許可リストにあれば admin）。
+    - admin 許可リストのメールは毎回 admin に昇格（運営者を確実に admin にする）。
+    返り値: 成功したら True。無効化済み/DB エラーなら False。
+    """
+    import streamlit as st
+    from sqlalchemy import select
+
+    from copytrader.db.engine import get_session as db_session
+    from copytrader.db.models import User
+
+    email_l = (email or "").strip().lower()
+    if not email_l:
+        return False
+    is_admin = email_l in _admin_emails()
+    try:
+        with db_session() as s:
+            user = s.execute(
+                select(User).where(User.email == email_l)
+            ).scalar_one_or_none()
+            if user is None:
+                user = User(
+                    email=email_l,
+                    pw_hash=_unusable_password_hash(),
+                    role="admin" if is_admin else "user",
+                    is_active=True,
+                )
+                s.add(user)
+                s.flush()
+            elif is_admin and user.role != "admin":
+                # 許可リストのメールは admin に昇格
+                user.role = "admin"
+            if not user.is_active:
+                return False
+            s.refresh(user)
+    except Exception:  # noqa: BLE001
+        log.warning("oauth user provision failed", exc_info=True)
+        st.error("DB接続エラーが発生しました（ユーザー登録）。")
+        return False
+
+    st.session_state["_current_user"] = user
+    return True
+
+
+def require_login() -> None:
+    """未認証ならログインページを表示してページ描画を停止する。
+
+    優先順位:
+      1) session_state にユーザーがいればそのまま
+      2) Google ネイティブ OIDC（st.user.is_logged_in）→ DB プロビジョニング
+      3) セッショントークン（メール/パスワードユーザー）で復元
+      4) 後方互換: OIDC 未設定 & WEB_PASSWORD 設定 & users 空 → パスワードゲート
+      5) それ以外はログインページ（Google + メール/パスワード）
     """
     import streamlit as st
 
-    # 既にセッション state に認証済みユーザーがいる
+    # 1) 既にセッション state に認証済みユーザーがいる
     if current_user() is not None:
         return
 
-    # セッショントークンで復元を試みる
+    # 2) Google ネイティブ OIDC でログイン済み → プロビジョニング
+    if _oauth_configured():
+        user_obj = getattr(st, "user", None)
+        if user_obj is not None and getattr(user_obj, "is_logged_in", False):
+            email = getattr(user_obj, "email", None)
+            if _provision_oauth_user(email, getattr(user_obj, "name", None)):
+                return
+            # 無効化済み等 → ログアウトしてフォームへ
+            try:
+                st.logout()
+            except Exception:  # noqa: BLE001
+                pass
+
+    # 3) セッショントークンで復元を試みる（メール/パスワードユーザー）
     token = st.session_state.get(SESSION_COOKIE)
     if token:
         user = _resolve_session(token)
@@ -114,13 +201,13 @@ def require_login() -> None:
             return
         st.session_state.pop(SESSION_COOKIE, None)
 
-    # 後方互換: WEB_PASSWORD が設定されており users が空 → パスワードゲート
+    # 4) 後方互換: OIDC 未設定 & WEB_PASSWORD 設定 & users 空 → パスワードゲート
     expected = os.environ.get("WEB_PASSWORD", "")
-    if expected and _users_table_empty():
+    if expected and not _oauth_configured() and _users_table_empty():
         _legacy_password_gate(expected)
         return
 
-    # マルチユーザーログインフォーム
+    # 5) ログインページ（Google + メール/パスワード）
     _show_login_form()
     st.stop()
 
@@ -183,21 +270,39 @@ def _show_login_form() -> None:
 
     _prelogin_chrome()
     st.markdown("## 🔒 ログイン")
-    with st.form("login_form"):
-        email = st.text_input("メールアドレス")
-        pw = st.text_input("パスワード", type="password")
-        col1, col2 = st.columns(2)
-        submitted = col1.form_submit_button("ログイン")
-        reset_link = col2.form_submit_button("パスワードを忘れた")
+    st.caption("Copytrader 管理コンソール")
 
-    if submitted:
-        _handle_login(email, pw)
-    if reset_link:
-        st.session_state["_show_reset"] = True
-        st.rerun()
+    # Google ログイン（OIDC 設定済みのときだけ表示）
+    if _oauth_configured():
+        with st.container(border=True):
+            st.markdown("#### Google でログイン")
+            st.caption("Google アカウントでサインインします。")
+            if st.button("🔵 Google でログイン", type="primary",
+                         use_container_width=True, key="_google_login"):
+                st.login("google")
+        st.markdown(
+            "<div style='text-align:center;color:#666;margin:0.5rem 0;'>"
+            "— または —</div>",
+            unsafe_allow_html=True,
+        )
 
-    if st.session_state.get("_show_reset"):
-        _show_pw_reset_form()
+    with st.container(border=True):
+        st.markdown("#### メール / パスワード")
+        with st.form("login_form"):
+            email = st.text_input("メールアドレス")
+            pw = st.text_input("パスワード", type="password")
+            col1, col2 = st.columns(2)
+            submitted = col1.form_submit_button("ログイン")
+            reset_link = col2.form_submit_button("パスワードを忘れた")
+
+        if submitted:
+            _handle_login(email, pw)
+        if reset_link:
+            st.session_state["_show_reset"] = True
+            st.rerun()
+
+        if st.session_state.get("_show_reset"):
+            _show_pw_reset_form()
 
 
 def _handle_login(email: str, pw: str) -> None:
@@ -247,6 +352,15 @@ def logout() -> None:
     st.session_state.pop(SESSION_COOKIE, None)
     st.session_state.pop("_current_user", None)
     st.session_state.pop(_SESSION_KEY, None)
+    # Google ネイティブ OIDC でログイン中なら併せてサインアウト
+    if _oauth_configured():
+        user_obj = getattr(st, "user", None)
+        if user_obj is not None and getattr(user_obj, "is_logged_in", False):
+            try:
+                st.logout()
+                return
+            except Exception:  # noqa: BLE001
+                pass
     st.rerun()
 
 

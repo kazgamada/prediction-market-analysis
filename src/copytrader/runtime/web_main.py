@@ -53,6 +53,57 @@ def _dump_boot_env() -> None:
     log.info("  STREAMLIT_SERVER_PORT: %s",
              os.environ.get("STREAMLIT_SERVER_PORT", "(default 8501)"))
     log.info("  HEALTH_PORT: %s", settings.health_port)
+    log.info("  GOOGLE_CLIENT_ID: %s", present("GOOGLE_CLIENT_ID"))
+    log.info("  GOOGLE_CLIENT_SECRET: %s", present("GOOGLE_CLIENT_SECRET"))
+    log.info("  ADMIN_EMAILS: %s",
+             os.environ.get("ADMIN_EMAILS", "(default kazgamada@gmail.com)"))
+
+
+def _write_streamlit_auth_secrets() -> None:
+    """Fly secrets（環境変数）から .streamlit/secrets.toml の [auth] を生成する。
+
+    Streamlit ネイティブ OIDC（st.login）は secrets.toml の [auth] を読む。
+    リポジトリに秘密を置かないため、起動時に env から生成する。
+    GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET が無ければ何もしない
+    （= Google ログイン無効、メール/パスワードのみで動作）。
+    """
+    client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+    if not client_id or not client_secret:
+        log.info("Google OIDC: GOOGLE_CLIENT_ID/SECRET 未設定 → Google ログイン無効")
+        return
+
+    app_name = os.environ.get("FLY_APP_NAME", "prediction-market-analysis")
+    redirect_uri = os.environ.get(
+        "OAUTH_REDIRECT_URI", f"https://{app_name}.fly.dev/oauth2callback"
+    ).strip()
+    cookie_secret = os.environ.get("OAUTH_COOKIE_SECRET", "").strip()
+    if not cookie_secret:
+        import secrets as _secrets
+        cookie_secret = _secrets.token_urlsafe(32)
+        log.warning("OAUTH_COOKIE_SECRET 未設定 → ランダム生成（再起動でセッション失効）")
+
+    def esc(v: str) -> str:
+        return v.replace("\\", "\\\\").replace('"', '\\"')
+
+    body = (
+        "[auth]\n"
+        f'redirect_uri = "{esc(redirect_uri)}"\n'
+        f'cookie_secret = "{esc(cookie_secret)}"\n\n'
+        "[auth.google]\n"
+        f'client_id = "{esc(client_id)}"\n'
+        f'client_secret = "{esc(client_secret)}"\n'
+        'server_metadata_url = '
+        '"https://accounts.google.com/.well-known/openid-configuration"\n'
+    )
+    target = Path.cwd() / ".streamlit" / "secrets.toml"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(body, encoding="utf-8")
+    try:
+        target.chmod(0o600)
+    except OSError:
+        pass
+    log.info("Google OIDC: secrets.toml 生成 (redirect_uri=%s)", redirect_uri)
 
 
 def _rpc_check_factory():
@@ -132,6 +183,9 @@ def main() -> None:
 
     # Step 2: migrate (best-effort; degraded mode if it fails).
     _run_migrations_safely()
+
+    # Step 2.5: Google OIDC 用 secrets.toml を env から生成（任意）。
+    _write_streamlit_auth_secrets()
 
     # Step 3: run streamlit as a child process (NOT os.execvp).
     # execvp replaces this process image, which would kill the daemon health
