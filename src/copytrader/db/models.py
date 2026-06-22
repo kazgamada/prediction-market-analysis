@@ -387,3 +387,84 @@ class NotificationPref(Base):
     risk_halt: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
     daily_summary: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ---------------------------------------------------------------------------
+# AI / OpenRouter モデル選択（alembic 0009 / AUDIT.md 共通機能要件）
+# ---------------------------------------------------------------------------
+
+
+class AppSetting(Base):
+    """管理者が UI から設定する汎用キー/値ストア（API キー等）。
+
+    `settings`（JSONB の運用パラメータ）とは別物。こちらは管理者画面から
+    入力する機微な文字列（OpenRouter API キー等）を平文 TEXT で保持し、
+    `updated_by` に操作者を残して監査ログを兼ねる。読み書きはアプリ層の
+    `require_admin()` でのみ許可する（本スタックは Postgres RLS 非使用）。
+    """
+    __tablename__ = "app_settings"
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    value: Mapped[str | None] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_by: Mapped[_uuid_mod.UUID | None] = mapped_column(
+        pgUUID(as_uuid=True), ForeignKey("users.id")
+    )
+
+
+class OpenRouterConfig(Base):
+    """選択中の OpenRouter モデル（実質 1 件）。
+
+    `is_selected=true` の行が常に高々 1 件になるよう部分一意インデックスで
+    制約する（AUDIT.md の「トリガーで 1 件制約」を index で代替）。
+    """
+    __tablename__ = "openrouter_config"
+    id: Mapped[_uuid_mod.UUID] = mapped_column(
+        pgUUID(as_uuid=True), primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    model_id: Mapped[str] = mapped_column(Text, nullable=False)
+    model_name: Mapped[str] = mapped_column(Text, nullable=False)
+    context_length: Mapped[int | None] = mapped_column(Integer)
+    prompt_price_per_token: Mapped[Decimal | None] = mapped_column(Numeric(20, 10))
+    completion_price_per_token: Mapped[Decimal | None] = mapped_column(Numeric(20, 10))
+    is_selected: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_by: Mapped[_uuid_mod.UUID | None] = mapped_column(
+        pgUUID(as_uuid=True), ForeignKey("users.id")
+    )
+    __table_args__ = (
+        Index(
+            "openrouter_config_selected_uq",
+            "is_selected",
+            unique=True,
+            postgresql_where=text("is_selected"),
+        ),
+    )
+
+
+class AiUsageLog(Base):
+    """AI 呼び出しのトークン数・推定コストの記録（管理者ダッシュボード集計用）。"""
+    __tablename__ = "ai_usage_log"
+    id: Mapped[_uuid_mod.UUID] = mapped_column(
+        pgUUID(as_uuid=True), primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    user_id: Mapped[_uuid_mod.UUID | None] = mapped_column(
+        pgUUID(as_uuid=True), ForeignKey("users.id")
+    )
+    model_id: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    estimated_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(20, 10))
+    endpoint: Mapped[str | None] = mapped_column(Text)
+    success: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    __table_args__ = (Index("ai_usage_log_created_idx", text("created_at DESC")),)

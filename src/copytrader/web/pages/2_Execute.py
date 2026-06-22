@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from copytrader.web.sidebar import render_sidebar
 from sqlalchemy import desc, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -16,6 +15,7 @@ from copytrader.db.engine import get_session
 from copytrader.db.models import Job, Watchlist
 from copytrader.web.auth import require_login
 from copytrader.web.format import fmt_ago, short_addr
+from copytrader.web.sidebar import render_sidebar
 from copytrader.web.theme import (
     ACCENT_GREEN,
     ACCENT_RED,

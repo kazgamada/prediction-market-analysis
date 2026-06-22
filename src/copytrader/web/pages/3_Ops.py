@@ -5,7 +5,6 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import streamlit as st
-from copytrader.web.sidebar import render_sidebar
 from sqlalchemy import desc, func, select
 
 from copytrader.chain.errors import redact_url
@@ -16,6 +15,7 @@ from copytrader.db.models import Cursor, Job, RiskEvent, RpcDeadLetter, Trade
 from copytrader.indexer.backfill import CURSOR_NAME
 from copytrader.web.auth import require_login
 from copytrader.web.format import fmt_ago
+from copytrader.web.sidebar import render_sidebar
 from copytrader.web.theme import (
     inject_theme,
 )

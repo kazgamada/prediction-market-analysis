@@ -39,6 +39,7 @@ NAV_SECTIONS: list[NavSection] = [
         NavItem("💳 課金・プラン", "pages/settings_billing.py"),
     ]),
     NavSection("🔧 管理者メニュー", [
+        NavItem("🤖 AI設定", "pages/admin_ai_settings.py", admin_only=True),
         NavItem("👥 ユーザー管理", "pages/admin_users.py", admin_only=True),
         NavItem("💳 Billing 管理", "pages/admin_billing.py", admin_only=True),
         NavItem("📧 メール送信", "pages/admin_email.py", admin_only=True),

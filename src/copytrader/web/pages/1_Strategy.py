@@ -7,7 +7,6 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-from copytrader.web.sidebar import render_sidebar
 from sqlalchemy import desc, select
 
 from copytrader.db.engine import get_session
@@ -15,6 +14,7 @@ from copytrader.db.models import Job
 from copytrader.jobs.queue import enqueue
 from copytrader.web.auth import require_login
 from copytrader.web.format import fmt_ago
+from copytrader.web.sidebar import render_sidebar
 from copytrader.web.theme import (
     STATIC_LAYOUT,
     STATIC_PALETTE,

@@ -73,7 +73,7 @@ def tile_header(title: str, page_path: str, icon: str, help_text: str) -> None:
 @st.cache_data(ttl=5)
 def _real_home_metrics() -> dict:
 
-    from sqlalchemy import desc, func, select
+    from sqlalchemy import desc, func, literal_column, select
 
     from copytrader.db import settings_table as _st
     from copytrader.db.engine import get_session
@@ -124,15 +124,20 @@ def _real_home_metrics() -> dict:
                 dict(latest_risk.metrics_snapshot or {}) if latest_risk else {}
             )
 
-            # Daily PnL series (cumulative for equity + drawdown tiles)
+            # Daily PnL series (cumulative for equity + drawdown tiles).
+            # date_trunc の 'day' はリテラルで埋め込む。SQLAlchemy は文字列引数を
+            # 別々のバインドパラメータ($1/$2/$3)として描画するため、SELECT と
+            # GROUP BY/ORDER BY の式が一致せず GroupingError になる。literal_column
+            # で同一の式オブジェクトを使い回して回避する。
+            day_trunc = func.date_trunc(literal_column("'day'"), TradePnl.ts)
             daily_rows = s.execute(
                 select(
-                    func.date_trunc("day", TradePnl.ts).label("day"),
+                    day_trunc.label("day"),
                     func.sum(TradePnl.realized_usdc).label("pnl"),
                 )
                 .where(TradePnl.ts >= quarter_ago)
-                .group_by(func.date_trunc("day", TradePnl.ts))
-                .order_by(func.date_trunc("day", TradePnl.ts))
+                .group_by(day_trunc)
+                .order_by(day_trunc)
             ).all()
             out["daily_pnl_series"] = [
                 (d, float(p or 0)) for d, p in daily_rows
