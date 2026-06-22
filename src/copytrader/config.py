@@ -30,6 +30,10 @@ class Settings(BaseSettings):
 
     web_password: str = ""
 
+    # アプリの公開URL（マジックリンク／パスワードリセットのメールリンク生成に使用）。
+    # 例: https://copytrader.fly.dev 。末尾スラッシュは付けない。
+    app_base_url: str = ""
+
     indexer_window_days: int = 30
     indexer_chunk_size: int = 1000
     indexer_max_parallel: int = 4

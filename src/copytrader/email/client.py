@@ -48,6 +48,19 @@ def send_password_reset(to: str, reset_url: str) -> None:
     ))
 
 
+def send_magic_link(to: str, login_url: str) -> None:
+    """マジックリンク（パスワード不要ログイン）メール送信。"""
+    send_email(EmailMessage(
+        to=to,
+        subject="ログインリンク",
+        html=(
+            f"<p><a href='{login_url}'>こちらをクリックしてログイン</a></p>"
+            "<p>このリンクは1時間で無効になり、1回のみ使用できます。"
+            "心当たりがない場合はこのメールを破棄してください。</p>"
+        ),
+    ))
+
+
 def send_subscription_receipt(to: str, amount: int, period: str) -> None:
     """サブスクリプション領収書メール送信。"""
     send_email(EmailMessage(

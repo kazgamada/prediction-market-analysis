@@ -163,6 +163,199 @@ def _provision_oauth_user(email: str, name: str | None = None) -> bool:
     return True
 
 
+def _promote_if_admin(user, _session) -> None:
+    """許可リスト（ADMIN_EMAILS / 既定 kazgamada@gmail.com）のメールなら admin に昇格。
+
+    OIDC / メール&パスワード / マジックリンクの全ログイン経路で共通利用する。
+    渡された ORM オブジェクトを更新するだけで、コミットは呼び出し側 session に任せる。
+    """
+    if user.email.strip().lower() in _admin_emails() and user.role != "admin":
+        user.role = "admin"
+
+
+def _activate_user_session(user_id):
+    """user_id からユーザーを有効化し、セッショントークンを発行して state に載せる。
+
+    無効化済み/不在/DBエラーなら None。許可リストのメールは admin に昇格。
+    """
+    import streamlit as st
+
+    from copytrader.db.engine import get_session as db_session
+    from copytrader.db.models import User
+
+    try:
+        with db_session() as s:
+            user = s.get(User, user_id)
+            if user is None or not user.is_active:
+                return None
+            _promote_if_admin(user, s)
+            s.flush()
+            s.refresh(user)
+    except Exception:  # noqa: BLE001
+        log.warning("session activation failed", exc_info=True)
+        return None
+    token = _create_session(str(user.id))
+    st.session_state[SESSION_COOKIE] = token
+    st.session_state["_current_user"] = user
+    return user
+
+
+def register_user(email: str, password: str) -> tuple[bool, str]:
+    """新規アカウント登録。成功時 (True, user_id文字列)、失敗時 (False, エラー文)。"""
+    import bcrypt
+    from sqlalchemy import select
+
+    from copytrader.db.engine import get_session as db_session
+    from copytrader.db.models import User
+
+    email_l = (email or "").strip().lower()
+    if "@" not in email_l or "." not in email_l:
+        return False, "有効なメールアドレスを入力してください"
+    if len(password or "") < 8:  # noqa: PLR2004
+        return False, "パスワードは8文字以上にしてください"
+    try:
+        with db_session() as s:
+            existing = s.execute(
+                select(User).where(User.email == email_l)
+            ).scalar_one_or_none()
+            if existing is not None:
+                return False, "このメールアドレスは既に登録されています"
+            user = User(
+                email=email_l,
+                pw_hash=bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode(),
+                role="admin" if email_l in _admin_emails() else "user",
+                is_active=True,
+            )
+            s.add(user)
+            s.flush()
+            uid = str(user.id)
+    except Exception:  # noqa: BLE001
+        log.warning("register failed", exc_info=True)
+        return False, "登録に失敗しました（DBエラー）"
+    return True, uid
+
+
+def _link_base_url() -> str:
+    """メールリンクのベース URL。未設定なら空（相対リンクになる旨を UI で警告）。"""
+    from copytrader.config import settings
+    return (settings.app_base_url or "").rstrip("/")
+
+
+def request_magic_link(email: str) -> None:
+    """マジックリンクを送信する。アカウントが無ければ作成（パスワード不要登録）。
+
+    存在の有無を漏らさないため、UI 側は常に同じ案内を出す。
+    """
+    from sqlalchemy import select
+
+    from copytrader.db.engine import get_session as db_session
+    from copytrader.db.models import User
+    from copytrader.email.client import send_magic_link
+    from copytrader.web.auth_tokens import PURPOSE_MAGIC_LINK, create_login_token
+
+    email_l = (email or "").strip().lower()
+    if "@" not in email_l:
+        return
+    try:
+        with db_session() as s:
+            user = s.execute(
+                select(User).where(User.email == email_l)
+            ).scalar_one_or_none()
+            if user is None:
+                user = User(
+                    email=email_l,
+                    pw_hash=_unusable_password_hash(),
+                    role="admin" if email_l in _admin_emails() else "user",
+                    is_active=True,
+                )
+                s.add(user)
+                s.flush()
+            if not user.is_active:
+                return
+            uid = user.id
+        raw = create_login_token(uid, PURPOSE_MAGIC_LINK)
+    except Exception:  # noqa: BLE001
+        log.warning("magic link request failed", exc_info=True)
+        return
+    url = f"{_link_base_url()}/?action=magic&token={raw}"
+    send_magic_link(email_l, url)
+
+
+def request_password_reset(email: str) -> None:
+    """パスワードリセットリンクを送信する（存在しないメールでも無反応で同じ案内）。"""
+    from sqlalchemy import select
+
+    from copytrader.db.engine import get_session as db_session
+    from copytrader.db.models import User
+    from copytrader.email.client import send_password_reset
+    from copytrader.web.auth_tokens import PURPOSE_PASSWORD_RESET, create_login_token
+
+    email_l = (email or "").strip().lower()
+    try:
+        with db_session() as s:
+            user = s.execute(
+                select(User).where(User.email == email_l)
+            ).scalar_one_or_none()
+            if user is None or not user.is_active:
+                return
+            uid = user.id
+        raw = create_login_token(uid, PURPOSE_PASSWORD_RESET)
+    except Exception:  # noqa: BLE001
+        log.warning("password reset request failed", exc_info=True)
+        return
+    url = f"{_link_base_url()}/?action=reset&token={raw}"
+    send_password_reset(email_l, url)
+
+
+def _set_password(user_id, new_password: str) -> bool:
+    """ユーザーのパスワードを更新する。"""
+    import bcrypt
+
+    from copytrader.db.engine import get_session as db_session
+    from copytrader.db.models import User
+
+    try:
+        with db_session() as s:
+            user = s.get(User, user_id)
+            if user is None:
+                return False
+            user.pw_hash = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+        return True
+    except Exception:  # noqa: BLE001
+        log.warning("set password failed", exc_info=True)
+        return False
+
+
+def _show_set_new_password_form(token: str, purpose: str) -> None:
+    """リセットリンク経由で新パスワードを設定するフォーム。"""
+    import streamlit as st
+
+    from copytrader.web.auth_tokens import consume_login_token
+
+    _prelogin_chrome()
+    st.markdown("## 🔑 新しいパスワードの設定")
+    with st.form("set_new_pw"):
+        pw1 = st.text_input("新しいパスワード", type="password")
+        pw2 = st.text_input("新しいパスワード（確認）", type="password")
+        submitted = st.form_submit_button("パスワードを更新", type="primary")
+    if submitted:
+        if pw1 != pw2:
+            st.error("パスワードが一致しません")
+            return
+        if len(pw1) < 8:  # noqa: PLR2004
+            st.error("パスワードは8文字以上にしてください")
+            return
+        user_id = consume_login_token(token, purpose)
+        if user_id is None:
+            st.error("リンクが無効か期限切れです。再度リセットを依頼してください。")
+            return
+        if _set_password(user_id, pw1):
+            st.success("パスワードを更新しました。ログインし直してください。")
+            st.query_params.clear()
+        else:
+            st.error("更新に失敗しました")
+
+
 def require_login() -> None:
     """未認証ならログインページを表示してページ描画を停止する。
 
@@ -177,6 +370,10 @@ def require_login() -> None:
 
     # 1) 既にセッション state に認証済みユーザーがいる
     if current_user() is not None:
+        return
+
+    # 1.5) メールリンク（マジックリンク / パスワードリセット）のクエリ処理
+    if _handle_email_link_params():
         return
 
     # 2) Google ネイティブ OIDC でログイン済み → プロビジョニング
@@ -201,15 +398,69 @@ def require_login() -> None:
             return
         st.session_state.pop(SESSION_COOKIE, None)
 
-    # 4) 後方互換: OIDC 未設定 & WEB_PASSWORD 設定 & users 空 → パスワードゲート
+    # 4) 緊急フォールバック: DB 接続不可 & WEB_PASSWORD 設定時のみ単一パスワードゲート。
+    #    通常運用では §5 の統合ログインページを常に表示する（認証画面が出ない問題の解消）。
     expected = os.environ.get("WEB_PASSWORD", "")
-    if expected and not _oauth_configured() and _users_table_empty():
+    if expected and not _oauth_configured() and not _db_reachable():
         _legacy_password_gate(expected)
         return
 
-    # 5) ログインページ（Google + メール/パスワード）
+    # 5) 統合ログインページ（Google + パスワード + マジックリンク + 新規登録 + リセット）
     _show_login_form()
     st.stop()
+
+
+def _db_reachable() -> bool:
+    """DB に到達できるか（緊急フォールバック判定用）。"""
+    try:
+        from copytrader.db.engine import ping
+        return ping()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _handle_email_link_params() -> bool:
+    """URL の ?action=magic|reset&token=... を処理する。
+
+    - magic: トークンを消費してログイン → True
+    - reset: 新パスワード設定フォームを表示（送信で消費）→ st.stop() するため戻らない
+    認証が成立/フォーム表示したら True、無関係なら False。
+    """
+    import streamlit as st
+
+    try:
+        params = st.query_params
+        action = params.get("action")
+        token = params.get("token")
+    except Exception:  # noqa: BLE001
+        return False
+    if not action or not token:
+        return False
+
+    from copytrader.web.auth_tokens import (
+        PURPOSE_MAGIC_LINK,
+        PURPOSE_PASSWORD_RESET,
+        consume_login_token,
+    )
+
+    if action == "magic":
+        user_id = consume_login_token(token, PURPOSE_MAGIC_LINK)
+        if user_id is None:
+            _prelogin_chrome()
+            st.error("ログインリンクが無効か期限切れです。もう一度お試しください。")
+            st.query_params.clear()
+            return False
+        user = _activate_user_session(user_id)
+        if user is None:
+            return False
+        st.query_params.clear()
+        st.rerun()
+
+    if action == "reset":
+        _show_set_new_password_form(token, PURPOSE_PASSWORD_RESET)
+        st.stop()
+
+    return False
 
 
 def _prelogin_chrome() -> None:
@@ -266,17 +517,17 @@ def require_admin() -> None:
 
 
 def _show_login_form() -> None:
+    """統合ログインページ: Google / パスワード / マジックリンク / 新規登録 / リセット。"""
     import streamlit as st
 
     _prelogin_chrome()
     st.markdown("## 🔒 ログイン")
-    st.caption("Copytrader 管理コンソール")
+    st.caption("Copytrader コンソール")
 
     # Google ログイン（OIDC 設定済みのときだけ表示）
     if _oauth_configured():
         with st.container(border=True):
             st.markdown("#### Google でログイン")
-            st.caption("Google アカウントでサインインします。")
             if st.button("🔵 Google でログイン", type="primary",
                          use_container_width=True, key="_google_login"):
                 st.login("google")
@@ -286,23 +537,56 @@ def _show_login_form() -> None:
             unsafe_allow_html=True,
         )
 
-    with st.container(border=True):
-        st.markdown("#### メール / パスワード")
-        with st.form("login_form"):
-            email = st.text_input("メールアドレス")
-            pw = st.text_input("パスワード", type="password")
-            col1, col2 = st.columns(2)
-            submitted = col1.form_submit_button("ログイン")
-            reset_link = col2.form_submit_button("パスワードを忘れた")
+    tab_login, tab_signup, tab_magic, tab_reset = st.tabs(
+        ["ログイン", "新規登録", "マジックリンク", "パスワード再設定"]
+    )
 
-        if submitted:
+    with tab_login, st.form("login_form"):
+        email = st.text_input("メールアドレス", key="li_email")
+        pw = st.text_input("パスワード", type="password", key="li_pw")
+        if st.form_submit_button("ログイン", type="primary", use_container_width=True):
             _handle_login(email, pw)
-        if reset_link:
-            st.session_state["_show_reset"] = True
-            st.rerun()
 
-        if st.session_state.get("_show_reset"):
-            _show_pw_reset_form()
+    with tab_signup, st.form("signup_form"):
+        st.caption("メールアドレスとパスワード（8文字以上）で新規登録します。")
+        su_email = st.text_input("メールアドレス", key="su_email")
+        su_pw = st.text_input("パスワード", type="password", key="su_pw")
+        su_pw2 = st.text_input("パスワード（確認）", type="password", key="su_pw2")
+        if st.form_submit_button("登録してログイン", type="primary",
+                                 use_container_width=True):
+            _handle_signup(su_email, su_pw, su_pw2)
+
+    with tab_magic, st.form("magic_form"):
+        st.caption("登録メールにログインリンクを送ります（パスワード不要）。"
+                   "未登録のメールは自動で登録されます。")
+        mg_email = st.text_input("メールアドレス", key="mg_email")
+        if st.form_submit_button("ログインリンクを送信", use_container_width=True):
+            request_magic_link(mg_email)
+            st.success("メールアドレスが有効なら、ログインリンクを送信しました。"
+                       "メールをご確認ください。")
+
+    with tab_reset, st.form("reset_form"):
+        st.caption("登録メールにパスワード再設定リンクを送ります。")
+        rs_email = st.text_input("登録済みメールアドレス", key="rs_email")
+        if st.form_submit_button("再設定リンクを送信", use_container_width=True):
+            request_password_reset(rs_email)
+            st.success("メールアドレスが登録済みなら、再設定リンクを送信しました。")
+
+
+def _handle_signup(email: str, pw: str, pw2: str) -> None:
+    import streamlit as st
+
+    if pw != pw2:
+        st.error("パスワードが一致しません")
+        return
+    ok, result = register_user(email, pw)
+    if not ok:
+        st.error(result)
+        return
+    if _activate_user_session(result) is None:
+        st.error("ログインに失敗しました")
+        return
+    st.rerun()
 
 
 def _handle_login(email: str, pw: str) -> None:
@@ -316,47 +600,26 @@ def _handle_login(email: str, pw: str) -> None:
     try:
         with db_session() as s:
             user = s.execute(
-                select(User).where(User.email == email)
+                select(User).where(User.email == (email or "").strip().lower())
             ).scalar_one_or_none()
+            ok = user is not None and bcrypt.checkpw(pw.encode(), user.pw_hash.encode())
+            active = bool(user and user.is_active)
+            uid = user.id if user else None
     except Exception:  # noqa: BLE001
         st.error("DB接続エラーが発生しました")
         return
 
-    if user is None or not bcrypt.checkpw(pw.encode(), user.pw_hash.encode()):
+    if not ok:
         st.error("メールアドレスまたはパスワードが違います")
         return
-    if not user.is_active:
+    if not active:
         st.error("このアカウントは無効化されています")
         return
-    # 管理者許可リスト（ADMIN_EMAILS / 既定 kazgamada@gmail.com）のメールは
-    # ログイン方式に依らず admin に昇格させる。OIDC 未設定でメール/パスワード
-    # ログインした運営者の「管理者メニューが出ない」を防ぐ（OAuth 経路と同挙動）。
-    if user.email.strip().lower() in _admin_emails() and user.role != "admin":
-        try:
-            with db_session() as s2:
-                u2 = s2.get(User, user.id)
-                if u2 is not None:
-                    u2.role = "admin"
-                    s2.flush()
-                    s2.refresh(u2)
-                    user = u2
-        except Exception:  # noqa: BLE001
-            log.warning("admin 昇格に失敗", exc_info=True)
-    token = _create_session(str(user.id))
-    st.session_state[SESSION_COOKIE] = token
-    st.session_state["_current_user"] = user
+    # 許可リストのメールは _activate_user_session 内で admin に昇格される。
+    if _activate_user_session(uid) is None:
+        st.error("ログインに失敗しました")
+        return
     st.rerun()
-
-
-def _show_pw_reset_form() -> None:
-    import streamlit as st
-
-    st.markdown("### パスワードリセット")
-    with st.form("pw_reset_form"):
-        _email = st.text_input("登録済みメールアドレス")
-        submitted = st.form_submit_button("リセットメールを送信")
-    if submitted:
-        st.info("メールアドレスが登録済みの場合、リセットリンクを送信しました。")
 
 
 def logout() -> None:

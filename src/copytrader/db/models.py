@@ -367,6 +367,25 @@ class PwResetToken(Base):
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class LoginToken(Base):
+    """マジックリンク / パスワードリセット用のワンタイムトークン（alembic 0010）。
+
+    生トークンはメールでのみ送られ、DB には SHA-256 ハッシュのみ保存する。
+    `purpose` で用途を区別する（'magic_link' | 'password_reset'）。
+    """
+    __tablename__ = "login_tokens"
+    id: Mapped[_uuid_mod.UUID] = mapped_column(pgUUID(as_uuid=True), primary_key=True,
+                                   server_default=text("gen_random_uuid()"))
+    user_id: Mapped[_uuid_mod.UUID] = mapped_column(pgUUID(as_uuid=True),
+                                        ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    token_hash: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    purpose: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (Index("login_tokens_token_hash_idx", "token_hash"),)
+
+
 class AdminAuditLog(Base):
     __tablename__ = "admin_audit_log"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
