@@ -1,71 +1,102 @@
+"""管理者 > ユーザー管理。"""
 from __future__ import annotations
 
+import pandas as pd
 import streamlit as st
+from sqlalchemy import select
 
+from copytrader.db.engine import get_session
+from copytrader.db.models import AdminAuditLog, User
+from copytrader.web.auth import current_user, require_admin
+from copytrader.web.sidebar import render_sidebar
+
+st.set_page_config(page_title="ユーザー管理", layout="wide",
+                   initial_sidebar_state="expanded")
+require_admin()
+render_sidebar()
+
+# 管理者ページ: 全面黒背景
 st.markdown("""
 <style>
-.stApp, .stApp > div { background: #000 !important; color: #fff !important; }
-[data-testid="stHeader"] { background: #000 !important; }
+.stApp { background: #000 !important; color: #fff !important; }
 </style>""", unsafe_allow_html=True)
 
+st.markdown("## 👥 ユーザー管理")
 
-def main() -> None:
-    from sqlalchemy import select
+col1, col2 = st.columns([3, 1])
+search = col1.text_input("メール検索")
+status_filter = col2.selectbox("ステータス", ["全て", "active", "canceled", "past_due"])
 
-    from copytrader.db.engine import get_session
-    from copytrader.db.models import User
-    from copytrader.web.auth import require_admin
-    from copytrader.web.sidebar import render_sidebar
+with get_session() as s:
+    q = select(User)
+    if search:
+        q = q.where(User.email.ilike(f"%{search}%"))
+    if status_filter != "全て":
+        q = q.where(User.subscription_status == status_filter)
+    users = s.execute(q).scalars().all()
 
-    require_admin()
-    render_sidebar()
+rows = [
+    {
+        "メール": u.email,
+        "ロール": u.role,
+        "サブスク": u.subscription_status or "—",
+        "期限": str(u.subscription_period_end)[:10] if u.subscription_period_end else "—",
+        "登録日": str(u.created_at)[:10],
+        "有効": "✅" if u.is_active else "❌",
+    }
+    for u in users
+]
 
-    st.title("👥 ユーザー管理")
+event = st.dataframe(
+    pd.DataFrame(rows),
+    use_container_width=True,
+    on_select="rerun",
+    selection_mode="single-row",
+)
 
-    try:
-        with get_session() as s:
-            users = s.execute(select(User)).scalars().all()
-    except Exception as e:  # noqa: BLE001
-        st.error(f"DB エラー: {e}")
-        return
+if event.selection.rows:
+    u = users[event.selection.rows[0]]
+    with st.expander(f"👤 {u.email} の詳細", expanded=True):
+        col1, col2, col3 = st.columns(3)
+        col1.metric("ロール", u.role)
+        col2.metric("ステータス", u.subscription_status or "—")
+        col3.metric("有効", "✅" if u.is_active else "❌")
 
-    if not users:
-        st.info("ユーザーが存在しません。")
-        return
+        with st.form(f"user_edit_{u.id}"):
+            new_role = st.selectbox(
+                "ロール変更", ["user", "admin"],
+                index=0 if u.role == "user" else 1,
+            )
+            is_active = st.checkbox("有効", value=u.is_active)
+            if st.form_submit_button("保存"):
+                with get_session() as s:
+                    user_obj = s.get(User, u.id)
+                    if user_obj:
+                        user_obj.role = new_role
+                        user_obj.is_active = is_active
+                with get_session() as s:
+                    s.add(AdminAuditLog(
+                        actor_id=current_user().id,
+                        action="update_user",
+                        target_type="user",
+                        target_id=str(u.id),
+                        detail={"role": new_role, "is_active": is_active},
+                    ))
+                st.success("保存しました")
+                st.rerun()
 
-    for u in users:
-        with st.expander(f"{u.email} ({u.role})"):
-            col1, col2 = st.columns(2)
-            with col1:
-                new_role = st.selectbox(
-                    "ロール",
-                    ["user", "admin"],
-                    index=0 if u.role == "user" else 1,
-                    key=f"role_{u.id}",
-                )
-                if st.button("ロール変更", key=f"role_btn_{u.id}"):
-                    try:
-                        with get_session() as s:
-                            user = s.get(User, u.id)
-                            if user:
-                                user.role = new_role
-                        st.success("変更しました")
-                        st.rerun()
-                    except Exception as e:  # noqa: BLE001
-                        st.error(f"エラー: {e}")
-            with col2:
-                active = u.is_active
-                label = "有効化" if not active else "無効化"
-                if st.button(label, key=f"active_btn_{u.id}"):
-                    try:
-                        with get_session() as s:
-                            user = s.get(User, u.id)
-                            if user:
-                                user.is_active = not active
-                        st.success("変更しました")
-                        st.rerun()
-                    except Exception as e:  # noqa: BLE001
-                        st.error(f"エラー: {e}")
-
-
-main()
+        if st.button("🚫 アカウントを凍結", type="secondary", key=f"freeze_{u.id}"):
+            with get_session() as s:
+                user_obj = s.get(User, u.id)
+                if user_obj:
+                    user_obj.is_active = False
+            with get_session() as s:
+                s.add(AdminAuditLog(
+                    actor_id=current_user().id,
+                    action="freeze_user",
+                    target_type="user",
+                    target_id=str(u.id),
+                    detail={},
+                ))
+            st.warning(f"{u.email} を凍結しました")
+            st.rerun()
