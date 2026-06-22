@@ -588,7 +588,140 @@ WHERE tablename IN ('profiles', 'skills', 'subscriptions', 'service_admins');
 
 ---
 
+## 共通機能要件(全ツール必須・AIモデル選択)
 
+全ツールの AI 機能は **OpenRouter API** を通じてモデルを選択・切り替え可能にする。モデル選択は**管理者専用**とし、一般ユーザーによるモデル変更は禁止する。
+
+### 設計原則
+- **管理者のみがモデルを設定できる**。一般ユーザー設定画面にモデル選択 UI を設けない
+- OpenRouter は OpenAI 互換 API を提供するため、`baseURL` を変えるだけで既存 AI 呼び出しを置換できる
+- 選択されたモデルは DB（`openrouter_config` テーブル）に保存し、全リクエストで参照する
+- AI 使用量（トークン数・コスト）は `ai_usage_log` テーブルに記録し、管理者ダッシュボードに表示する
+
+### A. 管理者設定ページ（`/admin/settings`）
+
+#### A-1. OpenRouter API キー設定（UIから入力）
+
+環境変数（`OPENROUTER_API_KEY`）に頼らず、**管理者メニュー内のフォームで API キーを入力・保存できるようにする**。
+
+- [ ] `/admin/settings` ページに「OpenRouter API キー」入力フォームを設置
+  - 現在の値はマスク表示（例: `sk-or-v1-••••••••4abc`）。空の場合は「未設定」と表示
+  - テキストボックス（`type="password"`）+ 「保存」ボタン
+  - 保存成功後はトースト通知し、再マスク表示に戻る
+  - 「削除」ボタンで空文字を保存し、env フォールバックに戻せる
+- [ ] `app_settings` テーブル（`key TEXT PK, value TEXT, description TEXT, updated_at, updated_by UUID`）に保存
+  - RLS: `is_service_admin()` のみ読み書き可
+  - `updated_by` に操作者の `user_id` を記録（監査ログ兼用）
+- [ ] `/api/admin/settings` API Route（GET / PUT）を実装
+  - GET: 全設定をマスク済みで返す（`value` フィールドは送らない、`maskedValue` と `isEmpty` のみ）
+  - PUT: `{ key, value }` を受け取り upsert。`isServiceAdmin` 検証必須
+  - `writeAuditEvent({ action: "admin.setting_updated", targetResource: key })` で監査ログ記録
+- [ ] `lib/settings/get-app-setting.ts` を新設: `key` を引数に取り `app_settings` から値を返す server-only ヘルパー
+- [ ] `config/navigation.ts` の `adminNav` に `{ label: "システム設定", href: "/admin/settings", icon: "⚙️" }` を追加
+
+#### A-2. モデル選択 UI
+
+- [ ] `/api/admin/openrouter/models` から OpenRouter の全モデル一覧を取得（1時間キャッシュ）
+- [ ] **モデル選択 UI**:
+  - プルダウン（select または Combobox）で全モデルを表示
+  - **選択中のモデルには色付きバッジ**（`bg-blue-600 text-white`）を付けて視覚的に強調
+  - 選択後はプルダウンを閉じ、選択されたモデル名・ID・価格情報を表示
+- [ ] 「このモデルを使用する」ボタンで `/api/admin/openrouter/config` に POST して保存
+- [ ] モデルのコンテキスト長・プロンプト単価・補完単価を選択後に表示
+- [ ] `config/navigation.ts` の `adminNav` に「AI設定 > モデル選択」を追加
+
+### B. ユーザー側の制限（必須）
+
+- [ ] **一般ユーザー設定画面にモデル選択 UI を設けない**
+- [ ] 既存のユーザー設定画面（`/app/account/settings` 等）にモデル選択が存在する場合は**削除**する
+- [ ] `profiles` テーブルや `user_settings` テーブルの `ai_model` / `preferred_model` カラムは使用しない
+- [ ] `resolveModel()` ヘルパーはユーザー ID を引数に取らず、常に管理者 DB 設定のみを参照する
+- [ ] 実装前に以下で既存の実装を確認し、ユーザー側モデル設定が存在すれば削除する:
+  ```bash
+  grep -rn "ai.*model\|model.*ai\|preferred.*model" app/app/account --include="*.tsx" --include="*.ts"
+  grep -rn "ai_model\|preferred_model\|user_model" supabase/migrations --include="*.sql"
+  ```
+
+### C. API Routes（管理者専用・全て `isSuperadmin` 検証必須）
+
+| Route | メソッド | 用途 |
+|---|---|---|
+| `/api/admin/openrouter/models` | GET | OpenRouter 全モデル一覧取得（1h キャッシュ） |
+| `/api/admin/openrouter/config` | GET / POST | 選択モデルの取得・保存 |
+| `/api/admin/openrouter/usage` | GET | コスト集計（`?days=30`） |
+
+### D. DBスキーマ
+
+```sql
+-- 選択モデル設定（1件のみ）
+create table openrouter_config (
+  id uuid primary key default gen_random_uuid(),
+  model_id text not null,           -- 例: "anthropic/claude-3-5-sonnet"
+  model_name text not null,
+  context_length integer,
+  prompt_price_per_token numeric(20,10),
+  completion_price_per_token numeric(20,10),
+  is_selected boolean not null default false,
+  updated_at timestamptz not null default now(),
+  updated_by uuid references auth.users(id)
+);
+-- トリガーで is_selected を常に1件制約
+
+-- AI使用量ログ
+create table ai_usage_log (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default now(),
+  user_id uuid references auth.users(id),
+  model_id text not null,
+  prompt_tokens integer not null default 0,
+  completion_tokens integer not null default 0,
+  total_tokens integer not null default 0,
+  estimated_cost_usd numeric(20,10),
+  endpoint text,
+  success boolean not null default true
+);
+```
+
+RLS: `openrouter_config` は管理者のみ読み書き可。`ai_usage_log` はユーザー本人・管理者のみ参照可。
+
+### E. 管理者ダッシュボードへのコスト表示
+
+- [ ] 管理者ダッシュボード（`/admin` または `/admin/dashboard`）に `CostSummary` コンポーネントを配置
+- [ ] 過去30日の合計コスト（USD・円換算）、合計トークン数、モデル別内訳を表示
+- [ ] データは `/api/admin/openrouter/usage` から取得
+
+### F. AI呼び出しの OpenRouter 移行
+
+- [ ] `lib/ai/resolve-model.ts` を新設し、DB 設定からモデルID・APIキーを解決
+- [ ] 既存の Anthropic SDK 呼び出しを OpenAI 互換形式（`baseURL: "https://openrouter.ai/api/v1"`）に移行
+- [ ] `lib/ai/log-usage.ts` を新設し、各 AI Route 呼び出し後にトークン数・コストを記録
+- [ ] API キーの解決優先順位: **DB (`app_settings.openrouter_api_key`) → 環境変数 `OPENROUTER_API_KEY` → 環境変数 `ANTHROPIC_API_KEY`**（この順でフォールバック）
+- [ ] **`OPENROUTER_API_KEY` を `NEXT_PUBLIC_` で公開しない**（API Route 経由のみ）
+- [ ] DB 設定が空の場合は `process.env.OPENROUTER_API_KEY` を使い、それも空なら `ANTHROPIC_API_KEY` で Anthropic SDK を直接呼ぶ
+
+### G. 環境変数
+
+```bash
+OPENROUTER_API_KEY=        # https://openrouter.ai/keys で取得
+OPENROUTER_MODEL=          # 省略時は DB 設定を使用（環境変数で強制上書き可）
+```
+
+### H. GAP分析（必須出力）
+
+| 機能 | 現状（未/一部/実装済） | 不足内容 | 工数 |
+|---|---|---|---|
+| **管理者UIでの API キー入力・保存 (`app_settings` テーブル)** | | | |
+| OpenRouter API 連携・モデル一覧取得 | | | |
+| 管理者モデル選択 UI（色付きバッジ・閉じる） | | | |
+| 選択モデルの DB 保存・取得 | | | |
+| ユーザー側モデル選択の削除/禁止 | | | |
+| AI 使用量ログ記録 | | | |
+| 管理者ダッシュボードへのコスト表示 | | | |
+| 既存 AI 呼び出しの OpenRouter 移行 | | | |
+
+---
+
+## フェーズ0:インベントリ作成(最初の1回のみ)
 
 対象の全リポジトリについて、以下の一覧表を作成する:
 
