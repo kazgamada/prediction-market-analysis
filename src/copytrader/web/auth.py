@@ -516,6 +516,8 @@ def require_admin() -> None:
         st.stop()
 
 
+_GOOGLE_G_B64 = "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0OCA0OCI+PHBhdGggZmlsbD0iI0VBNDMzNSIgZD0iTTI0IDkuNWMzLjU0IDAgNi43MSAxLjIyIDkuMjEgMy42bDYuODUtNi44NUMzNS45IDIuMzggMzAuNDcgMCAyNCAwIDE0LjYyIDAgNi41MSA1LjM4IDIuNTYgMTMuMjJsNy45OCA2LjE5QzEyLjQzIDEzLjcyIDE3Ljc0IDkuNSAyNCA5LjV6Ii8+PHBhdGggZmlsbD0iIzQyODVGNCIgZD0iTTQ2Ljk4IDI0LjU1YzAtMS41Ny0uMTUtMy4wOS0uMzgtNC41NUgyNHY5LjAyaDEyLjk0Yy0uNTggMi45Ni0yLjI2IDUuNDgtNC43OCA3LjE4bDcuNzMgNmM0LjUxLTQuMTggNy4wOS0xMC4zNiA3LjA5LTE3LjY1eiIvPjxwYXRoIGZpbGw9IiNGQkJDMDUiIGQ9Ik0xMC41MyAyOC41OWMtLjQ4LTEuNDUtLjc2LTIuOTktLjc2LTQuNTlzLjI3LTMuMTQuNzYtNC41OWwtNy45OC02LjE5Qy45MiAxNi40NiAwIDIwLjEyIDAgMjRjMCAzLjg4LjkyIDcuNTQgMi41NiAxMC43OGw3Ljk3LTYuMTl6Ii8+PHBhdGggZmlsbD0iIzM0QTg1MyIgZD0iTTI0IDQ4YzYuNDggMCAxMS45My0yLjEzIDE1Ljg5LTUuODFsLTcuNzMtNmMtMi4xNSAxLjQ1LTQuOTIgMi4zLTguMTYgMi4zLTYuMjYgMC0xMS41Ny00LjIyLTEzLjQ3LTkuOTFsLTcuOTggNi4xOUM2LjUxIDQyLjYyIDE0LjYyIDQ4IDI0IDQ4eiIvPjwvc3ZnPg=="
+
 _LOGIN_CSS = """
 <style>
 button[kind="primaryFormSubmit"] {
@@ -541,6 +543,24 @@ button[kind="tertiaryFormSubmit"] {
 .login-sub { text-align: center; color: #9aa3b2; font-size: 0.85rem; margin-bottom: 1rem; }
 .login-foot { text-align: center; color: #6b7280; font-size: 0.75rem; margin-top: 0.8rem; }
 .login-foot a { color: #c9761f; }
+
+/* Google ログインボタン: ダーク背景 + 多色 G ロゴ（白背景にしない） */
+.st-key-_google_login button {
+    background-color: #131314 !important;
+    border: 1px solid #5f6368 !important;
+    color: #e3e3e3 !important;
+    font-weight: 600 !important;
+    padding-left: 2.8rem !important;
+    background-image: url("data:image/svg+xml;base64,GOOGLE_G_B64") !important;
+    background-repeat: no-repeat !important;
+    background-position: 0.9rem center !important;
+    background-size: 1.15rem 1.15rem !important;
+}
+.st-key-_google_login button:hover {
+    background-color: #1f2023 !important;
+    border-color: #8a8f96 !important;
+    color: #ffffff !important;
+}
 </style>
 """
 
@@ -554,7 +574,8 @@ def _show_login_form() -> None:
     import streamlit as st
 
     _prelogin_chrome()
-    st.markdown(_LOGIN_CSS, unsafe_allow_html=True)
+    st.markdown(_LOGIN_CSS.replace("GOOGLE_G_B64", _GOOGLE_G_B64),
+                unsafe_allow_html=True)
 
     _, mid, _ = st.columns([1, 1.5, 1])
     with mid, st.container(border=True):
@@ -564,12 +585,17 @@ def _show_login_form() -> None:
             unsafe_allow_html=True,
         )
 
-        # Google ログイン（OIDC 設定済みのときだけ表示）
-        if _oauth_configured():
-            if st.button("Google でログイン", use_container_width=True,
-                         key="_google_login"):
+        # Google ログイン（ダーク背景 + 多色 G ロゴ・白背景にしない）。
+        # 常に表示し、OIDC 未設定でクリックされたらセットアップ案内を出す。
+        if st.button("Google でログイン", use_container_width=True,
+                     key="_google_login"):
+            if _oauth_configured():
                 st.login("google")
-            st.markdown('<div class="login-or">または</div>', unsafe_allow_html=True)
+            else:
+                st.error("Google ログインは未設定です。"
+                         "[auth] secrets（GOOGLE_CLIENT_ID 等）を設定してください"
+                         "（docs/setup/google-oauth.md 参照）。")
+        st.markdown('<div class="login-or">または</div>', unsafe_allow_html=True)
 
         with st.form("login_form", border=False):
             magic_clicked = st.form_submit_button(
