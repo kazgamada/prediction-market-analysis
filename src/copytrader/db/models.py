@@ -1,6 +1,7 @@
 """SQLAlchemy 2 model definitions matching alembic/versions/0001_initial.py."""
 from __future__ import annotations
 
+import uuid as _uuid_mod
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -20,6 +21,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import ENUM, JSONB
+from sqlalchemy.dialects.postgresql import UUID as pgUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -318,3 +320,70 @@ class AuditLog(Base):
     actor: Mapped[str] = mapped_column(Text)
     action: Mapped[str] = mapped_column(Text)
     details: Mapped[dict] = mapped_column(JSONB)
+
+
+class User(Base):
+    __tablename__ = "users"
+    id: Mapped[_uuid_mod.UUID] = mapped_column(pgUUID(as_uuid=True), primary_key=True,
+                                   server_default=text("gen_random_uuid()"))
+    email: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    pw_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    role: Mapped[str] = mapped_column(Text, nullable=False, server_default="user")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # billing columns (added by 0007)
+    stripe_customer_id: Mapped[str | None] = mapped_column(Text)
+    stripe_subscription_id: Mapped[str | None] = mapped_column(Text)
+    subscription_status: Mapped[str | None] = mapped_column(Text)
+    subscription_period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    price_id: Mapped[str | None] = mapped_column(Text)
+
+
+class Session(Base):
+    __tablename__ = "sessions"
+    id: Mapped[_uuid_mod.UUID] = mapped_column(pgUUID(as_uuid=True), primary_key=True,
+                                   server_default=text("gen_random_uuid()"))
+    user_id: Mapped[_uuid_mod.UUID] = mapped_column(pgUUID(as_uuid=True),
+                                        ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    token_hash: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (
+        Index("sessions_token_hash_idx", "token_hash"),
+        Index("sessions_user_id_idx", "user_id"),
+    )
+
+
+class PwResetToken(Base):
+    __tablename__ = "pw_reset_tokens"
+    id: Mapped[_uuid_mod.UUID] = mapped_column(pgUUID(as_uuid=True), primary_key=True,
+                                   server_default=text("gen_random_uuid()"))
+    user_id: Mapped[_uuid_mod.UUID] = mapped_column(pgUUID(as_uuid=True),
+                                        ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    token_hash: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AdminAuditLog(Base):
+    __tablename__ = "admin_audit_log"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    actor_id: Mapped[_uuid_mod.UUID] = mapped_column(pgUUID(as_uuid=True),
+                                         ForeignKey("users.id"), nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    target_type: Mapped[str] = mapped_column(Text, nullable=False)
+    target_id: Mapped[str] = mapped_column(Text, nullable=False)
+    detail: Mapped[dict | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class NotificationPref(Base):
+    __tablename__ = "notification_prefs"
+    user_id: Mapped[_uuid_mod.UUID] = mapped_column(pgUUID(as_uuid=True),
+                                        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    invoice_paid: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    risk_halt: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    daily_summary: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

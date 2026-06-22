@@ -5,6 +5,7 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import streamlit as st
+from copytrader.web.sidebar import render_sidebar
 from sqlalchemy import desc, func, select
 
 from copytrader.chain.errors import redact_url
@@ -13,16 +14,16 @@ from copytrader.db import settings_table
 from copytrader.db.engine import get_session
 from copytrader.db.models import Cursor, Job, RiskEvent, RpcDeadLetter, Trade
 from copytrader.indexer.backfill import CURSOR_NAME
-from copytrader.web.auth import require_password
+from copytrader.web.auth import require_login
 from copytrader.web.format import fmt_ago
 from copytrader.web.theme import (
     inject_theme,
 )
 
 st.set_page_config(page_title="Ops", layout="wide",
-                   initial_sidebar_state="collapsed")
-require_password()
-
+                   initial_sidebar_state="expanded")
+require_login()
+render_sidebar()
 inject_theme()
 
 

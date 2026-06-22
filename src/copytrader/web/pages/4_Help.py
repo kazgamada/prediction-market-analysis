@@ -7,16 +7,17 @@ from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
+from copytrader.web.sidebar import render_sidebar
 
-from copytrader.web.auth import require_password
+from copytrader.web.auth import require_login
 from copytrader.web.theme import (
     inject_theme,
 )
 
 st.set_page_config(page_title="Help", layout="wide",
-                   initial_sidebar_state="collapsed")
-require_password()
-
+                   initial_sidebar_state="expanded")
+require_login()
+render_sidebar()
 inject_theme()
 
 st.markdown(

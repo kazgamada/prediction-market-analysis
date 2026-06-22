@@ -7,7 +7,8 @@ import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
 
-from copytrader.web.auth import require_password
+from copytrader.web.auth import require_login
+from copytrader.web.sidebar import render_sidebar
 from copytrader.web.theme import (
     ACCENT_CYAN,
     ACCENT_RED,
@@ -19,8 +20,9 @@ from copytrader.web.theme import (
 )
 
 st.set_page_config(page_title="Home", layout="wide",
-                   initial_sidebar_state="collapsed")
-require_password()
+                   initial_sidebar_state="expanded")
+require_login()
+render_sidebar()
 inject_theme()
 
 

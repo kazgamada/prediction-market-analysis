@@ -8,12 +8,13 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from copytrader.web.sidebar import render_sidebar
 from sqlalchemy import desc, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from copytrader.db.engine import get_session
 from copytrader.db.models import Job, Watchlist
-from copytrader.web.auth import require_password
+from copytrader.web.auth import require_login
 from copytrader.web.format import fmt_ago, short_addr
 from copytrader.web.theme import (
     ACCENT_GREEN,
@@ -25,9 +26,9 @@ from copytrader.web.theme import (
 )
 
 st.set_page_config(page_title="Execute", layout="wide",
-                   initial_sidebar_state="collapsed")
-require_password()
-
+                   initial_sidebar_state="expanded")
+require_login()
+render_sidebar()
 inject_theme()
 
 

@@ -1,14 +1,9 @@
-"""Lightweight aiohttp /healthz /readyz server.
-
-Started inside each runtime process so that Fly.io and curl can answer
-"is this process alive?" without parsing Streamlit's HTML. Result of the
-last RPC self-test is cached for 30 seconds (T21 prevention: observability
-shipped from S1, not bolted on later).
-"""
+"""Lightweight aiohttp /healthz /readyz server + Stripe webhook."""
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -77,6 +72,7 @@ class HealthServer:
         app = web.Application()
         app.router.add_get("/healthz", self.healthz)
         app.router.add_get("/readyz", self.readyz)
+        app.router.add_post("/stripe/webhook", stripe_webhook)
         return app
 
     async def run_forever(self) -> None:
@@ -85,5 +81,103 @@ class HealthServer:
         site = web.TCPSite(runner, host="0.0.0.0", port=self.port)
         await site.start()
         log.info("health server listening on :%d", self.port)
-        # Park forever.
         await asyncio.Event().wait()
+
+
+async def stripe_webhook(request: web.Request) -> web.Response:
+    """Stripe Webhook ハンドラ（署名検証付き）。"""
+    webhook_secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+    stripe_key = os.environ.get("STRIPE_SECRET_KEY", "")
+
+    if not stripe_key:
+        log.warning("STRIPE_SECRET_KEY not set; ignoring webhook")
+        return web.Response(status=200, text="ok")
+
+    payload = await request.read()
+    sig = request.headers.get("Stripe-Signature", "")
+
+    try:
+        import stripe
+        stripe.api_key = stripe_key
+
+        if webhook_secret:
+            event = stripe.Webhook.construct_event(payload, sig, webhook_secret)
+        else:
+            import json
+            event = json.loads(payload)
+            log.warning("STRIPE_WEBHOOK_SECRET not set; skipping signature verification")
+    except Exception as e:  # noqa: BLE001
+        log.warning("stripe webhook signature verification failed: %s", e)
+        return web.Response(status=400, text="invalid signature")
+
+    event_type = event.get("type", "")
+    event_data = event.get("data", {}).get("object", {})
+
+    if event_type == "invoice.paid":
+        _handle_invoice_paid(event_data)
+    elif event_type == "customer.subscription.updated":
+        _handle_subscription_updated(event_data)
+    elif event_type == "charge.refunded":
+        _handle_refund(event_data)
+    else:
+        log.debug("unhandled stripe event type: %s", event_type)
+
+    return web.Response(status=200, text="ok")
+
+
+def _handle_invoice_paid(invoice: dict) -> None:
+    """invoice.paid イベント処理: subscription_status を active に更新。"""
+    customer_id = invoice.get("customer")
+    if not customer_id:
+        return
+    try:
+        from sqlalchemy import select
+
+        from copytrader.db.engine import get_session
+        from copytrader.db.models import User
+
+        with get_session() as s:
+            user = s.execute(
+                select(User).where(User.stripe_customer_id == customer_id)
+            ).scalar_one_or_none()
+            if user:
+                user.subscription_status = "active"
+                log.info("invoice.paid: updated user %s status to active", user.email)
+    except Exception:  # noqa: BLE001
+        log.warning("_handle_invoice_paid failed", exc_info=True)
+
+
+def _handle_subscription_updated(subscription: dict) -> None:
+    """customer.subscription.updated イベント処理: ステータス更新。"""
+    customer_id = subscription.get("customer")
+    status = subscription.get("status")
+    period_end_ts = subscription.get("current_period_end")
+    if not customer_id:
+        return
+    try:
+        import datetime
+
+        from sqlalchemy import select
+
+        from copytrader.db.engine import get_session
+        from copytrader.db.models import User
+
+        with get_session() as s:
+            user = s.execute(
+                select(User).where(User.stripe_customer_id == customer_id)
+            ).scalar_one_or_none()
+            if user:
+                user.subscription_status = status
+                if period_end_ts:
+                    user.subscription_period_end = datetime.datetime.fromtimestamp(
+                        period_end_ts, tz=datetime.UTC
+                    )
+                log.info("subscription.updated: user %s status=%s", user.email, status)
+    except Exception:  # noqa: BLE001
+        log.warning("_handle_subscription_updated failed", exc_info=True)
+
+
+def _handle_refund(charge: dict) -> None:
+    """charge.refunded イベント処理: ログ記録のみ。"""
+    log.info("charge.refunded: charge_id=%s amount_refunded=%s",
+             charge.get("id"), charge.get("amount_refunded"))
