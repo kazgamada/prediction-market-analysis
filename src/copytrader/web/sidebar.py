@@ -1,10 +1,21 @@
-"""サイドバーレンダラ（黒背景・2階層ナビ）。"""
+"""サイドバーレンダラ（黒背景・グループ分けナビ）。
+
+Streamlit 標準のページ自動ナビ（pages/ をファイル名で並べるもの）は
+hide_default_page_nav() で隠し、このカスタムナビ 1 本に統一する。
+"""
 from __future__ import annotations
 
 import streamlit as st
 
 from copytrader.web.auth import current_user
-from copytrader.web.navigation import ADMIN_NAVIGATION, NAVIGATION, NavItem
+from copytrader.web.navigation import NAV_SECTIONS, NavItem
+
+# 標準ページナビを隠すための CSS（ログイン前画面でも効くよう auth 側でも適用）
+HIDE_DEFAULT_NAV_CSS = """
+<style>
+[data-testid="stSidebarNav"] { display: none !important; }
+</style>
+"""
 
 _SIDEBAR_CSS = """
 <style>
@@ -18,26 +29,40 @@ _SIDEBAR_CSS = """
 [data-testid="stSidebar"] span {
     color: #fff !important;
 }
-.admin-divider {
-    border-top: 1px solid #333;
-    margin: 1rem 0 0.5rem;
+.nav-section-title {
+    color: #7a8499 !important;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    margin: 1rem 0 0.25rem;
 }
 </style>
 """
 
 
+def hide_default_page_nav() -> None:
+    """Streamlit 標準のページ自動ナビを非表示にする。"""
+    st.markdown(HIDE_DEFAULT_NAV_CSS, unsafe_allow_html=True)
+
+
 def render_sidebar() -> None:
     """全ページ共通サイドバー。require_login() の直後に呼ぶ。"""
+    hide_default_page_nav()
     st.markdown(_SIDEBAR_CSS, unsafe_allow_html=True)
+    user = current_user()
+    is_admin = bool(user and user.role == "admin")
+
     with st.sidebar:
         st.markdown("### 📊 Copytrader")
-        _render_nav_items(NAVIGATION)
-
-        user = current_user()
-        if user and user.role == "admin":
-            st.markdown('<div class="admin-divider"></div>', unsafe_allow_html=True)
-            st.markdown("**管理者**")
-            _render_nav_items(ADMIN_NAVIGATION)
+        for section in NAV_SECTIONS:
+            # 管理者専用セクションは admin にだけ表示
+            if section.admin_only and not is_admin:
+                continue
+            st.markdown(
+                f'<div class="nav-section-title">{section.title}</div>',
+                unsafe_allow_html=True,
+            )
+            _render_nav_items(section.items)
 
         st.markdown("---")
         if user:

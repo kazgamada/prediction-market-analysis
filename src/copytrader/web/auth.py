@@ -125,6 +125,25 @@ def require_login() -> None:
     st.stop()
 
 
+def _prelogin_chrome() -> None:
+    """ログイン前画面の見た目を整える。
+
+    Streamlit 標準のページ自動ナビ（pages/ のファイル名一覧）を隠し、
+    ダークテーマを適用する。これをしないとログイン前にナビが丸見えになる。
+    """
+    import streamlit as st
+
+    st.markdown(
+        '<style>[data-testid="stSidebarNav"]{display:none !important;}</style>',
+        unsafe_allow_html=True,
+    )
+    try:
+        from copytrader.web.theme import inject_theme
+        inject_theme()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _legacy_password_gate(expected: str) -> None:
     """旧来の単一パスワードゲート（後方互換）。"""
     import streamlit as st
@@ -132,6 +151,7 @@ def _legacy_password_gate(expected: str) -> None:
     if st.session_state.get(_SESSION_KEY):
         return
 
+    _prelogin_chrome()
     st.markdown("## 🔒 ログイン")
     with st.form("auth_gate"):
         pw = st.text_input("パスワード", type="password")
@@ -161,6 +181,7 @@ def require_admin() -> None:
 def _show_login_form() -> None:
     import streamlit as st
 
+    _prelogin_chrome()
     st.markdown("## 🔒 ログイン")
     with st.form("login_form"):
         email = st.text_input("メールアドレス")
