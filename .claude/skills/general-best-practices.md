@@ -9,6 +9,7 @@ sourceSkillIds:
   - e679a935
   - a0cd9eec
   - 79dd4189
+  - 528ae376
   - af5835a8
   - b65d7e1f
   - 5c2b73a0
@@ -28,145 +29,100 @@ sourceSkillIds:
   - b2127f6a
   - a6958a08
   - 0707f500
-generatedAt: '2026-06-17'
+generatedAt: '2026-06-22'
 integrationStrategy: latest-first
+latestSourceTimestamp: '2026-06-21T02:36:25Z'
 adoptedFromArchive:
-  - archive/skills/account-system.md
-  - archive/skills/add-admin-alert.md
-  - archive/skills/analytics-engine.md
-  - archive/skills/csv-parser.md
-  - archive/skills/google-drive-bridge.md
-  - archive/skills/guest-mode.md
-  - archive/skills/line-bot.md
-  - archive/skills/ocr-receipt.md
+  - archive/skills/remove-placeholder.md
+  - archive/skills/general-best-practices.md
   - archive/skills/08-destructive-action-ux.md
   - archive/skills/15-planning-with-todos.md
+  - archive/skills/16-restore-point-tags.md
+  - archive/skills/19-rls-organization-isolation.md
+  - archive/skills/26-phased-table-deprecation.md
+  - archive/skills/33-decision-locked-plans.md
+  - archive/skills/36-exploratory-question-handling.md
+  - archive/skills/37-rollback-runbook.md
 ---
 ```markdown
 ---
 name: general-best-practices
-description: Next.js/TypeScriptプロジェクト全般に適用できるベストプラクティス集。破壊的操作のUX・進捗トラッキング・アラート設計・アカウント/ロール設計・分析エンジン・CSV/OCR取込・外部連携・ゲストモード・マルチテナント分離の汎用パターンを網羅。
-category: その他
-user-invocable: true
-argument-hint: "[トピック: ux|todo|alert|account|analytics|csv|ocr|guest|integration|tenant]"
-allowed-tools: Read, Edit, Write, Bash, Grep, Glob
+description: Next.js/TypeScriptプロジェクト全般に適用できるベストプラクティス集。破壊的操作のUX・進捗トラッキング・スナップショット運用・RLSポリシー・テーブル段階的廃止・意思決定ログ・探索的相談への返し方・ロールバック計画・プレースホルダー排除の汎用パターンを網羅。
+category: other
 ---
 
-# 汎用ベストプラクティス — Next.js / TypeScript
+# General Best Practices — Next.js / TypeScript
 
-トピック: **$ARGUMENTS**
-
-> 省略時はすべてのセクションを参照してください。
+> 複数プロジェクトから抽出した「どのプロジェクトでも成立する」原則集。
+> コードテンプレートは最小限に留め、原則と判断基準を優先して記述する。
 
 ---
 
 ## 目次
 
-| # | トピック | キーワード |
-|---|---|---|
-| 1 | 破壊的操作の UX | `ux` |
-| 2 | TodoWrite 進捗トラッキング | `todo` |
-| 3 | 管理者アラート設計 | `alert` |
-| 4 | アカウント・ロール・プラン設計 | `account` |
-| 5 | 分析・集計エンジン | `analytics` |
-| 6 | CSV 取込パターン | `csv` |
-| 7 | OCR レシート・請求書処理 | `ocr` |
-| 8 | ゲストモード・デモデータ | `guest` |
-| 9 | 外部サービス連携 (Drive / LINE / etc.) | `integration` |
-| 10 | マルチテナント分離 | `tenant` |
+1. [破壊的操作のUX](#1-破壊的操作のux)
+2. [TodoWriteを使った進捗トラッキング](#2-todowriteを使った進捗トラッキング)
+3. [Gitスナップショット運用](#3-gitスナップショット運用)
+4. [組織境界のRLSポリシー](#4-組織境界のrlsポリシー)
+5. [テーブルの段階的廃止](#5-テーブルの段階的廃止)
+6. [意思決定ログ付きプラン](#6-意思決定ログ付きプラン)
+7. [探索的な問いへの返し方](#7-探索的な問いへの返し方)
+8. [ロールバック手順を最初から書く](#8-ロールバック手順を最初から書く)
+9. [意味のない画面の排除](#9-意味のない画面の排除)
 
 ---
 
-## 1. 破壊的操作の UX (`ux`)
+## 1. 破壊的操作のUX
 
 ### 原則
 
-1. **取消不能を明示する** — 「削除します」だけでなく「この操作は取り消せません」を必ず入れる。
-2. **件数を表示する** — `${count} 件のデータを削除します`。0 件・1 件でも崩れない文言にする。
-3. **進行中はボタンを無効化 + ラベル変更** — 再クリックによる二重実行を防止。
-4. **成功後はサーバーから再取得** — 楽観的削除は整合性ずれの原因になる。
-5. **失敗時は理由を表示** — `alert(\`削除に失敗しました: ${json.error ?? res.status}\`)`。
+| # | ルール | 理由 |
+|---|--------|------|
+| 1 | **取消不能であることを明示する** | 「削除します」だけでは重大度が伝わらない |
+| 2 | **件数を必ず表示する** | `${count} 件を削除します` — 0件・1件でも崩れない文言にする |
+| 3 | **進行中はボタンを無効化＋表示変更** | 再クリックで二重実行を防ぐ |
+| 4 | **成功後はサーバーから再取得** | 楽観的削除は整合性ズレがdevtoolsでしか分からなくなる |
+| 5 | **失敗時はalertに「なぜ」を出す** | `alert(\`削除に失敗しました: ${json.error ?? res.status}\`)` |
 
 ### 最小テンプレート
 
-```typescript
-// components/BulkDeleteButton.tsx
+```ts
 const [deleting, setDeleting] = useState(false);
 
 async function handleDelete() {
-  if (
-    !confirm(
-      `${count} 件のデータを削除します。この操作は取り消せません。続けますか？`
-    )
-  )
-    return;
-
+  if (!confirm(`${count} 件を削除します。この操作は取り消せません。`)) return;
   setDeleting(true);
   try {
-    const res = await fetch("/api/admin/items", {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ids: selectedIds }),
-    });
+    const res = await fetch('/api/items', { method: 'DELETE', body: JSON.stringify({ ids }) });
     const json = await res.json();
-
-    if (!res.ok) {
-      alert(`削除に失敗しました: ${json.error ?? res.status}`);
-      return;
-    }
-
-    await refetch(); // ← サーバーから再取得
+    if (!res.ok) throw new Error(json.error ?? String(res.status));
+    await refetch(); // サーバーから再取得
+  } catch (e) {
+    alert(`削除に失敗しました: ${e instanceof Error ? e.message : e}`);
   } finally {
     setDeleting(false);
   }
 }
 
-return (
-  <button onClick={handleDelete} disabled={deleting || count === 0}>
-    {deleting ? "削除中…" : `${count} 件を削除`}
-  </button>
-);
-```
-
-### API 側ガイドライン
-
-```typescript
-// app/api/admin/items/route.ts
-export async function DELETE(req: Request) {
-  const { ids } = await req.json();
-
-  // 1. 権限チェック (管理者のみ)
-  const session = await getServerSession();
-  if (session?.user?.role !== "admin") {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
-
-  // 2. ids 検証
-  if (!Array.isArray(ids) || ids.length === 0) {
-    return NextResponse.json({ error: "ids required" }, { status: 400 });
-  }
-
-  // 3. トランザクションで削除
-  const { count } = await db.item.deleteMany({ where: { id: { in: ids } } });
-
-  return NextResponse.json({ deleted: count });
-}
+<button onClick={handleDelete} disabled={deleting}>
+  {deleting ? '削除中…' : `${count} 件を削除`}
+</button>
 ```
 
 ---
 
-## 2. TodoWrite 進捗トラッキング (`todo`)
+## 2. TodoWriteを使った進捗トラッキング
 
-### 使う条件
+### 使うべき条件
 
-- **3 ステップ以上**のタスク
+- 3ステップ以上のタスク
 - 並列に見える作業を順序付けて実施したい
 - ユーザーが複数の依頼を同時に出した
 - セッション中に新しいタスクが発見された
 
-> 1〜2 ステップで完結するなら**使わない**（表示ノイズになる）。
+> 1〜2ステップで完結するなら **使わない**（表示のノイズになる）。
 
-### 書き方の規約
+### Todoの書き方
 
 ```
 content:    "Add DELETE endpoint to /api/admin/sales for bulk delete"
@@ -174,53 +130,84 @@ activeForm: "Adding DELETE endpoint for bulk delete"
 status:     pending | in_progress | completed
 ```
 
-- `content` は **命令形**、`activeForm` は **進行形 / 現在分詞**。
-- 1 タスク = 1 責務。粒度が大きすぎる場合はサブタスクに分割する。
-- `in_progress` は同時に **1 件だけ** にする（並列実行の可視化を正確に保つ）。
-- 完了後は即 `completed` に更新し、次の `pending` を `in_progress` へ移行する。
+- `content` は命令形、`activeForm` は進行形／現在分詞
+- 粒度は「1コミットで完結する単位」を目安にする
+- 完了したタスクは速やかに `completed` にして視認性を保つ
 
-### ステータス遷移
+---
+
+## 3. Gitスナップショット運用
+
+### 目的
+
+1セッションで多くの変更を重ねた後「この時点に戻りたい」が発生しやすい。
+`reflog` だけに頼らず、**明示的な復元点**を残す。
+
+### 手順
+
+```bash
+# 意味のある区切り（機能実装完了・デプロイ直前など）でannotated tagを付ける
+git tag -a snapshot/2026-04-20-bulk-delete-sales \
+  -m "Restore point: sales bulk delete (page + filter-wide) implemented"
+
+# リモートへpush（可能なら）
+git push origin snapshot/2026-04-20-bulk-delete-sales
+```
+
+### 命名規則
 
 ```
-pending → in_progress → completed
-                      ↘ (blocked: コメントに理由を記載)
+snapshot/YYYY-MM-DD-<kebab-case-feature-description>
+```
+
+### 復元方法
+
+```bash
+# 内容確認
+git show snapshot/2026-04-20-bulk-delete-sales
+
+# そのコミットに戻す（新しいブランチを切ってから）
+git checkout -b restore/bulk-delete-sales snapshot/2026-04-20-bulk-delete-sales
 ```
 
 ---
 
-## 3. 管理者アラート設計 (`alert`)
+## 4. 組織境界のRLSポリシー
 
-### 通知チャネル
+### ポリシーは4種に分けて書く
 
-| チャネル | 用途 | ライブラリ例 |
-|---|---|---|
-| メール | 日次サマリ・重大インシデント | `nodemailer` / Resend |
-| Slack | リアルタイムスパイク検知 | `@slack/web-api` |
-| in-app | ダッシュボード内バナー | DB フラグ + polling |
+| 種別 | 例 |
+|------|----|
+| Self-read | 自分の所属組織だけ見える |
+| Self-write | 自分の所属組織なら更新できる |
+| Admin-read | ロール `admin` なら全件見える |
+| Admin-write | ロール `admin` なら更新／削除できる |
 
-### 実装パターン（スパイク検知）
+各テーブルは2〜4ポリシーを持つ。
+**ポリシー名に意図を書く**: `orders_select_own_org`, `orders_update_admin_only`
+→ RLSが起因のバグは追いにくいため、名前から即座に判断できるようにする。
 
-```typescript
-// server/services/admin-alerts.ts
+### 自組織を取り出す共通サブクエリ
 
-export interface SpikeStats {
-  windowMinutes: number;
-  count: number;
-  threshold: number;
-}
+```sql
+-- 自組織IDを返すヘルパサブクエリ（各ポリシーで再利用）
+(
+  SELECT organization_id
+  FROM users
+  WHERE id = auth.uid()
+)
+```
 
-/** 直近 N 分のイベント件数を取得 */
-export async function fetchRecentCount(
-  eventType: string,
-  windowMinutes: number
-): Promise<number> {
-  const since = new Date(Date.now() - windowMinutes * 60_000);
-  return db.event.count({
-    where: { type: eventType, createdAt: { gte: since } },
-  });
-}
+### RLSポリシーテンプレート
 
-/** スパイク判定 → 超過時に通知 */
-export async function checkSpike(params: SpikeStats & { eventType: string }) {
-  const { eventType, windowMinutes, threshold } = params;
-  const count =
+```sql
+-- Self-read
+CREATE POLICY "orders_select_own_org" ON orders
+  FOR SELECT USING (
+    organization_id = (SELECT organization_id FROM users WHERE id = auth.uid())
+  );
+
+-- Admin-write
+CREATE POLICY "orders_update_admin_only" ON orders
+  FOR UPDATE USING (
+    EXISTS (SELECT 1

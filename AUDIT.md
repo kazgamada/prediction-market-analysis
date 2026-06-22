@@ -398,7 +398,197 @@ UX のストレス要因(回遊性の破綻・表示の遅さ等)を体系的に
 
 ---
 
-## フェーズ0:インベントリ作成(最初の1回のみ)
+## 共通機能要件(全ツール必須・パフォーマンス)
+
+ページの体感応答速度を「押した瞬間に表示される」レベルに引き上げる。実装の目的は「ユーザーが待たされている感覚をゼロにする」ことであり、そのために必要な計測・キャッシュ戦略・バックグラウンド更新の基準を定める。
+
+### 目標値の定義
+
+| 指標 | 目標 | 計測方法 |
+|---|---|---|
+| TTFB（サーバー応答時間） | < 100ms | Vercel Analytics / `curl -w "%{time_starttransfer}"` |
+| FCP（最初の文字・画像が描画される時間） | < 200ms | Lighthouse / Web Vitals |
+| LCP（主要コンテンツが描画される時間） | < 500ms | Lighthouse / Web Vitals |
+| ナビゲーション体感 | < 100ms（体感ゼロ） | プリフェッチ済みページへの遷移 |
+| データ更新後の反映遅延 | < 60秒 | 手動確認 |
+
+> **注記**: ネットワーク往復（RTT）がある以上、「0.1秒で表示」は**サーバー側処理の完了時間がゼロに近い**ことを前提とする。日本国内のユーザーが Vercel Edge を経由する場合の RTT は概ね 20〜50ms。したがって TTFB 100ms 以内＋プリフェッチの組み合わせで、クリック後の体感遅延をゼロに近づけることを目標とする。
+
+### 根本原因の特定（計測なしの最適化を禁止する）
+
+最適化に着手する前に、以下の計測を必ず実施し、証拠として記録すること。**推測で「遅そうな箇所を直す」ことを禁ずる**（§0.3 原因究明を先、修正は後）。
+
+```bash
+# サーバー応答時間の計測
+curl -o /dev/null -s -w "TTFB: %{time_starttransfer}s\nTotal: %{time_total}s\n" \
+  -H "Cookie: <本番セッションCookie>" \
+  https://<本番URL>/app
+
+# Vercel Analytics で Core Web Vitals を確認
+# Vercel ダッシュボード → プロジェクト → Analytics → Web Vitals タブ
+```
+
+監査時に確認すべき既知のボトルネック候補（コードベース固有）:
+
+| 場所 | 問題 | 証拠 |
+|---|---|---|
+| `lib/active-github-overlay.ts` | `fetch(..., { next: { revalidate: 0 } })` — GitHub API をリクエストごとに毎回呼び出す | `:32` `revalidate: 0` |
+| `app/app/page.tsx` | `revalidate = 60` だが `overlayActiveSkillsFromGitHub` 内部キャッシュが 0 のため無意味 | `:5` |
+| `app/app/log/page.tsx` | `revalidate = 15`（15秒ごとに全件再計算） | `:4` |
+| 全 API Route | Supabase クエリに `unstable_cache` が未適用 | 各 `route.ts` |
+
+### 実装アーキテクチャ
+
+#### 方針: 「リクエスト時に計算しない、バックグラウンドで計算して溜めておく」
+
+```
+[Vercel Cron / 外部Trigger]
+     ↓ 定期実行（5分間隔）
+[POST /api/cron/warm-cache]          ← キャッシュウォーマー
+     ├─ overlayActiveSkillsFromGitHub() を実行
+     └─ revalidateTag("skills") で Next.js キャッシュも更新
+
+[ユーザーがページを開く]
+     ↓ ISR(プリレンダリング済みHTML)を返す
+[Next.js Data Cache]
+     └─ 計算済みの結果を返す（GitHub API は叩かない）
+
+[ユーザーがスキルを編集・保存]
+     ↓ 書き込み後に即時実行
+[revalidateTag("skills")]            ← 即時キャッシュ無効化
+```
+
+#### A. Next.js Data Cache の正しい活用
+
+```ts
+// lib/active-github-overlay.ts の修正方針
+// 現状: fetch(..., { next: { revalidate: 0 } })  ← キャッシュ完全無効
+// 修正: fetch(..., { next: { revalidate: 300, tags: ["skills", "github"] } })
+//       ↑ 5分キャッシュ + タグで選択的無効化
+
+// lib/cache/skills.ts（新設）
+import { unstable_cache } from "next/cache";
+
+export const getCachedActiveSkills = unstable_cache(
+  async () => {
+    const fsSkills = readActiveSkills();
+    return overlayActiveSkillsFromGitHub(fsSkills);
+  },
+  ["active-skills"],
+  { revalidate: 300, tags: ["skills"] },  // 5分 or タグ無効化
+);
+```
+
+#### B. バックグラウンドキャッシュウォーマー
+
+```ts
+// app/api/cron/warm-cache/route.ts（新設）
+// Vercel Cron: "*/5 * * * *"（5分ごと）
+export async function POST(req: Request) {
+  // Cron 専用シークレットで呼び出し元を検証する
+  if (req.headers.get("x-cron-secret") !== process.env.CRON_SECRET) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+  // 重い関数を呼ぶだけで Data Cache が更新される
+  await getCachedActiveSkills();
+  await getCachedArchiveSkills();
+  await getCachedSyncLog();
+  revalidateTag("skills");
+  return NextResponse.json({ warmed: true, at: new Date().toISOString() });
+}
+```
+
+```json
+// vercel.json に追加
+{ "crons": [{ "path": "/api/cron/warm-cache", "schedule": "*/5 * * * *" }] }
+```
+
+#### C. プリフェッチによる「体感ゼロ遅延」
+
+Next.js の `<Link>` はビューポート内リンクを自動プリフェッチするが、以下を確認・強化する:
+
+```tsx
+// NavItem: ホバー時点でデータ取得開始 → クリック時には完了済み
+import { useRouter } from "next/navigation";
+const router = useRouter();
+// <Link> の onMouseEnter に追加
+onMouseEnter={() => router.prefetch(href)}
+```
+
+#### D. Supabase クエリのキャッシュ
+
+- ユーザー固有データ（RLS が必要なもの）: キャッシュ不可 → インデックス最適化で高速化
+- 集計・管理・公開データ: `unstable_cache` でラップ可
+
+```ts
+export const getCachedPlanList = unstable_cache(
+  () => supabaseAdmin.from("plans").select("*").order("price"),
+  ["plans"],
+  { revalidate: 3600 },  // 1時間
+);
+```
+
+**Supabase インデックス確認**（監査時に必ず実施）:
+```sql
+-- 頻出クエリへのインデックス存在確認
+SELECT indexname FROM pg_indexes
+WHERE tablename IN ('profiles', 'skills', 'subscriptions', 'service_admins');
+-- Supabase Dashboard → Logs → Query Performance で遅いクエリ(> 100ms)を特定
+```
+
+### 実装チェックリスト
+
+#### 計測（必須・実装前）
+- [ ] 本番の TTFB・FCP・LCP を Vercel Analytics で記録する（ベースライン）
+- [ ] `lib/active-github-overlay.ts` の `gh()` 呼び出し回数と所要時間をログで確認する
+- [ ] Supabase Dashboard → Query Performance で遅いクエリ（> 100ms）を全件抽出する
+
+#### Next.js Data Cache 修正
+- [ ] `lib/active-github-overlay.ts` 全 `fetch` の `revalidate: 0` を適切な値（60〜300）に変更し `tags` を付与する
+- [ ] `lib/cache/skills.ts` を新設し `unstable_cache` で重い関数をラップする
+- [ ] スキル書き込み API（`/api/skills/**`）の `revalidateSkillPages()` を `revalidateTag("skills")` に統一する
+
+#### バックグラウンドキャッシュウォーマー
+- [ ] `app/api/cron/warm-cache/route.ts` を新設する
+- [ ] `CRON_SECRET` 環境変数を Vercel に設定し呼び出し元を検証する
+- [ ] `vercel.json` に `"crons"` を追加し 5分間隔で実行する
+- [ ] ウォーミング失敗時のアラート（メール/Slack）を設定する
+
+#### プリフェッチ強化
+- [ ] `NavItem` の `onMouseEnter` で `router.prefetch(href)` を実行する
+- [ ] サイドバーの `<Link>` に `prefetch={true}` を明示する
+
+#### Supabase 最適化
+- [ ] 頻出クエリへのインデックスが存在するか確認し、不足していれば migration で追加する
+- [ ] `unstable_cache` でラップできる非ユーザー固有クエリを洗い出す
+
+#### 計測（実装後・受け入れ基準）
+- [ ] TTFB < 100ms（Vercel Analytics で p75 を確認）
+- [ ] FCP < 200ms、LCP < 500ms
+- [ ] `/app`（ダッシュボード）への平均応答時間が実装前比 80% 以上削減
+- [ ] GitHub API の 1分あたりリクエスト数が実装前比 90% 以上削減
+
+### 環境変数
+| 変数名 | 用途 | 取得方法 |
+|---|---|---|
+| `CRON_SECRET` | ウォーマー API の呼び出し元検証 | 任意の安全なランダム文字列を生成して設定 |
+
+### GAP分析（必須出力）
+
+| 項目 | 現状（未/一部/実装済） | 不足内容 | 優先度 | 工数 |
+|---|---|---|---|---|
+| ベースライン計測（Vercel Analytics） | 要確認 | Web Vitals の記録 | P0（先行） | 0.1d |
+| GitHub API fetch の revalidate 修正 | 未（revalidate: 0） | `next.revalidate` を 300 に変更＋タグ付与 | P1 | 0.5d |
+| `unstable_cache` でスキル関数ラップ | 未 | `lib/cache/skills.ts` 新設 | P1 | 1d |
+| バックグラウンドキャッシュウォーマー | 未 | Cron + `/api/cron/warm-cache` | P1 | 1d |
+| revalidateTag への統一 | 一部（revalidatePath のみ） | タグベース無効化に移行 | P1 | 0.5d |
+| NavItem ホバープリフェッチ | 未 | `onMouseEnter: router.prefetch` | P2 | 0.3d |
+| Supabase インデックス確認・追加 | 要確認 | Query Performance ログで特定 | P2 | 1〜2d |
+| Supabase 集計クエリのキャッシュ | 未 | `unstable_cache` でラップ | P2 | 0.5d |
+
+---
+
+
 
 対象の全リポジトリについて、以下の一覧表を作成する:
 

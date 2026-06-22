@@ -252,6 +252,7 @@ fix(api): handle empty webhook payload from Make.com
 @.claude/skills/architecture.md
 @.claude/skills/auth-complete-flow.md
 @.claude/skills/billing-stripe-integration.md
+@.claude/skills/category-e0dc07.md
 @.claude/skills/claude-api-spec-gen.md
 @.claude/skills/database-migration-pattern.md
 @.claude/skills/debugging.md
