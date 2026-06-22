@@ -54,14 +54,14 @@ def main() -> None:
                     except Exception as e:  # noqa: BLE001
                         st.error(f"エラー: {e}")
             with col2:
-                frozen = getattr(u, "is_frozen", False)
-                label = "凍結解除" if frozen else "凍結"
-                if st.button(label, key=f"freeze_btn_{u.id}"):
+                active = u.is_active
+                label = "有効化" if not active else "無効化"
+                if st.button(label, key=f"active_btn_{u.id}"):
                     try:
                         with get_session() as s:
                             user = s.get(User, u.id)
                             if user:
-                                user.is_frozen = not frozen
+                                user.is_active = not active
                         st.success("変更しました")
                         st.rerun()
                     except Exception as e:  # noqa: BLE001
