@@ -516,69 +516,105 @@ def require_admin() -> None:
         st.stop()
 
 
+_LOGIN_CSS = """
+<style>
+button[kind="primaryFormSubmit"] {
+    background: #b5651d !important;
+    border: 1px solid #b5651d !important;
+    color: #fff !important;
+}
+button[kind="primaryFormSubmit"]:hover { background: #c9761f !important; }
+button[kind="tertiaryFormSubmit"] {
+    color: #c9761f !important; padding: 0 !important; min-height: auto !important;
+    font-size: 0.8rem !important; float: right;
+}
+.login-or {
+    display: flex; align-items: center; text-align: center;
+    color: #6b7280; font-size: 0.8rem; margin: 0.6rem 0;
+}
+.login-or::before, .login-or::after {
+    content: ""; flex: 1; border-bottom: 1px solid #2a2f3a;
+}
+.login-or:not(:empty)::before { margin-right: .6em; }
+.login-or:not(:empty)::after { margin-left: .6em; }
+.login-title { text-align: center; font-size: 1.5rem; font-weight: 700; margin: 0.2rem 0 0.2rem; }
+.login-sub { text-align: center; color: #9aa3b2; font-size: 0.85rem; margin-bottom: 1rem; }
+.login-foot { text-align: center; color: #6b7280; font-size: 0.75rem; margin-top: 0.8rem; }
+.login-foot a { color: #c9761f; }
+</style>
+"""
+
+
 def _show_login_form() -> None:
-    """統合ログインページ: Google / パスワード / マジックリンク / 新規登録 / リセット。"""
+    """統合ログインページ（中央カード・1カラム）。
+
+    上から Google → メールリンク（マジックリンク）→ メール/パスワード →
+    「パスワードをお忘れですか？」→ ログイン、最下部に新規登録。
+    """
     import streamlit as st
 
     _prelogin_chrome()
-    st.markdown("## 🔒 ログイン")
-    st.caption("Copytrader コンソール")
+    st.markdown(_LOGIN_CSS, unsafe_allow_html=True)
 
-    # Google ログイン（OIDC 設定済みのときだけ表示）
-    if _oauth_configured():
-        with st.container(border=True):
-            st.markdown("#### Google でログイン")
-            if st.button("🔵 Google でログイン", type="primary",
-                         use_container_width=True, key="_google_login"):
-                st.login("google")
+    _, mid, _ = st.columns([1, 1.5, 1])
+    with mid, st.container(border=True):
+        st.markdown('<div class="login-title">ログイン</div>', unsafe_allow_html=True)
         st.markdown(
-            "<div style='text-align:center;color:#666;margin:0.5rem 0;'>"
-            "— または —</div>",
+            '<div class="login-sub">Copytrader にログインして運用を管理しましょう</div>',
             unsafe_allow_html=True,
         )
 
-    tab_login, tab_signup, tab_magic, tab_reset = st.tabs(
-        ["ログイン", "新規登録", "マジックリンク", "パスワード再設定"]
-    )
+        # Google ログイン（OIDC 設定済みのときだけ表示）
+        if _oauth_configured():
+            if st.button("Google でログイン", use_container_width=True,
+                         key="_google_login"):
+                st.login("google")
+            st.markdown('<div class="login-or">または</div>', unsafe_allow_html=True)
 
-    with tab_login, st.form("login_form"):
-        email = st.text_input("メールアドレス", key="li_email")
-        pw = st.text_input("パスワード", type="password", key="li_pw")
-        if st.form_submit_button("ログイン", type="primary", use_container_width=True):
+        with st.form("login_form", border=False):
+            magic_clicked = st.form_submit_button(
+                "✉️ メールリンクでログイン", use_container_width=True)
+            st.markdown('<div class="login-or">または</div>', unsafe_allow_html=True)
+            email = st.text_input("メールアドレス", key="li_email",
+                                  placeholder="example@mail.com")
+            pw = st.text_input("パスワード", type="password", key="li_pw",
+                               placeholder="パスワードを入力")
+            forgot_clicked = st.form_submit_button(
+                "パスワードをお忘れですか？", type="tertiary")
+            login_clicked = st.form_submit_button(
+                "ログイン", type="primary", use_container_width=True)
+            st.markdown('<div class="login-or"></div>', unsafe_allow_html=True)
+            signup_clicked = st.form_submit_button(
+                "新規登録（メール + パスワード）", use_container_width=True)
+
+        if login_clicked:
             _handle_login(email, pw)
+        elif signup_clicked:
+            _handle_signup(email, pw)
+        elif magic_clicked:
+            if "@" not in (email or ""):
+                st.warning("メールアドレスを入力してください。")
+            else:
+                request_magic_link(email)
+                st.success("メールアドレスが有効なら、ログインリンクを送信しました。"
+                           "メールをご確認ください。")
+        elif forgot_clicked:
+            if "@" not in (email or ""):
+                st.warning("メールアドレスを入力してください。")
+            else:
+                request_password_reset(email)
+                st.success("メールアドレスが登録済みなら、再設定リンクを送信しました。")
 
-    with tab_signup, st.form("signup_form"):
-        st.caption("メールアドレスとパスワード（8文字以上）で新規登録します。")
-        su_email = st.text_input("メールアドレス", key="su_email")
-        su_pw = st.text_input("パスワード", type="password", key="su_pw")
-        su_pw2 = st.text_input("パスワード（確認）", type="password", key="su_pw2")
-        if st.form_submit_button("登録してログイン", type="primary",
-                                 use_container_width=True):
-            _handle_signup(su_email, su_pw, su_pw2)
-
-    with tab_magic, st.form("magic_form"):
-        st.caption("登録メールにログインリンクを送ります（パスワード不要）。"
-                   "未登録のメールは自動で登録されます。")
-        mg_email = st.text_input("メールアドレス", key="mg_email")
-        if st.form_submit_button("ログインリンクを送信", use_container_width=True):
-            request_magic_link(mg_email)
-            st.success("メールアドレスが有効なら、ログインリンクを送信しました。"
-                       "メールをご確認ください。")
-
-    with tab_reset, st.form("reset_form"):
-        st.caption("登録メールにパスワード再設定リンクを送ります。")
-        rs_email = st.text_input("登録済みメールアドレス", key="rs_email")
-        if st.form_submit_button("再設定リンクを送信", use_container_width=True):
-            request_password_reset(rs_email)
-            st.success("メールアドレスが登録済みなら、再設定リンクを送信しました。")
+        st.markdown(
+            '<div class="login-foot">ログイン／登録することで、利用規約と'
+            'プライバシーポリシーに同意したものとみなされます。</div>',
+            unsafe_allow_html=True,
+        )
 
 
-def _handle_signup(email: str, pw: str, pw2: str) -> None:
+def _handle_signup(email: str, pw: str) -> None:
     import streamlit as st
 
-    if pw != pw2:
-        st.error("パスワードが一致しません")
-        return
     ok, result = register_user(email, pw)
     if not ok:
         st.error(result)
