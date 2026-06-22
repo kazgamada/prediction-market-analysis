@@ -366,6 +366,35 @@ UX のストレス要因(回遊性の破綻・表示の遅さ等)を体系的に
 
 ---
 
+## 共通機能要件(全ツール必須・フォーム保存の信頼性/エラー可視化)
+
+「入力しても反映されない」「保存に失敗するが原因が分からない」という体験を構造的に排除するための規約。**観点B(機能完全性)・D(UX)の判定基準**。各リポジトリの GAP を列挙すること。
+
+### A. 保存失敗を握りつぶさない(最重要)
+- [ ] すべての保存/送信ハンドラは、`!res.ok` 時に**サーバーが返す実エラー**(`error`/`detail`/`hint`/`reason`)を読み取って表示する。固定文言(「保存に失敗しました」だけ)で原因を隠さない
+- [ ] 共通関数 `lib/http/error-message.ts` の `readErrorMessage(res, fallback)` を使い、実装ごとのブレを無くす
+- [ ] 失敗は**赤**(`text-red-*`)、成功は**緑**(`text-emerald-*`)で**成否により色を出し分ける**。失敗を成功色で出すこと(緑のまま)を禁止。メッセージ state は `{ kind: 'ok' | 'error'; text }` 形式を推奨
+- [ ] `catch` 節でも通信エラーを画面に出す(無言で握りつぶさない)。`if (!res.ok) return;` の無言 return を禁止
+
+### B. 保存先テーブルの本番存在を保証する(500 の典型原因)
+- [ ] 新規 migration を追加したら、**必ず `supabase/bootstrap.sql` にも idempotent(`create table if not exists` / `drop policy if exists`)で同じ定義を反映**する。bootstrap への反映漏れは「本番にテーブルが無い → upsert が 500 → 保存失敗」の典型原因
+- [ ] 本番反映は Supabase SQL Editor に `bootstrap.sql` 全文を貼って Run(§0.1 のターミナル回避経路)。migration 追加時はこの手順を要件定義書に明記
+
+### C. 管理者機能の表示前提
+- [ ] 管理者バッジ/運営コンソール等は `isServiceAdmin` 依存。本番で出ない場合の前提は **(1) Vercel 本番に `OWNER_EMAIL` を設定(ログイン中の email と一致)** または **(2) `service_admins` に行がある** のいずれか
+- [ ] 切り分けは `/api/auth/me` の `adminDiagnostics`(`ownerEmailConfigured`/`ownerEmailMatches`/`viaServiceAdminsRow`)で実データ確認してから対処する(推測で直さない)
+
+### D. GAP分析(必須出力)
+| 項目 | 現状 | 準拠/不準拠 | 改修内容 | 工数 |
+|---|---|---|---|---|
+| 保存失敗時の実エラー表示(readErrorMessage) | | | | |
+| 成否による色の出し分け(失敗=赤) | | | | |
+| 無言 return / catch 握りつぶしの有無 | | | | |
+| migration ↔ bootstrap.sql の同期 | | | | |
+| OWNER_EMAIL / service_admins の本番設定 | | | | |
+
+---
+
 ## 共通機能要件(全ツール必須・メール/通知)
 
 トランザクション/通知メールと、運営・ユーザー双方からの送信機能を共通実装する。配信基盤は **Resend** を既定とする。監査では現状を「未実装/一部実装/実装済」で判定し、不足分を要件定義書に記載すること。
