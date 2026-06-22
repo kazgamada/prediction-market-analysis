@@ -44,26 +44,28 @@
 
 ---
 
-## 2. Fly.io に Secrets を投入
+## 2. Fly.io に Secrets を投入（ブラウザのみ・ターミナル不要）
 
-`flytoml` のアプリ名は `prediction-market-analysis`。以下を設定する
-（`cookie_secret` 用のランダム文字列を生成してから実行）:
+Fly.io のダッシュボードから設定する。アプリ名は `prediction-market-analysis`。
 
-```sh
-# ランダムな cookie secret を生成
-COOKIE=$(python3 -c "import secrets;print(secrets.token_urlsafe(32))")
+1. https://fly.io/dashboard を開く → アプリ **prediction-market-analysis** をクリック
+2. 左メニュー **Secrets** を開く
+3. **New Secret**（または同等の入力欄）で、以下を **1 件ずつ Name / Value** で追加して保存:
 
-fly secrets set \
-  GOOGLE_CLIENT_ID="xxxxxxxx.apps.googleusercontent.com" \
-  GOOGLE_CLIENT_SECRET="GOCSPX-xxxxxxxx" \
-  OAUTH_REDIRECT_URI="https://prediction-market-analysis.fly.dev/oauth2callback" \
-  OAUTH_COOKIE_SECRET="$COOKIE" \
-  ADMIN_EMAILS="kazgamada@gmail.com" \
-  --app prediction-market-analysis
-```
+   | Name | Value |
+   |---|---|
+   | `GOOGLE_CLIENT_ID` | Google で控えたクライアント ID（`...apps.googleusercontent.com`） |
+   | `GOOGLE_CLIENT_SECRET` | Google で控えたクライアント シークレット（`GOCSPX-...`） |
+   | `OAUTH_REDIRECT_URI` | `https://prediction-market-analysis.fly.dev/oauth2callback` |
+   | `OAUTH_COOKIE_SECRET` | 長いランダム文字列（下記の生成済み値を使ってよい） |
+   | `ADMIN_EMAILS` | `kazgamada@gmail.com` |
 
-- `ADMIN_EMAILS` はカンマ区切りで複数指定可（例 `a@x.com,b@y.com`）。未設定でも既定で `kazgamada@gmail.com` が管理者。
-- `fly secrets set` を実行すると自動で再デプロイ（マシン再起動）される。
+4. すべて保存すると Fly が自動で再デプロイ（マシン再起動）する。
+
+メモ:
+- `ADMIN_EMAILS` はカンマ区切りで複数可（例 `a@x.com,b@y.com`）。未設定でも既定で `kazgamada@gmail.com` が管理者。
+- `OAUTH_REDIRECT_URI` は未設定でもアプリ側が `https://prediction-market-analysis.fly.dev/oauth2callback` を既定値にするが、明示設定を推奨。
+- `OAUTH_COOKIE_SECRET` を未設定にすると起動毎にランダム生成され、再起動でログインセッションが切れる。固定値を入れること。
 
 ---
 
@@ -75,7 +77,7 @@ fly secrets set \
 4. `kazgamada@gmail.com` でログインすると、サイドバーに **🔧 管理者メニュー**（ユーザー管理 / Billing 管理 / メール送信）が表示される
 
 うまくいかないとき:
-- ボタンが出ない → `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` が未設定。`fly secrets list` で確認
+- ボタンが出ない → `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` が未設定。Fly ダッシュボードの **Secrets** 一覧で確認
 - `redirect_uri_mismatch` → Google 側の承認済みリダイレクト URI と `OAUTH_REDIRECT_URI` が不一致
 - `403 access_denied` → OAuth 同意画面が「テスト」状態で、当該アカウントがテストユーザー未登録。テストユーザー追加 or アプリを公開
 
